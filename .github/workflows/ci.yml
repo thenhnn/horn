@@ -44,3 +44,25 @@ jobs:
           nix-build nix -A sel4.out
           --argstr profile '${{ matrix.profile }}'
           --no-out-link
+
+  boot:
+    name: Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # 31.11.3
+        with:
+          enable_kvm: false
+      - run: nix-shell --run 'pytest -q'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: pc-boot-logs
+          path: |
+            work/pytest/**/*.log
+            work/pytest/**/*.json
+          if-no-files-found: ignore
+          retention-days: 7

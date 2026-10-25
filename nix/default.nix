@@ -1,4 +1,7 @@
-{profile ? "default"}: let
+{
+  profile ? "default",
+  modules ? [],
+}: let
   sources = import ./npins;
   lib = import (sources.nixpkgs + "/lib");
   tracked = ../platform/profiles + "/${profile}.nix";
@@ -11,7 +14,14 @@
     else throw "Unknown profile '${profile}': expected platform/profiles/${profile}.nix or work/extra-profiles/${profile}.nix";
   evaluated = lib.evalModules {
     specialArgs = {inherit sources;};
-    modules = [./modules/nixpkgs.nix ../platform/sel4/module.nix selected];
+    modules =
+      [
+        ./modules/nixpkgs.nix
+        ../platform/sel4/module.nix
+        ../platform/root-task/module.nix
+        selected
+      ]
+      ++ modules;
   };
 in
   evaluated.config
