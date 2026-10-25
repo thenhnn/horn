@@ -1,4 +1,4 @@
-{pkgs ? import ./.}: let
+{pkgs}: let
   sources = import ./npins;
   treefmt-nix = import sources.treefmt-nix;
 in
