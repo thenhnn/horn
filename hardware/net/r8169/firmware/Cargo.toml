@@ -1,0 +1,10 @@
+[package]
+name = "rtl-firmware"
+version = "0.1.0"
+edition = "2024"
+
+[build-dependencies]
+rtl-compiler = { path = "../compiler" }
+
+[dev-dependencies]
+serde_json = "1.0.154"

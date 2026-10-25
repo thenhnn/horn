@@ -1,0 +1,417 @@
+{
+  "source": {
+    "url": "https://github.com/torvalds/linux/blob/21a7f44fd0765fcc5194130b28767786eba1d1e7/drivers/net/ethernet/realtek/r8169_main.c",
+    "license": "GPL-2.0-only",
+    "copyright": [
+      "Copyright (c) 2002 ShuChen <shuchen@realtek.com.tw>",
+      "Copyright (c) 2003 - 2007 Francois Romieu <romieu@fr.zoreil.com>",
+      "Copyright (c) a lot of people too. Please respect their work."
+    ]
+  },
+  "chips": [
+    {
+      "mask": "0x7cf",
+      "value": "0x6c9",
+      "mac_version": 80,
+      "name": "RTL8127A",
+      "firmware": "rtl8127a-1"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x64a",
+      "mac_version": 70,
+      "name": "RTL8126A",
+      "firmware": "rtl8126a-3"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x649",
+      "mac_version": 70,
+      "name": "RTL8126A",
+      "firmware": "rtl8126a-2"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x681",
+      "mac_version": 66,
+      "name": "RTL8125BP",
+      "firmware": "rtl8125bp-2"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x708",
+      "mac_version": 65,
+      "name": "RTL8125CP",
+      "firmware": "rtl8125cp-1"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x68b",
+      "mac_version": 64,
+      "name": "RTL9151A",
+      "firmware": "rtl9151a-1"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x68a",
+      "mac_version": 64,
+      "name": "RTL8125K",
+      "firmware": "rtl8125k-1"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x689",
+      "mac_version": 64,
+      "name": "RTL8125D",
+      "firmware": "rtl8125d-2"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x688",
+      "mac_version": 64,
+      "name": "RTL8125D",
+      "firmware": "rtl8125d-1"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x641",
+      "mac_version": 63,
+      "name": "RTL8125B",
+      "firmware": "rtl8125b-2"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x609",
+      "mac_version": 61,
+      "name": "RTL8125A",
+      "firmware": "rtl8125a-3"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x54b",
+      "mac_version": 52,
+      "name": "RTL8168fp/RTL8117",
+      "firmware": null
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x54a",
+      "mac_version": 52,
+      "name": "RTL8168fp/RTL8117",
+      "firmware": "rtl8168fp-3"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x502",
+      "mac_version": 51,
+      "name": "RTL8168ep/8111ep",
+      "firmware": null
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x541",
+      "mac_version": 46,
+      "name": "RTL8168h/8111h",
+      "firmware": "rtl8168h-2"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x6c0",
+      "mac_version": 46,
+      "name": "RTL8168M",
+      "firmware": "rtl8168h-2"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x5c8",
+      "mac_version": 44,
+      "name": "RTL8411b",
+      "firmware": "rtl8411-2"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x509",
+      "mac_version": 42,
+      "name": "RTL8168gu/8111gu",
+      "firmware": "rtl8168g-3"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x4c0",
+      "mac_version": 40,
+      "name": "RTL8168g/8111g",
+      "firmware": "rtl8168g-2"
+    },
+    {
+      "mask": "0x7c8",
+      "value": "0x488",
+      "mac_version": 38,
+      "name": "RTL8411",
+      "firmware": "rtl8411-1"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x481",
+      "mac_version": 36,
+      "name": "RTL8168f/8111f",
+      "firmware": "rtl8168f-2"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x480",
+      "mac_version": 35,
+      "name": "RTL8168f/8111f",
+      "firmware": "rtl8168f-1"
+    },
+    {
+      "mask": "0x7c8",
+      "value": "0x2c8",
+      "mac_version": 34,
+      "name": "RTL8168evl/8111evl",
+      "firmware": "rtl8168e-3"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x2c1",
+      "mac_version": 32,
+      "name": "RTL8168e/8111e",
+      "firmware": "rtl8168e-1"
+    },
+    {
+      "mask": "0x7c8",
+      "value": "0x2c0",
+      "mac_version": 33,
+      "name": "RTL8168e/8111e",
+      "firmware": "rtl8168e-2"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x281",
+      "mac_version": 25,
+      "name": "RTL8168d/8111d",
+      "firmware": "rtl8168d-1"
+    },
+    {
+      "mask": "0x7c8",
+      "value": "0x280",
+      "mac_version": 26,
+      "name": "RTL8168d/8111d",
+      "firmware": "rtl8168d-2"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x28a",
+      "mac_version": 28,
+      "name": "RTL8168dp/8111dp",
+      "firmware": null
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x28b",
+      "mac_version": 31,
+      "name": "RTL8168dp/8111dp",
+      "firmware": null
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x3c9",
+      "mac_version": 23,
+      "name": "RTL8168cp/8111cp",
+      "firmware": null
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x3c8",
+      "mac_version": 18,
+      "name": "RTL8168cp/8111cp",
+      "firmware": null
+    },
+    {
+      "mask": "0x7c8",
+      "value": "0x3c8",
+      "mac_version": 24,
+      "name": "RTL8168cp/8111cp",
+      "firmware": null
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x3c0",
+      "mac_version": 19,
+      "name": "RTL8168c/8111c",
+      "firmware": null
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x3c2",
+      "mac_version": 20,
+      "name": "RTL8168c/8111c",
+      "firmware": null
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x3c3",
+      "mac_version": 21,
+      "name": "RTL8168c/8111c",
+      "firmware": null
+    },
+    {
+      "mask": "0x7c8",
+      "value": "0x3c0",
+      "mac_version": 22,
+      "name": "RTL8168c/8111c",
+      "firmware": null
+    },
+    {
+      "mask": "0x7c8",
+      "value": "0x380",
+      "mac_version": 17,
+      "name": "RTL8168b/8111b",
+      "firmware": null
+    },
+    {
+      "mask": "0x7c8",
+      "value": "0x448",
+      "mac_version": 39,
+      "name": "RTL8106e",
+      "firmware": "rtl8106e-1"
+    },
+    {
+      "mask": "0x7c8",
+      "value": "0x440",
+      "mac_version": 37,
+      "name": "RTL8402",
+      "firmware": "rtl8402-1"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x409",
+      "mac_version": 29,
+      "name": "RTL8105e",
+      "firmware": "rtl8105e-1"
+    },
+    {
+      "mask": "0x7c8",
+      "value": "0x408",
+      "mac_version": 30,
+      "name": "RTL8105e",
+      "firmware": "rtl8105e-1"
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x349",
+      "mac_version": 8,
+      "name": "RTL8102e",
+      "firmware": null
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x249",
+      "mac_version": 8,
+      "name": "RTL8102e",
+      "firmware": null
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x348",
+      "mac_version": 7,
+      "name": "RTL8102e",
+      "firmware": null
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x248",
+      "mac_version": 7,
+      "name": "RTL8102e",
+      "firmware": null
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x240",
+      "mac_version": 14,
+      "name": "RTL8401",
+      "firmware": null
+    },
+    {
+      "mask": "0x7c8",
+      "value": "0x348",
+      "mac_version": 9,
+      "name": "RTL8102e/RTL8103e",
+      "firmware": null
+    },
+    {
+      "mask": "0x7c8",
+      "value": "0x248",
+      "mac_version": 9,
+      "name": "RTL8102e/RTL8103e",
+      "firmware": null
+    },
+    {
+      "mask": "0x7c8",
+      "value": "0x340",
+      "mac_version": 10,
+      "name": "RTL8101e/RTL8100e",
+      "firmware": null
+    },
+    {
+      "mask": "0xfc8",
+      "value": "0x980",
+      "mac_version": 6,
+      "name": "RTL8169sc/8110sc",
+      "firmware": null
+    },
+    {
+      "mask": "0xfc8",
+      "value": "0x180",
+      "mac_version": 5,
+      "name": "RTL8169sc/8110sc",
+      "firmware": null
+    },
+    {
+      "mask": "0xfc8",
+      "value": "0x100",
+      "mac_version": 4,
+      "name": "RTL8169sb/8110sb",
+      "firmware": null
+    },
+    {
+      "mask": "0xfc8",
+      "value": "0x040",
+      "mac_version": 3,
+      "name": "RTL8110s",
+      "firmware": null
+    },
+    {
+      "mask": "0xfc8",
+      "value": "0x008",
+      "mac_version": 2,
+      "name": "RTL8169s",
+      "firmware": null
+    },
+    {
+      "mask": "0x7cf",
+      "value": "0x7c8",
+      "extended": true
+    }
+  ],
+  "extended_chips": [
+    {
+      "mask": "0x7fffffff",
+      "value": "0x00000000",
+      "mac_version": 64,
+      "name": "RTL9151AS",
+      "firmware": "rtl9151a-1"
+    }
+  ],
+  "non_gmii": {
+    "rtl8106eus": {
+      "mac_version": 43,
+      "name": "RTL8106eus",
+      "firmware": "rtl8106e-2"
+    },
+    "rtl8107e": {
+      "mac_version": 48,
+      "name": "RTL8107e",
+      "firmware": "rtl8107e-2"
+    }
+  }
+}

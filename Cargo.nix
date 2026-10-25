@@ -38,23 +38,31 @@ rec {
   # "public" attributes that we attempt to keep stable with new versions of crate2nix.
   #
 
-  rootCrate = rec {
-    packageId = "rust-root-task";
 
-    # Use this attribute to refer to the derivation building your root crate package.
-    # You can override the features with rootCrate.build.override { features = [ "default" "feature1" ... ]; }.
-    build = internal.buildRustCrateWithFeatures {
-      inherit packageId;
-    };
-
-    # Debug support which might change between releases.
-    # File a bug if you depend on any for non-debug work!
-    debug = internal.debugCrate { inherit packageId; };
-  };
   # Refer your crate build derivation by name here.
   # You can override the features with
   # workspaceMembers."${crateName}".build.override { features = [ "default" "feature1" ... ]; }.
   workspaceMembers = {
+    "rtl-compiler" = rec {
+      packageId = "rtl-compiler";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "rtl-compiler";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "rtl-firmware" = rec {
+      packageId = "rtl-firmware";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "rtl-firmware";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "rust-root-task" = rec {
       packageId = "rust-root-task";
       build = internal.buildRustCrateWithFeatures {
@@ -991,6 +999,64 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "std" "unicode" "unicode-age" "unicode-bool" "unicode-case" "unicode-gencat" "unicode-perl" "unicode-script" "unicode-segment" ];
       };
+      "rtl-compiler" = rec {
+        crateName = "rtl-compiler";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./hardware/net/r8169/compiler; };
+        libName = "rtl_compiler";
+        dependencies = [
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "serde";
+            packageId = "serde";
+            features = [ "derive" ];
+          }
+          {
+            name = "serde_json";
+            packageId = "serde_json";
+          }
+          {
+            name = "syn";
+            packageId = "syn 3.0.9";
+          }
+        ];
+        devDependencies = [
+          {
+            name = "prettyplease";
+            packageId = "prettyplease 0.3.0";
+          }
+        ];
+
+      };
+      "rtl-firmware" = rec {
+        crateName = "rtl-firmware";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./hardware/net/r8169/firmware; };
+        libName = "rtl_firmware";
+        buildDependencies = [
+          {
+            name = "rtl-compiler";
+            packageId = "rtl-compiler";
+          }
+        ];
+        devDependencies = [
+          {
+            name = "serde_json";
+            packageId = "serde_json";
+          }
+        ];
+
+      };
       "rust-root-task" = rec {
         crateName = "rust-root-task";
         version = "0.1.0";
@@ -1711,7 +1777,7 @@ rec {
           "std" = [ "serde_core/std" ];
           "unstable" = [ "serde_core/unstable" ];
         };
-        resolvedDefaultFeatures = [ "alloc" "derive" "serde_derive" ];
+        resolvedDefaultFeatures = [ "alloc" "default" "derive" "serde_derive" "std" ];
       };
       "serde_core" = rec {
         crateName = "serde_core";

@@ -303,6 +303,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "rtl-compiler"
+version = "0.1.0"
+dependencies = [
+ "prettyplease 0.3.0",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn 3.0.9",
+]
+
+[[package]]
+name = "rtl-firmware"
+version = "0.1.0"
+dependencies = [
+ "rtl-compiler",
+ "serde_json",
+]
+
+[[package]]
 name = "rust-root-task"
 version = "0.1.0"
 dependencies = [
