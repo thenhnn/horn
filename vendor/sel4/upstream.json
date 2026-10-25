@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "name": "sel4",
+  "repository": "https://github.com/seL4/seL4.git",
+  "revision": "c6ce4d2a0c334cc9365b2cc41ff0126d75c0ea3c",
+  "tree": "53e992ae77b0c8f3098ba261e294f9c103c0f0b8",
+  "destination": "src"
+}
