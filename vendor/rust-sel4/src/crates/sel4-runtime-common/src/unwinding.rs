@@ -1,0 +1,48 @@
+//
+// Copyright 2023, Colias Group, LLC
+//
+// SPDX-License-Identifier: BSD-2-Clause
+//
+
+use sel4_panicking_env::abort;
+
+use unwinding::custom_eh_frame_finder::{
+    EhFrameFinder, FrameInfo, FrameInfoKind, set_custom_eh_frame_finder,
+};
+
+use sel4_phdrs::{PT_GNU_EH_FRAME, PT_LOAD, locate_phdrs};
+
+struct EhFrameFinderImpl;
+
+unsafe impl EhFrameFinder for EhFrameFinderImpl {
+    fn find(&self, pc: usize) -> Option<FrameInfo> {
+        let phdrs = locate_phdrs().unwrap_or_else(|err| abort!("{err}"));
+
+        let text_base = phdrs.iter().find_map(|phdr| {
+            if phdr.p_type == PT_LOAD {
+                let start = phdr.p_vaddr;
+                let end = start + phdr.p_memsz;
+                if start <= pc && pc < end {
+                    return Some(start);
+                }
+            }
+            None
+        })?;
+
+        let eh_frame_hdr = phdrs
+            .find_by_type(PT_GNU_EH_FRAME)
+            .map(|phdr| phdr.p_vaddr)?;
+
+        Some(FrameInfo {
+            text_base: Some(text_base),
+            kind: FrameInfoKind::EhFrameHdr(eh_frame_hdr),
+        })
+    }
+}
+
+static EH_FRAME_FINDER: &(dyn EhFrameFinder + Sync) = &EhFrameFinderImpl;
+
+pub(crate) fn init_unwinding() {
+    set_custom_eh_frame_finder(EH_FRAME_FINDER)
+        .unwrap_or_else(|_| abort!("failed to initialize stack unwinding"));
+}

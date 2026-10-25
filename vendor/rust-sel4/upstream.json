@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "name": "rust-sel4",
+  "repository": "https://github.com/seL4/rust-sel4.git",
+  "revision": "86a0dbf4f53e6766734331c5df61851489ed38a1",
+  "tree": "356e940a5a7287dd4607957f063b9a1d91bf2ecc",
+  "destination": "src"
+}

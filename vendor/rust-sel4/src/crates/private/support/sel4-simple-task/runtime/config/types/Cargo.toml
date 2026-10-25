@@ -1,0 +1,28 @@
+#
+# Copyright 2023, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+#
+# This file is generated from './Cargo.nix'. You can edit this file directly
+# if you are not using this project's Cargo manifest management tools.
+# See 'hacking/cargo-manifest-management/README.md' for more information.
+#
+
+[package]
+name = "sel4-simple-task-runtime-config-types"
+version = "0.1.0"
+authors = ["Nick Spinale <nick.spinale@coliasgroup.com>"]
+edition = "2024"
+license = "BSD-2-Clause"
+
+[dependencies.rkyv]
+version = "0.8.12"
+default-features = false
+features = ["alloc", "bytecheck", "pointer_width_32"]
+
+[dependencies.serde]
+version = "1.0.228"
+default-features = false
+features = ["derive", "alloc"]
+optional = true

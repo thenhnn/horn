@@ -1,0 +1,29 @@
+#
+# Copyright 2023, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+#
+# This file is generated from './Cargo.nix'. You can edit this file directly
+# if you are not using this project's Cargo manifest management tools.
+# See 'hacking/cargo-manifest-management/README.md' for more information.
+#
+
+[package]
+name = "sel4-async-block-io-fat"
+version = "0.1.0"
+authors = ["Nick Spinale <nick.spinale@coliasgroup.com>"]
+edition = "2024"
+license = "BSD-2-Clause"
+
+[dependencies]
+futures = { version = "0.3.31", default-features = false, features = ["alloc"] }
+heapless = "0.9.1"
+hex = { version = "0.4.3", default-features = false }
+log = "0.4.28"
+lru = "0.18.2"
+sel4-async-block-io = { path = ".." }
+
+[dependencies.embedded-fat]
+git = "https://github.com/coliasgroup/rust-embedded-fat.git"
+tag = "keep/e1465a43c9f550ef58701a275b313310"

@@ -1,0 +1,75 @@
+#
+# Copyright 2023, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+#
+# This file is generated from './Cargo.nix'. You can edit this file directly
+# if you are not using this project's Cargo manifest management tools.
+# See 'hacking/cargo-manifest-management/README.md' for more information.
+#
+
+[package]
+name = "microkit-http-server-example-server"
+version = "0.1.0"
+authors = ["Nick Spinale <nick.spinale@coliasgroup.com>"]
+edition = "2024"
+license = "BSD-2-Clause"
+
+[dependencies]
+async-unsync = { version = "0.3.0", default-features = false }
+futures = { version = "0.3.31", default-features = false, features = ["async-await", "alloc"] }
+log = "0.4.28"
+microkit-http-server-example-server-core = { path = "core", features = [] }
+one-shot-mutex = "0.2.1"
+rtcc = "0.4.0"
+sel4 = { path = "../../../../../sel4" }
+sel4-abstract-allocator = { path = "../../../../../experimental/sel4-abstract-allocator" }
+sel4-async-block-io = { path = "../../../../../experimental/sel4-async/block-io" }
+sel4-async-block-io-fat = { path = "../../../../../experimental/sel4-async/block-io/fat" }
+sel4-async-network = { path = "../../../../../experimental/sel4-async/network" }
+sel4-async-time = { path = "../../../../../experimental/sel4-async/time" }
+sel4-driver-interfaces = { path = "../../../../../experimental/sel4-driver-interfaces" }
+sel4-immediate-sync-once-cell = { path = "../../../../../sel4-immediate-sync-once-cell" }
+sel4-logging = { path = "../../../../../sel4-logging" }
+sel4-microkit = { path = "../../../../../sel4-microkit", features = ["alloc"] }
+sel4-shared-memory = { path = "../../../../../sel4-shared-memory" }
+sel4-shared-ring-buffer = { path = "../../../../../experimental/sel4-shared-ring-buffer" }
+
+[dependencies.sel4-async-single-threaded-executor]
+path = "../../../../../experimental/sel4-async/single-threaded-executor"
+
+[dependencies.sel4-microkit-driver-adapters]
+path = "../../../../../experimental/sel4-microkit/driver-adapters"
+
+[dependencies.sel4-newlib]
+path = "../../../../../experimental/sel4-newlib"
+features = ["detect-libc", "link-libc", "link-libnosys", "all-symbols"]
+
+[dependencies.sel4-shared-ring-buffer-block-io]
+path = "../../../../../experimental/sel4-shared-ring-buffer/block-io"
+
+[dependencies.sel4-shared-ring-buffer-block-io-types]
+path = "../../../../../experimental/sel4-shared-ring-buffer/block-io/types"
+
+[dependencies.sel4-shared-ring-buffer-bookkeeping]
+path = "../../../../../experimental/sel4-shared-ring-buffer/bookkeeping"
+
+[dependencies.sel4-shared-ring-buffer-smoltcp]
+path = "../../../../../experimental/sel4-shared-ring-buffer/smoltcp"
+
+[dependencies.smoltcp]
+version = "0.14.0"
+default-features = false
+features = [
+    "proto-ipv4",
+    "proto-dhcpv4",
+    "proto-dns",
+    "socket-dhcpv4",
+    "socket-dns",
+    "socket-tcp",
+    "log",
+]
+
+[build-dependencies]
+rcgen = "0.14.5"

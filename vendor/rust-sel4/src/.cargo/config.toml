@@ -1,0 +1,29 @@
+#
+# Copyright 2023, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+
+[unstable]
+unstable-options = true
+
+[build]
+rustflags = ["-Zunstable-options"]
+
+[env]
+RUST_TARGET_PATH = { value = "support/targets", relative = true }
+
+[target."cfg(any(target_os = \"none\", target_env = \"musl\"))"]
+linker = "rust-lld"
+
+# tweaks
+
+[target.riscv64gc-unknown-linux-musl]
+rustflags = ["-Ctarget-feature=+crt-static"]
+
+[target.riscv32gc-unknown-linux-musl]
+rustflags = ["-Ctarget-feature=+crt-static"]
+
+# TODO is this necessary?
+[target.x86_64-unknown-none]
+rustflags = ["-Crelocation-model=static", "-Crelro-level=off"]

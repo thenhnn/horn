@@ -1,0 +1,29 @@
+#
+# Copyright 2023, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+#
+# This file is generated from './Cargo.nix'. You can edit this file directly
+# if you are not using this project's Cargo manifest management tools.
+# See 'hacking/cargo-manifest-management/README.md' for more information.
+#
+
+[package]
+name = "sel4-async-block-io"
+version = "0.1.0"
+authors = ["Nick Spinale <nick.spinale@coliasgroup.com>"]
+edition = "2024"
+license = "BSD-2-Clause"
+
+[features]
+alloc = ["futures/alloc", "lru"]
+default = ["alloc"]
+
+[dependencies]
+bytemuck = { version = "1.24.0", default-features = false }
+futures = { version = "0.3.31", default-features = false }
+gpt_disk_types = { version = "0.16.1", features = ["bytemuck"] }
+log = "0.4.28"
+lru = { version = "0.18.2", optional = true }
+num_enum = { version = "0.7.5", default-features = false }

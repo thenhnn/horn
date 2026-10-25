@@ -1,0 +1,1332 @@
+//
+// Copyright 2023, Colias Group, LLC
+//
+// SPDX-License-Identifier: BSD-2-Clause
+//
+
+use core::array;
+use core::ops::Range;
+use core::result::Result as CoreResult;
+use core::slice;
+
+use rkyv::Archive;
+use rkyv::ops::ArchivedRange;
+use rkyv::option::ArchivedOption;
+
+#[allow(unused_imports)]
+use log::{debug, error, info, trace};
+
+use sel4::{
+    CapRights, CapTypeForFrameObjectOfFixedSize, cap_type,
+    init_thread::{self, Slot},
+};
+use sel4_capdl_initializer_types::*;
+
+use crate::cslot_allocator::CSlotAllocator;
+use crate::error::CapDLInitializerError;
+use crate::hold_slots::HoldSlots;
+use crate::memory::{CopyAddrs, get_user_image_frame_slot};
+
+type Result<T> = CoreResult<T, CapDLInitializerError>;
+
+pub struct Initializer<'a> {
+    bootinfo: &'a sel4::BootInfoPtr,
+    user_image_bounds: Range<usize>,
+    copy_addrs: CopyAddrs,
+    spec: &'a <SpecForInitializer as Archive>::Archived,
+    embedded_frames_base_addr: usize,
+    orig_cslots: Range<Slot>,
+    cslot_allocator: &'a mut CSlotAllocator,
+}
+
+impl<'a> Initializer<'a> {
+    pub fn initialize(
+        bootinfo: &sel4::BootInfoPtr,
+        user_image_bounds: Range<usize>,
+        spec: &'a <SpecForInitializer as Archive>::Archived,
+        embedded_frames_base_addr: usize,
+    ) -> ! {
+        info!("Starting CapDL initializer");
+
+        let copy_addrs = CopyAddrs::init(bootinfo, &user_image_bounds).unwrap();
+
+        let mut cslot_allocator = CSlotAllocator::new(bootinfo.empty().range());
+
+        let orig_cslots = cslot_allocator
+            .alloc_many(
+                spec.cached_orig_cap_slots
+                    .as_ref()
+                    .unwrap()
+                    .num_occupied
+                    .try_into()
+                    .unwrap(),
+            )
+            .unwrap();
+
+        Initializer {
+            bootinfo,
+            user_image_bounds,
+            copy_addrs,
+            spec,
+            embedded_frames_base_addr,
+            orig_cslots,
+            cslot_allocator: &mut cslot_allocator,
+        }
+        .run()
+        .unwrap_or_else(|err| panic!("Error: {}", err));
+
+        debug!("CapDL initializer done, suspending");
+
+        init_thread::suspend_self()
+    }
+
+    // // //
+
+    fn run(&mut self) -> Result<()> {
+        self.create_objects()?;
+
+        self.init_irqs()?;
+        self.init_asids()?;
+        self.init_frames()?;
+        self.init_vspaces()?;
+        sel4::sel4_cfg_if! {
+            if #[sel4_cfg(all(ARCH_X86_64,IOMMU))] {
+                self.init_iospaces()?;
+            }
+        }
+
+        sel4::sel4_cfg_if! {
+            if #[sel4_cfg(KERNEL_MCS)] {
+                self.init_sched_contexts()?;
+            }
+        }
+
+        self.init_tcbs()?;
+        self.init_cspaces()?;
+        self.init_domain_schedule()?;
+
+        self.start_threads()?;
+        self.start_domain_schedule()?;
+
+        Ok(())
+    }
+
+    fn create_objects(&mut self) -> Result<()> {
+        // This algorithm differs from that found in the upstream C CapDL
+        // loader. In particular, this one is implemented with objects
+        // specifying non-device paddrs in mind.
+
+        debug!("Creating objects");
+
+        // Sort untypeds by paddr
+        let mut _uts_by_paddr_backing: [usize;
+            sel4::sel4_cfg_usize!(MAX_NUM_BOOTINFO_UNTYPED_CAPS)] = array::from_fn(|i| i); // TODO (not a big deal) allocate in image rather than on stack
+        let uts = self.bootinfo.untyped_list();
+        let uts_by_paddr = {
+            let arr = &mut _uts_by_paddr_backing[..uts.len()];
+            arr.sort_unstable_by_key(|i| uts[*i].paddr());
+            arr
+        };
+
+        // Index root objects
+
+        let first_obj_without_paddr = self
+            .root_objects()
+            .partition_point(|named_obj| named_obj.object.paddr().is_some());
+        let num_objs_with_paddr = first_obj_without_paddr;
+
+        // Sanity check that all objects with a paddr attached can be allocated.
+        // Currently this is only applicable to Frame objects
+        let mut phys_addrs_ok = true;
+        for obj_with_paddr_id in 0..first_obj_without_paddr {
+            let named_obj = self.named_object(obj_with_paddr_id.into());
+            let paddr_base = named_obj.object.paddr().unwrap().to_sel4();
+
+            let blueprint = named_obj.object.blueprint().unwrap();
+            let obj_size_bytes = 1 << blueprint.physical_size_bits();
+            let paddr_range = paddr_base..paddr_base + obj_size_bytes;
+
+            // Binary search for the UT that is next to the UT that might fit.
+            // i.e. we are looking for the first UT that is uts[i_ut].paddr() > paddr_range.start
+            let ut_after_candidate_idx = uts_by_paddr.partition_point(|&i_ut| {
+                sel4::Word::try_from(uts[i_ut].paddr()).unwrap() <= paddr_range.start
+            });
+
+            if ut_after_candidate_idx == 0 {
+                // Predicate returned false for the first UT, cannot allocate this object as all UTs are
+                // after the object.
+                phys_addrs_ok = false;
+            } else {
+                let candidate_ut = &uts[uts_by_paddr[ut_after_candidate_idx - 1]];
+                let candidate_ut_range =
+                    candidate_ut.paddr()..candidate_ut.paddr() + (1 << candidate_ut.size_bits());
+                if !(sel4::Word::try_from(candidate_ut_range.start).unwrap() <= paddr_range.start
+                    && sel4::Word::try_from(candidate_ut_range.end).unwrap() >= paddr_range.end)
+                {
+                    error!(
+                        "Cannot create object '{}', with paddr {:#x}..{:#x}, size bit {} because there are no valid untypeds to cover the allocation.",
+                        object_name_or_default(named_obj),
+                        paddr_range.start,
+                        paddr_range.end,
+                        blueprint.physical_size_bits()
+                    );
+                    phys_addrs_ok = false;
+                }
+            }
+        }
+
+        if !phys_addrs_ok {
+            error!("Below are the valid ranges of memory to be allocated from:");
+            error!("Valid ranges outside of main memory:");
+            for i_ut in uts_by_paddr.iter().filter(|i_ut| uts[**i_ut].is_device()) {
+                let ut = &uts[*i_ut];
+                let size_bit = ut.size_bits();
+                let base = ut.paddr();
+                let end = base + (1 << size_bit);
+                error!("     [0x{base:0>12x}..0x{end:0>12x})");
+            }
+            error!("Valid ranges within main memory:");
+            for i_ut in uts_by_paddr.iter().filter(|i_ut| !uts[**i_ut].is_device()) {
+                let ut = &uts[*i_ut];
+                let size_bit = ut.size_bits();
+                let base = ut.paddr();
+                let end = base + (1 << size_bit);
+                error!("     [0x{base:0>12x}..0x{end:0>12x})");
+            }
+            panic!(
+                "Encountered a spec object with physical address constraint that cannot be satisfied."
+            );
+        }
+
+        let mut by_size_start: [usize; sel4::WORD_SIZE] = array::from_fn(|_| 0);
+        let mut by_size_end: [usize; sel4::WORD_SIZE] = array::from_fn(|_| 0);
+        {
+            for obj_id in first_obj_without_paddr..self.root_objects().len() {
+                let obj = &self.object(obj_id.into());
+                if let Some(blueprint) = obj.blueprint() {
+                    by_size_end[blueprint.physical_size_bits()] += 1;
+                }
+            }
+            let mut acc = first_obj_without_paddr;
+            for (bits, n) in by_size_end.iter_mut().enumerate().rev() {
+                by_size_start[bits] = acc;
+                acc += *n;
+                *n = acc;
+            }
+        }
+
+        // In order to allocate objects which specify paddrs, we may have to
+        // allocate dummies to manipulate watermarks. We must always retain at
+        // least one reference to an object allocated from an untyped, or else
+        // its watermark will reset. This juggling approach is an easy way to
+        // ensure that we are always holding such a reference.
+        let mut hold_slots = HoldSlots::new(self.cslot_allocator, cslot_to_absolute_cptr)?;
+
+        // Create root objects
+
+        let mut next_obj_with_paddr = 0;
+        for i_ut in uts_by_paddr.iter() {
+            let ut = &uts[*i_ut];
+            let ut_size_bits = ut.size_bits();
+            let ut_size_bytes = 1 << ut_size_bits;
+            let ut_paddr_start = ut.paddr();
+            let ut_paddr_end = ut_paddr_start + ut_size_bytes;
+            let mut cur_paddr = ut_paddr_start;
+            trace!(
+                "Allocating from untyped: {:#x}..{:#x} (size_bits = {}, device = {:?})",
+                ut_paddr_start,
+                ut_paddr_end,
+                ut_size_bits,
+                ut.is_device()
+            );
+            loop {
+                let target = if next_obj_with_paddr < num_objs_with_paddr {
+                    ut_paddr_end.min(
+                        self.object(next_obj_with_paddr.into())
+                            .paddr()
+                            .unwrap()
+                            .to_sel4()
+                            .try_into()
+                            .unwrap(),
+                    )
+                } else {
+                    ut_paddr_end
+                };
+                let target_is_obj_with_paddr = target < ut_paddr_end;
+                while cur_paddr < target {
+                    let max_size_bits = {
+                        let alignment_bits = (cur_paddr - ut_paddr_start).trailing_zeros();
+                        let distance_bits = (target - cur_paddr).checked_ilog2().expect("never 0");
+                        alignment_bits.min(distance_bits).try_into().unwrap()
+                    };
+                    let mut created = false;
+                    if !ut.is_device() {
+                        for size_bits in (0..=max_size_bits).rev() {
+                            let obj_id = &mut by_size_start[size_bits];
+                            // Skip embedded frames
+                            while *obj_id < by_size_end[size_bits] {
+                                if let ArchivedObject::Frame(obj) = self.object((*obj_id).into())
+                                    && obj.init.is_embedded()
+                                {
+                                    *obj_id += 1;
+                                    continue;
+                                }
+                                break;
+                            }
+                            // Create a largest possible object that would fit
+                            if *obj_id < by_size_end[size_bits] {
+                                let named_obj = &self.named_object((*obj_id).into());
+                                let blueprint = named_obj.object.blueprint().unwrap();
+                                assert_eq!(blueprint.physical_size_bits(), size_bits);
+                                trace!(
+                                    "Creating kernel object: paddr=0x{:x}, size_bits={} name={:?}",
+                                    cur_paddr,
+                                    blueprint.physical_size_bits(),
+                                    object_name_or_default(named_obj)
+                                );
+                                self.ut_cap(*i_ut).untyped_retype(
+                                    &blueprint,
+                                    &init_thread_cnode_absolute_cptr(),
+                                    self.orig_cslot((*obj_id).into()).index(),
+                                    1,
+                                )?;
+                                cur_paddr += 1 << size_bits;
+                                *obj_id += 1;
+                                created = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !created {
+                        if target_is_obj_with_paddr {
+                            let hold_slot = hold_slots.get_slot()?;
+                            trace!(
+                                "Creating dummy: paddr=0x{cur_paddr:x}, size_bits={max_size_bits}"
+                            );
+                            self.ut_cap(*i_ut).untyped_retype(
+                                &sel4::ObjectBlueprint::Untyped {
+                                    size_bits: max_size_bits,
+                                },
+                                &init_thread_cnode_absolute_cptr(),
+                                hold_slot.index(),
+                                1,
+                            )?;
+                            hold_slots.report_used();
+                            cur_paddr += 1 << max_size_bits;
+                        } else {
+                            cur_paddr = target;
+                        }
+                    }
+                }
+                if target_is_obj_with_paddr {
+                    let obj_id = next_obj_with_paddr;
+                    let named_obj = &self.named_object(obj_id.into());
+                    let blueprint = named_obj.object.blueprint().unwrap();
+                    trace!(
+                        "Creating device object: paddr=0x{:x}, size_bits={} name={:?}",
+                        cur_paddr,
+                        blueprint.physical_size_bits(),
+                        object_name_or_default(named_obj)
+                    );
+                    self.ut_cap(*i_ut).untyped_retype(
+                        &blueprint,
+                        &init_thread_cnode_absolute_cptr(),
+                        self.orig_cslot(obj_id.into()).index(),
+                        1,
+                    )?;
+                    cur_paddr += 1 << blueprint.physical_size_bits();
+                    next_obj_with_paddr += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // Ensure that we've created every root object
+        let mut oom = false;
+        for bits in 0..sel4::WORD_SIZE {
+            if by_size_start[bits] != by_size_end[bits] {
+                oom = true;
+                let shortfall = by_size_end[bits] - by_size_start[bits];
+                error!(
+                    "Error: ran out of untypeds for allocating objects of size bit {bits}, still need to create {shortfall} more objects."
+                );
+            }
+        }
+        if oom {
+            panic!("Out of untypeds.");
+        }
+
+        // Create child objects
+
+        for cover in self.spec.untyped_covers.iter() {
+            let parent_obj_id = cover.parent;
+            let parent = self.named_object(parent_obj_id);
+            let parent_cptr = self.orig_cap::<cap_type::Untyped>(parent_obj_id);
+            for child_obj_id in
+                ArchivedObjectId::into_usize_range(&archived_range_to_range(&cover.children))
+            {
+                let child = &self.spec.objects[child_obj_id];
+                trace!(
+                    "Creating kernel object: name={:?} from {:?}",
+                    object_name_or_default(child),
+                    object_name_or_default(parent),
+                );
+                parent_cptr.untyped_retype(
+                    &child.object.blueprint().unwrap(),
+                    &init_thread_cnode_absolute_cptr(),
+                    self.orig_cslot(child_obj_id.into()).index(),
+                    1,
+                )?;
+            }
+        }
+
+        // Actually make the ASID pools. With the help of parse-capDL, we do
+        // this in order of obj.asid_high, for verification reasons (see
+        // upstream C CapDL loader).
+        {
+            for obj_id in self.spec.asid_slots.iter() {
+                let orig = self.orig_cslot(*obj_id);
+                let orig_absolute = cslot_to_absolute_cptr(orig);
+                let copy = self.copy(orig.cap().downcast())?;
+                orig_absolute.delete()?;
+                init_thread::slot::ASID_CONTROL
+                    .cap()
+                    .asid_control_make_pool(copy, &orig_absolute)?;
+            }
+        }
+
+        // Create IrqHandler caps
+        {
+            for ArchivedIrqEntry { irq, handler } in self.spec.irqs.iter() {
+                let slot = self.orig_cslot(*handler);
+                sel4::sel4_cfg_wrap_match! {
+                    match self.object(*handler) {
+                        ArchivedObject::Irq(_) => {
+                            init_thread::slot::IRQ_CONTROL.cap()
+                                .irq_control_get(irq.to_sel4(), &cslot_to_absolute_cptr(slot))?;
+                        }
+                        #[sel4_cfg(ARCH_ARM)]
+                        ArchivedObject::ArmIrq(obj) => {
+                            sel4::sel4_cfg_if! {
+                                if #[sel4_cfg(MAX_NUM_NODES = "1")] {
+                                    init_thread::slot::IRQ_CONTROL.cap().irq_control_get_trigger(
+                                        irq.to_sel4(),
+                                        obj.extra.trigger != 0,
+                                        &cslot_to_absolute_cptr(slot),
+                                    )?;
+                                } else {
+                                    init_thread::slot::IRQ_CONTROL.cap().irq_control_get_trigger_core(
+                                        irq.to_sel4(),
+                                        obj.extra.trigger != 0,
+                                        obj.extra.target.to_sel4(),
+                                        &cslot_to_absolute_cptr(slot),
+                                    )?;
+                                }
+                            }
+                        }
+                        #[sel4_cfg(ARCH_X86_64)]
+                        ArchivedObject::IrqMsi(obj) => {
+                            init_thread::slot::IRQ_CONTROL.cap().irq_control_get_msi(
+                                obj.extra.pci_bus.to_sel4(),
+                                obj.extra.pci_dev.to_sel4(),
+                                obj.extra.pci_func.to_sel4(),
+                                obj.extra.handle.to_sel4(),
+                                irq.to_sel4(),
+                                &cslot_to_absolute_cptr(slot),
+                            )?;
+                        }
+                        #[sel4_cfg(ARCH_X86_64)]
+                        ArchivedObject::IrqIOApic(obj) => {
+                            init_thread::slot::IRQ_CONTROL.cap().irq_control_get_ioapic(
+                                obj.extra.ioapic.to_sel4(),
+                                obj.extra.pin.to_sel4(),
+                                obj.extra.level.to_sel4(),
+                                obj.extra.polarity.to_sel4(),
+                                irq.to_sel4(),
+                                &cslot_to_absolute_cptr(slot),
+                            )?;
+                        }
+                        #[sel4_cfg(any(ARCH_RISCV64, ARCH_RISCV32))]
+                        ArchivedObject::RiscvIrq(obj) => {
+                            init_thread::slot::IRQ_CONTROL.cap().irq_control_get_trigger(
+                                irq.to_sel4(),
+                                obj.extra.trigger != 0,
+                                &cslot_to_absolute_cptr(slot),
+                            )?;
+                        }
+                        _ => {
+                            panic!();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Create IOPort caps
+        sel4::sel4_cfg_if! {
+            if #[sel4_cfg(ARCH_X86_64)] {
+                {
+                    let ioports = self
+                        .filter_objects::<object::ArchivedIOPorts>()
+                        .map(|(obj_id, obj)| (obj_id, obj.start_port, obj.end_port));
+
+                    for (obj_id, start_port, end_port) in ioports {
+                        let slot = self.orig_cslot(obj_id);
+                        init_thread::slot::IO_PORT_CONTROL
+                            .cap()
+                            .ioport_control_issue(start_port.to_sel4(), end_port.to_sel4(), &cslot_to_absolute_cptr(slot))?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn init_irqs(&mut self) -> Result<()> {
+        debug!("Initializing IRQs");
+
+        let irq_notifications = self
+            .filter_objects::<object::ArchivedIrq>()
+            .map(|(obj_id, obj)| (obj_id, obj.notification()));
+        let arm_irq_notifications = self
+            .filter_objects::<object::ArchivedArmIrq>()
+            .map(|(obj_id, obj)| (obj_id, obj.notification()));
+        let msi_irq_notifications = self
+            .filter_objects::<object::ArchivedIrqMsi>()
+            .map(|(obj_id, obj)| (obj_id, obj.notification()));
+        let ioapic_irq_notifications = self
+            .filter_objects::<object::ArchivedIrqIOApic>()
+            .map(|(obj_id, obj)| (obj_id, obj.notification()));
+        let riscv_irq_notifications = self
+            .filter_objects::<object::ArchivedRiscvIrq>()
+            .map(|(obj_id, obj)| (obj_id, obj.notification()));
+
+        let all_irq_notifications = irq_notifications
+            .chain(arm_irq_notifications)
+            .chain(msi_irq_notifications)
+            .chain(ioapic_irq_notifications)
+            .chain(riscv_irq_notifications);
+        for (obj_id, notification) in all_irq_notifications {
+            let irq_handler = self.orig_cap::<cap_type::IrqHandler>(obj_id);
+            if let Some(logical_nfn_cap) = notification {
+                let nfn = match logical_nfn_cap.badge.to_sel4() {
+                    0 => self.orig_cap(logical_nfn_cap.object),
+                    badge => {
+                        let orig_cptr = self.orig_absolute_cptr(logical_nfn_cap.object);
+                        let slot = self.cslot_alloc_or_panic();
+                        let cptr = cslot_to_absolute_cptr(slot);
+                        // all() here inherits from rights on logical_nfn_cap
+                        cptr.mint(&orig_cptr, CapRights::all(), badge)?;
+                        slot.cap().downcast()
+                    }
+                };
+                irq_handler.irq_handler_set_notification(nfn)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn init_asids(&self) -> Result<()> {
+        debug!("Initializing ASIDs");
+        for (obj_id, _obj) in
+            self.filter_objects_with::<object::ArchivedPageTable>(|obj| obj.is_root)
+        {
+            let pgd = self.orig_cap::<cap_type::VSpace>(obj_id);
+            init_thread::slot::ASID_POOL.cap().asid_pool_assign(pgd)?;
+        }
+        Ok(())
+    }
+
+    fn init_frames(&mut self) -> Result<()> {
+        debug!("Initializing Frames");
+        for (obj_id, obj) in self.filter_objects::<object::ArchivedFrame<_>>() {
+            // TODO make more platform-agnostic
+            if let ArchivedFrameInit::Fill(fill) = &obj.init
+                && !fill.entries.is_empty()
+            {
+                let frame_object_type =
+                    sel4::FrameObjectType::from_bits(obj.size_bits.into()).unwrap();
+                let frame = self.orig_cap::<cap_type::UnspecifiedPage>(obj_id);
+                self.fill_frame(frame, frame_object_type, &fill.entries)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn fill_frame(
+        &self,
+        frame: sel4::Cap<cap_type::UnspecifiedPage>,
+        frame_object_type: sel4::FrameObjectType,
+        fill: &[ArchivedFillEntry<Content>],
+    ) -> Result<()> {
+        frame.frame_map(
+            init_thread::slot::VSPACE.cap(),
+            self.copy_addrs.select(frame_object_type),
+            CapRights::read_write(),
+            vm_attributes_from_whether_cached_and_exec(true, false, false),
+        )?;
+        for entry in fill.iter() {
+            let range = try_into_usize_range(&archived_range_to_range(&entry.range)).unwrap();
+            let offset = range.start;
+            let length = range.len();
+            assert!(range.end <= frame_object_type.bytes());
+            let dst_frame = self.copy_addrs.select(frame_object_type) as *mut u8;
+            let dst = unsafe { slice::from_raw_parts_mut(dst_frame.add(offset), length) };
+            match &entry.content {
+                ArchivedFillEntryContent::Data(content_data) => {
+                    content_data.copy_out(dst);
+                }
+                ArchivedFillEntryContent::BootInfo(content_bootinfo) => {
+                    for extra in self.bootinfo.extra() {
+                        if extra.id == content_bootinfo.id.to_sel4() {
+                            let n =
+                                dst.len()
+                                    .min(extra.content_with_header().len().saturating_sub(
+                                        content_bootinfo.offset.to_native().try_into().unwrap(),
+                                    ));
+                            if n > 0 {
+                                let offset =
+                                    content_bootinfo.offset.to_native().try_into().unwrap();
+                                dst[..n].copy_from_slice(
+                                    &extra.content_with_header()[offset..(offset + n)],
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        frame.frame_unmap()?;
+        Ok(())
+    }
+
+    fn init_vspaces(&mut self) -> Result<()> {
+        debug!("Initializing VSpaces");
+        for (obj_id, obj) in
+            self.filter_objects_with::<object::ArchivedPageTable>(|obj| obj.is_root)
+        {
+            let root_level = obj.level.unwrap_or(0).into();
+            if obj.x86_ept {
+                sel4::sel4_cfg_if! {
+                    if #[sel4_cfg(all(ARCH_X86_64, VTX))] {
+                        let vspace = self.orig_cap::<cap_type::EPTPML4>(obj_id);
+                        self.init_vspace_x86_ept(vspace, root_level, 0, obj)?;
+                    } else {
+                        panic!("encountered an EPT root without VTX configuration!");
+                    }
+                }
+            } else {
+                let vspace = self.orig_cap::<cap_type::VSpace>(obj_id);
+                self.init_vspace(vspace, root_level, 0, obj)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[sel4::sel4_cfg(all(ARCH_X86_64, VTX))]
+    fn init_vspace_x86_ept(
+        &mut self,
+        eptpml4: sel4::cap::EPTPML4,
+        level: usize,
+        vaddr: usize,
+        obj: &object::ArchivedPageTable,
+    ) -> Result<()> {
+        for (i, entry) in obj.entries() {
+            let vaddr = vaddr + (usize::from(i) << sel4::vspace_levels::ept_step_bits(level));
+            match entry {
+                PageTableEntry::Frame(cap) => {
+                    let frame = self.orig_cap::<cap_type::UnspecifiedPage>(cap.object);
+                    let rights = cap.rights.to_sel4();
+                    self.copy(frame)?.ept_frame_map(
+                        eptpml4,
+                        vaddr,
+                        rights,
+                        cap.vm_attributes(true),
+                    )?;
+                }
+                PageTableEntry::PageTable(cap) => {
+                    self.orig_cap::<cap_type::UnspecifiedIntermediateTranslationTable>(cap.object)
+                        .ept_intermediate_translation_table_map(
+                            sel4::TranslationTableObjectType::from_level_ept(level + 1).unwrap(),
+                            eptpml4,
+                            vaddr,
+                            cap.vm_attributes(true),
+                        )?;
+                    let obj = self.object_as::<object::ArchivedPageTable>(cap.object);
+                    self.init_vspace_x86_ept(eptpml4, level + 1, vaddr, obj)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn init_vspace(
+        &mut self,
+        vspace: sel4::cap::VSpace,
+        level: usize,
+        vaddr: usize,
+        obj: &object::ArchivedPageTable,
+    ) -> Result<()> {
+        for (i, entry) in obj.entries() {
+            let vaddr = vaddr + (usize::from(i) << sel4::vspace_levels::step_bits(level));
+            match entry {
+                PageTableEntry::Frame(cap) => {
+                    let frame = self.orig_cap::<cap_type::UnspecifiedPage>(cap.object);
+                    let rights = cap.rights.to_sel4();
+                    self.copy(frame)?
+                        .frame_map(vspace, vaddr, rights, cap.vm_attributes(false))?;
+                }
+                PageTableEntry::PageTable(cap) => {
+                    self.orig_cap::<cap_type::UnspecifiedIntermediateTranslationTable>(cap.object)
+                        .generic_intermediate_translation_table_map(
+                            sel4::TranslationTableObjectType::from_level(level + 1).unwrap(),
+                            vspace,
+                            vaddr,
+                            cap.vm_attributes(false),
+                        )?;
+                    let obj = self.object_as::<object::ArchivedPageTable>(cap.object);
+                    self.init_vspace(vspace, level + 1, vaddr, obj)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[sel4::sel4_cfg(all(ARCH_X86_64, IOMMU))]
+    fn init_iospaces(&mut self) -> Result<()> {
+        debug!("Initialising IOSpaces");
+        // Early exit if no IOSpace Objects exist
+        if !self
+            .filter_objects::<object::ArchivedIOSpace>()
+            .any(|_| true)
+        {
+            return Ok(());
+        }
+
+        let num_iopt_levels = self.bootinfo.inner().numIOPTLevels as usize;
+        if num_iopt_levels < x86_io_address_space::CAPDL_NUM_IOPT_LEVELS {
+            panic!(
+                "Error: we have assumed at least a 39 bit (3-level) address space would be supported."
+            )
+        }
+        if num_iopt_levels > x86_io_address_space::MAX_RUNTIME_NUM_LEVELS {
+            panic!("Error: seL4 reported an unsupported x86 IOPT depth.")
+        }
+
+        // We assume that the IO Address Space was created to support 39 bit addresses (seL4 calls this 3 level)
+        // Prefix depth is the number extra levels that seL4 requires, based off its runtime decision
+        let prefix_depth = num_iopt_levels - x86_io_address_space::CAPDL_NUM_IOPT_LEVELS;
+
+        for (obj_id, obj) in self.filter_objects::<object::ArchivedIOSpace>() {
+            let iospace = self.mint_iospace_cap(obj_id, obj)?;
+
+            let root_iopt_obj_id = self.init_iospace_prefix(iospace, obj, prefix_depth)?;
+
+            let root_iopt = self.object_as::<object::ArchivedIOPageTable>(root_iopt_obj_id);
+            self.init_iospace(iospace, 0, root_iopt)?;
+        }
+
+        Ok(())
+    }
+
+    #[sel4::sel4_cfg(all(ARCH_X86_64, IOMMU))]
+    fn mint_iospace_cap(
+        &self,
+        obj_id: ArchivedObjectId,
+        obj: &object::ArchivedIOSpace,
+    ) -> Result<sel4::cap::IOSpace> {
+        let dst_slot = self.orig_cslot(obj_id);
+        let dst = cslot_to_absolute_cptr(dst_slot);
+        let src = cslot_to_absolute_cptr(init_thread::slot::IO_SPACE.upcast());
+
+        // Two inherent limitations are present if using CapDL statically:
+        // The first is it assumes that a user knows the PCI BDF information ahead of time, not true
+        // since this is runtime information. The second is the spec assumes that all domain ids are
+        // valid, which is also not true since the kernel may reserve an unknown number of domain
+        // ids during boot.
+        let (pci_bus, pci_dev, pci_fn) = obj.pci_device.to_sel4();
+
+        let cap_data =
+            sel4::io_space::IOSpaceCapData::new(obj.domain_id.to_sel4(), pci_bus, pci_dev, pci_fn);
+
+        dst.mint(&src, CapRights::none(), cap_data.into())
+            .map(|_| Ok(self.orig_cap::<cap_type::IOSpace>(obj_id)))
+            .unwrap_or_else(|err| panic!("Error: {err} when minting an x86 IOSpace capability."))
+    }
+
+    #[sel4::sel4_cfg(all(ARCH_X86_64, IOMMU))]
+    fn init_iospace_prefix(
+        &self,
+        iospace: sel4::cap::IOSpace,
+        obj: &object::ArchivedIOSpace,
+        prefix_depth: usize,
+    ) -> Result<ArchivedObjectId> {
+        for slot in (0..=prefix_depth).rev() {
+            let iopt = Self::get_iopt_obj_id(obj, slot);
+            self.orig_cap::<cap_type::IOPageTable>(iopt)
+                .io_page_table_map(iospace, 0)?;
+        }
+
+        // Return obj id of the root page table
+        Ok(Self::get_iopt_obj_id(obj, 0))
+    }
+
+    #[sel4::sel4_cfg(all(ARCH_X86_64, IOMMU))]
+    fn init_iospace(
+        &mut self,
+        iospace: sel4::cap::IOSpace,
+        ioaddr: usize,
+        obj: &object::ArchivedIOPageTable,
+    ) -> Result<()> {
+        let iopt_level = obj.level.to_sel4() as usize;
+        if iopt_level >= x86_io_address_space::CAPDL_NUM_IOPT_LEVELS {
+            panic!(
+                "Error: the capdl spec contains an extra level of page tables, violating our assumed {} level format!",
+                x86_io_address_space::CAPDL_NUM_IOPT_LEVELS
+            );
+        }
+        for (i, entry) in obj.entries() {
+            let ioaddr = ioaddr
+                + (usize::from(i)
+                    << sel4::io_space::levels::step_bits(
+                        x86_io_address_space::CAPDL_NUM_IOPT_LEVELS,
+                        iopt_level,
+                    ));
+
+            match entry {
+                IOPageTableEntry::IOPageTable(cap) => {
+                    self.orig_cap::<cap_type::IOPageTable>(cap.object)
+                        .io_page_table_map(iospace, ioaddr.try_into().unwrap())?;
+
+                    let iopt_object = self.object_as::<object::ArchivedIOPageTable>(cap.object);
+                    self.init_iospace(iospace, ioaddr, iopt_object)?;
+                }
+                IOPageTableEntry::Frame(cap) => {
+                    let frame = self.orig_cap::<cap_type::UnspecifiedPage>(cap.object);
+                    let rights = cap.rights.to_sel4();
+
+                    self.copy(frame)?
+                        .io_frame_map(iospace, rights, ioaddr.try_into().unwrap())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[sel4::sel4_cfg(all(ARCH_X86_64, IOMMU))]
+    fn get_iopt_obj_id(obj: &object::ArchivedIOSpace, slot: usize) -> ArchivedObjectId {
+        obj.slots
+            .iter()
+            .find(|entry| usize::from(entry.slot) == slot)
+            .map(|entry| match &entry.cap {
+                ArchivedCap::IOPageTable(cap) => cap.object,
+                _ => panic!("unexpected non-IOPageTable cap in IOSpace slot"),
+            })
+            .unwrap_or_else(|| panic!("missing IOPageTable in IOSpace slot {slot}"))
+    }
+
+    #[sel4::sel4_cfg(KERNEL_MCS)]
+    fn init_sched_contexts(&self) -> Result<()> {
+        debug!("Initializing scheduling contexts");
+        for (obj_id, _obj) in self.filter_objects::<object::ArchivedSchedContext>() {
+            self.init_sched_context(obj_id, 0)?;
+        }
+        Ok(())
+    }
+
+    #[sel4::sel4_cfg(KERNEL_MCS)]
+    fn init_sched_context(&self, obj_id: ArchivedObjectId, affinity: usize) -> Result<()> {
+        let obj = self.object_as::<object::ArchivedSchedContext>(obj_id);
+        let sched_context = self.orig_cap::<cap_type::SchedContext>(obj_id);
+        self.bootinfo
+            .sched_control()
+            .index(affinity)
+            .cap()
+            .sched_control_configure_flags(
+                sched_context,
+                obj.extra.budget.to_native(),
+                obj.extra.period.to_native(),
+                0,
+                obj.extra.badge.to_sel4(),
+                0,
+            )?;
+        Ok(())
+    }
+
+    fn init_tcbs(&mut self) -> Result<()> {
+        debug!("Initializing TCBs");
+
+        for (obj_id, obj) in self.filter_objects::<object::ArchivedTcb>() {
+            let tcb = self.orig_cap::<cap_type::Tcb>(obj_id);
+
+            if let Some(bound_notification) = obj.bound_notification() {
+                let bound_notification =
+                    self.orig_cap::<cap_type::Notification>(bound_notification.object);
+                tcb.tcb_bind_notification(bound_notification)?;
+            }
+
+            sel4::sel4_cfg_if! {
+                if #[sel4_cfg(any(all(ARCH_ARM, ARM_HYPERVISOR_SUPPORT), all(ARCH_X86_64, VTX)))] {
+                    if let Some(vcpu) = obj.vcpu() {
+                        let vcpu = self.orig_cap::<cap_type::VCpu>(vcpu.object);
+                        vcpu.vcpu_set_tcb(tcb)?;
+                    }
+                }
+            }
+            sel4::sel4_cfg_if! {
+                if #[sel4_cfg(all(ARCH_X86_64, VTX))] {
+                    if let Some(_vcpu) = obj.vcpu() {
+                        let eptpml4 = self.orig_cap::<cap_type::EPTPML4>(obj.x86_eptpml4().unwrap().object);
+                        tcb.tcb_set_ept_root(eptpml4)?;
+                    }
+                }
+            }
+
+            {
+                let cspace = self.orig_cap(obj.cspace().object);
+                let cspace_root_data = sel4::CNodeCapData::new(
+                    obj.cspace().guard.to_sel4(),
+                    obj.cspace().guard_size.into(),
+                );
+                let vspace = self.orig_cap(obj.vspace().object);
+                let ipc_buffer_addr = obj.extra.ipc_buffer_addr.to_sel4();
+                let ipc_buffer_frame = self.orig_cap(obj.ipc_buffer().object);
+
+                let authority = init_thread::slot::TCB.cap();
+                let max_prio = obj.extra.max_prio.into();
+                let prio = obj.extra.prio.into();
+
+                sel4::sel4_cfg_if! {
+                    if #[sel4_cfg(not(NUM_DOMAINS = "1"))] {
+                        if let ArchivedOption::Some(domain_id) = obj.extra.domain {
+                            init_thread::slot::DOMAIN_SET.cap().domain_set_set(domain_id, tcb)
+                                .unwrap_or_else(|err| panic!("Error setting domain of thread to {}: {:?}", domain_id, err));
+                        }
+                    }
+                }
+
+                let fpu_disabled = obj.extra.fpu_disabled;
+
+                #[allow(unused_variables)]
+                let affinity = obj.extra.affinity.to_sel4();
+
+                sel4::sel4_cfg_if! {
+                    if #[sel4_cfg(KERNEL_MCS)] {
+                        if let Some(sched_context_cap) = obj.sc() {
+                            self.init_sched_context(sched_context_cap.object, affinity.try_into().unwrap())?;
+                        }
+
+                        tcb.tcb_configure(
+                            cspace,
+                            cspace_root_data,
+                            vspace,
+                            ipc_buffer_addr,
+                            ipc_buffer_frame,
+                        )?;
+
+                        let sc = match obj.sc() {
+                            None => init_thread::slot::NULL.cap().cast::<cap_type::SchedContext>(),
+                            Some(cap) => self.orig_cap::<cap_type::SchedContext>(cap.object),
+                        };
+
+                        let fault_ep = match obj.mcs_fault_ep() {
+                            None => init_thread::slot::NULL.cap().cast::<cap_type::Endpoint>(),
+                            Some(cap) => {
+                                let orig = self.orig_cap::<cap_type::Endpoint>(cap.object);
+                                let badge = cap.badge.to_sel4();
+                                let rights = cap.rights.to_sel4();
+                                if badge == 0 && rights == CapRights::all() {
+                                    orig
+                                } else {
+                                    let src = init_thread::slot::CNODE.cap().absolute_cptr(orig);
+                                    let new = self.cslot_alloc_or_panic().cap();
+                                    let dst = init_thread::slot::CNODE.cap().absolute_cptr(new);
+                                    dst.mint(&src, rights, badge)?;
+                                    new.cast()
+                                }
+                            },
+                        };
+
+                        let temp_fault_ep = match obj.temp_fault_ep() {
+                            None => init_thread::slot::NULL.cap().cast::<cap_type::Endpoint>(),
+                            Some(cap) => {
+                                assert_eq!(cap.badge.to_sel4(), 0); // HACK
+                                self.orig_cap::<cap_type::Endpoint>(cap.object)
+                            },
+                        };
+
+                        tcb.tcb_set_sched_params(
+                            authority,
+                            max_prio,
+                            prio,
+                            sc,
+                            fault_ep,
+                        )?;
+
+                        let tcb_flags = sel4::TcbFlagsBuilder::new()
+                            .fpu_disabled(fpu_disabled)
+                            .build();
+                        tcb.tcb_set_flags(
+                            0,
+                            tcb_flags,
+                        )?;
+
+                        tcb.tcb_set_timeout_endpoint(temp_fault_ep)?;
+                    } else {
+                        let fault_ep = sel4::CPtr::from_bits(obj.extra.master_fault_ep.as_ref().unwrap().to_sel4());
+
+                        tcb.tcb_configure(
+                            fault_ep,
+                            cspace,
+                            cspace_root_data,
+                            vspace,
+                            ipc_buffer_addr,
+                            ipc_buffer_frame,
+                        )?;
+
+                        tcb.tcb_set_sched_params(
+                            authority,
+                            max_prio,
+                            prio,
+                        )?;
+
+                        let tcb_flags = sel4::TcbFlagsBuilder::new()
+                            .fpu_disabled(fpu_disabled)
+                            .build();
+                        tcb.tcb_set_flags(
+                            0,
+                            tcb_flags,
+                        )?;
+
+                        sel4::sel4_cfg_if! {
+                            if #[sel4_cfg(not(MAX_NUM_NODES = "1"))] {
+                                tcb.tcb_set_affinity(affinity)?;
+                            }
+                        }
+                    }
+                }
+            }
+
+            {
+                let mut regs = sel4::UserContext::default();
+                *regs.pc_mut() = obj.extra.ip.to_sel4();
+                *regs.sp_mut() = obj.extra.sp.to_sel4();
+                for (i, value) in obj.extra.gprs.iter().enumerate() {
+                    *regs.c_param_mut(i) = value.to_sel4();
+                }
+                tcb.tcb_write_all_registers(false, &mut regs)?;
+            }
+
+            sel4::sel4_cfg_if! {
+                if #[sel4_cfg(DEBUG_BUILD)] {
+                    if let Some(name) = object_name(self.named_object(obj_id)) {
+                        tcb.debug_name(name.as_bytes());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn init_cspaces(&self) -> Result<()> {
+        debug!("Initializing CSpaces");
+
+        for (obj_id, obj) in self.filter_objects::<object::ArchivedCNode>() {
+            let cnode = self.orig_cap::<cap_type::CNode>(obj_id);
+            for entry in obj.slots() {
+                let badge = entry.cap.badge();
+                let rights = entry.cap.rights().unwrap_or(CapRights::none());
+                let src = init_thread::slot::CNODE
+                    .cap()
+                    .absolute_cptr(self.orig_cap::<cap_type::Unspecified>(entry.cap.obj()));
+                let dst = cnode.absolute_cptr_from_bits_with_depth(
+                    usize::from(entry.slot).try_into().unwrap(),
+                    obj.size_bits.into(),
+                );
+                match badge {
+                    None => dst.copy(&src, rights),
+                    Some(badge) => dst.mint(&src, rights, badge),
+                }?;
+            }
+        }
+        Ok(())
+    }
+
+    #[sel4::sel4_cfg(KERNEL_MCS)]
+    fn us_to_ticks(&self, duration_us: u64) -> Result<sel4::Time> {
+        sel4::sel4_cfg_if! {
+            if #[sel4_cfg(any(ARCH_ARM, ARCH_RISCV))] {
+                const US_IN_SECOND: u64 = 1000 * 1000;
+
+                // On 32-bit platforms, Word is 32-bits, but on 64-bit platforms
+                // it is also a u64 and deemed "unnecessary".
+                #[allow(clippy::useless_conversion)]
+                let f: u64 = sel4::sel4_cfg_word!(TIMER_FREQUENCY).into();
+
+                // TODO: Formal correctness of this implementation
+                //       https://github.com/seL4/capdl/issues/98
+                // See also the corresponding implementation in capDL.
+
+                if (duration_us / US_IN_SECOND) >= (1u64 << 56) / f {
+                    panic!(
+                        "Input us {duration_us} would overflow 64-bits of \
+                         exceed 56-bit output tick maximum @ freq {f} Hz"
+                    );
+                }
+
+                let s: u64 = duration_us / US_IN_SECOND;
+                let us: u64 = duration_us % US_IN_SECOND;
+
+                // The '+ US_IN_S / 2' implements round-to-nearest behaviour
+                let ticks = s * f + ((us * f + US_IN_SECOND / 2) / US_IN_SECOND);
+
+                Ok(ticks)
+            } else if #[sel4_cfg(any(ARCH_X86, ARCH_X86_64))] {
+                let tsc_freq_bi = self
+                    .bootinfo
+                    .extra()
+                    .find(|bi| bi.id == sel4::BootInfoExtraId::X86TscFreq)
+                    .expect("Unable to determine timer frequency as \
+                             no TSC frequency provided in bootinfo");
+
+                // For x86 platforms, the timer frequency is provided in MHz by the bootinfo
+                let tsc_freq_mhz = u32::from_le_bytes(tsc_freq_bi.content().try_into().unwrap());
+
+                let ticks = duration_us
+                    .checked_mul(tsc_freq_mhz.into())
+                    .unwrap_or_else(|| panic!(
+                            "Output would overflow when computing ticks for duration \
+                             {duration_us} us @ freq {tsc_freq_mhz} MHz"));
+
+                Ok(ticks)
+            } else {
+                compile_error!("unsupported architecture");
+            }
+        }
+    }
+
+    #[sel4::sel4_cfg(not(KERNEL_MCS))]
+    fn us_to_ticks(&self, duration_us: u64) -> Result<sel4::Time> {
+        // On non-MCS, 1 tick is equivalent to 1 TIMER_TICK_MS, or an integer multiple
+        // of 1 millisecond.
+
+        // On 32-bit platforms, Word is 32-bits, but on 64-bit platforms it is
+        // also a u64 and deemed "unnecessary".
+        #[allow(clippy::unnecessary_cast)]
+        const TIMER_TICK_MS: u64 = sel4::sel4_cfg_word!(TIMER_TICK_MS) as u64;
+        let period_us: u64 = 1000 * TIMER_TICK_MS;
+        let ticks: u64 = duration_us / period_us;
+        let remainder: u64 = duration_us % period_us;
+
+        if remainder != 0 {
+            panic!(
+                "domain schedule duration {duration_us} is not an \
+                 integer multiple of TIMER_TICK_MS ({TIMER_TICK_MS} ms)"
+            );
+        }
+
+        Ok(ticks)
+    }
+
+    fn init_domain_schedule(&self) -> Result<()> {
+        if let ArchivedOption::Some(domain_schedule) = &self.spec.domain_schedule {
+            debug!("Initializing domain schedule");
+
+            let mut sched_index = self
+                .spec
+                .domain_idx_shift
+                .as_ref()
+                .map(ArchivedWord::to_sel4)
+                .unwrap_or(0);
+
+            // sched_index is used as a shift, and not an invariant for the loop.
+            #[allow(clippy::explicit_counter_loop)]
+            for ArchivedDomainSchedEntry { domain, duration } in domain_schedule.iter() {
+                let duration_ticks: u64 = match *duration {
+                    ArchivedDomainSchedDuration::Ticks(ticks) => ticks.get(),
+                    ArchivedDomainSchedDuration::Us(us) => self.us_to_ticks(us.get())?,
+                    ArchivedDomainSchedDuration::EndMarker => 0,
+                };
+
+                init_thread::slot::DOMAIN_SET
+                    .cap()
+                    .domain_set_schedule_configure(sched_index, *domain, duration_ticks)?;
+
+                sched_index += 1;
+            }
+        }
+        Ok(())
+    }
+
+    fn start_domain_schedule(&self) -> Result<()> {
+        if self.spec.domain_schedule.is_none() {
+            return Ok(());
+        }
+
+        // Only call set start if we have been given a start index
+        let ArchivedOption::Some(start) = self.spec.domain_set_start else {
+            return Ok(());
+        };
+
+        debug!("Starting domain schedule");
+
+        // The start index also needs to be shifted. This makes the shift
+        // an offset into the schedule rather than an absolute index.
+        let shift = self
+            .spec
+            .domain_idx_shift
+            .as_ref()
+            .map(ArchivedWord::to_sel4)
+            .unwrap_or(0);
+
+        init_thread::slot::DOMAIN_SET
+            .cap()
+            .domain_set_schedule_set_start(start.to_sel4() + shift)?;
+
+        Ok(())
+    }
+
+    fn start_threads(&self) -> Result<()> {
+        info!("Starting threads");
+        for (obj_id, obj) in self.filter_objects::<object::ArchivedTcb>() {
+            let tcb = self.orig_cap::<cap_type::Tcb>(obj_id);
+            if obj.extra.resume {
+                tcb.tcb_resume()?;
+            }
+        }
+        Ok(())
+    }
+
+    //
+
+    fn named_object(&self, obj_id: ArchivedObjectId) -> &'a ArchivedNamedObject<FrameInit> {
+        &self.spec.objects[usize::from(obj_id)]
+    }
+
+    fn object(&self, obj_id: ArchivedObjectId) -> &'a ArchivedObject<FrameInit> {
+        &self.named_object(obj_id).object
+    }
+
+    fn object_as<O: IsArchivedObject<FrameInit> + 'a>(&self, obj_id: ArchivedObjectId) -> &'a O {
+        self.object(obj_id).as_().unwrap()
+    }
+
+    fn root_objects(&self) -> &[ArchivedNamedObject<FrameInit>] {
+        &self.spec.objects
+            [ArchivedObjectId::into_usize_range(&archived_range_to_range(&self.spec.root_objects))]
+    }
+
+    fn named_objects(&self) -> impl Iterator<Item = &'a ArchivedNamedObject<FrameInit>> + 'a {
+        self.spec.objects.iter()
+    }
+
+    fn objects(&self) -> impl Iterator<Item = &'a ArchivedObject<FrameInit>> + 'a {
+        self.named_objects()
+            .map(|named_object| &named_object.object)
+    }
+
+    fn filter_objects<O: IsArchivedObject<FrameInit> + 'a>(
+        &self,
+    ) -> impl Iterator<Item = (ArchivedObjectId, &'a O)> + 'a {
+        self.objects()
+            .enumerate()
+            .filter_map(|(obj_id, obj)| Some((obj_id.into(), obj.as_()?)))
+    }
+
+    fn filter_objects_with<O: IsArchivedObject<FrameInit> + 'a>(
+        &self,
+        f: impl Fn(&'a O) -> bool + 'a,
+    ) -> impl Iterator<Item = (ArchivedObjectId, &'a O)> + 'a {
+        self.filter_objects().filter(move |(_, obj)| (f)(obj))
+    }
+
+    //
+
+    fn copy<U: sel4::CapType>(&mut self, cap: sel4::Cap<U>) -> Result<sel4::Cap<U>> {
+        let slot = self.cslot_alloc_or_panic();
+        let src = init_thread::slot::CNODE.cap().absolute_cptr(cap);
+        cslot_to_absolute_cptr(slot).copy(&src, CapRights::all())?;
+        Ok(slot.cap().downcast())
+    }
+
+    //
+
+    fn cslot_alloc_or_panic(&mut self) -> Slot {
+        self.cslot_allocator.alloc().unwrap()
+    }
+
+    fn orig_cslot(&self, obj_id: ArchivedObjectId) -> Slot {
+        match self.object(obj_id) {
+            ArchivedObject::ArmSmc => {
+                sel4::sel4_cfg_if! {
+                    if #[sel4_cfg(all(ARCH_AARCH64, ALLOW_SMC_CALLS))] {
+                        init_thread::slot::SMC.upcast()
+                    } else {
+                        panic!()
+                    }
+                }
+            }
+            ArchivedObject::DomainSet => init_thread::slot::DOMAIN_SET.upcast(),
+            ArchivedObject::Frame(object::ArchivedFrame {
+                init: ArchivedFrameInit::Embedded(embedded),
+                ..
+            }) => {
+                let frame_addr = self.embedded_frames_base_addr
+                    + usize::try_from(embedded.index).unwrap()
+                        * cap_type::Granule::FRAME_OBJECT_TYPE.bytes();
+                get_user_image_frame_slot(self.bootinfo, &self.user_image_bounds, frame_addr)
+                    .upcast()
+            }
+            _ => {
+                let cached_orig_cap_slots = self.spec.cached_orig_cap_slots.as_ref().unwrap();
+                Slot::from_index(
+                    self.orig_cslots.start.index()
+                        + usize::try_from(
+                            cached_orig_cap_slots.offsets_by_object[usize::from(obj_id)].unwrap(),
+                        )
+                        .unwrap(),
+                )
+            }
+        }
+    }
+
+    fn orig_cap<U: sel4::CapType>(&self, obj_id: ArchivedObjectId) -> sel4::Cap<U> {
+        self.orig_cslot(obj_id).cap().downcast()
+    }
+
+    fn orig_absolute_cptr(&self, obj_id: ArchivedObjectId) -> sel4::AbsoluteCPtr {
+        cslot_to_absolute_cptr(self.orig_cslot(obj_id))
+    }
+
+    fn ut_cap(&self, ut_index: usize) -> sel4::cap::Untyped {
+        self.bootinfo.untyped().index(ut_index).cap()
+    }
+}
+
+fn cslot_to_absolute_cptr(slot: Slot) -> sel4::AbsoluteCPtr {
+    init_thread::slot::CNODE.cap().absolute_cptr(slot.cptr())
+}
+
+fn init_thread_cnode_absolute_cptr() -> sel4::AbsoluteCPtr {
+    init_thread::slot::CNODE.cap().absolute_cptr_for_self()
+}
+
+fn object_name(named_obj: &ArchivedNamedObject<FrameInit>) -> Option<&str> {
+    named_obj.name.as_ref().map(|x| x.as_str())
+}
+
+fn object_name_or_default(named_obj: &ArchivedNamedObject<FrameInit>) -> &str {
+    object_name(named_obj).unwrap_or("<unnamed>")
+}
+
+fn archived_range_to_range<T: Copy>(archived_range: &ArchivedRange<T>) -> Range<T> {
+    archived_range.start..archived_range.end
+}
+
+fn try_into_usize_range<T: TryInto<usize> + Copy>(
+    range: &Range<T>,
+) -> CoreResult<Range<usize>, <T as TryInto<usize>>::Error> {
+    Ok(range.start.try_into()?..range.end.try_into()?)
+}

@@ -1,0 +1,42 @@
+#
+# Copyright 2023, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+
+{ lib, stdenv
+, mkShell
+, python3
+, python3Packages
+, reuse
+, cargo-audit
+, lychee
+, kani
+, nixfmt-tree
+}:
+
+let
+  # HACK for composability
+  apply = attrs: attrs // {
+    IN_NIX_SHELL_FOR_MAKEFILE = 1;
+
+    hardeningDisable = [ "all" ];
+
+    nativeBuildInputs = (attrs.nativeBuildInputs or []) ++ [
+      python3
+      python3Packages.autopep8
+      reuse
+      cargo-audit
+      lychee
+      nixfmt-tree
+    ] ++ lib.optionals stdenv.hostPlatform.isx86_64 [
+      kani
+    ];
+  };
+
+in
+mkShell (apply {
+  passthru = {
+    inherit apply;
+  };
+})

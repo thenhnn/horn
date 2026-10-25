@@ -1,0 +1,168 @@
+#
+# Copyright 2023, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+
+{ lib, buildPackages
+, runCommandCC, linkFarm, symlinkJoin, emptyDirectory
+, rsync
+
+, crateUtils
+, defaultRustEnvironment
+, pruneLockfile, vendorLockfile
+, buildSysroot
+, libclangPath
+, crates
+, globalPatchSection
+
+, mkSeL4RustTargetTriple
+, seL4RustEnvVars
+
+, worldConfig
+
+, seL4Config
+, seL4ConfigJSON
+}:
+
+let
+  rustEnvironment = defaultRustEnvironment;
+  inherit (rustEnvironment) rustToolchain;
+
+  rootCrate = crates.meta;
+
+  mkView = { runtime ? null, minimal ? true }:
+    let
+      commonFeatures = lib.optionals (!worldConfig.isMicrokit) [ "sel4-platform-info" ];
+      targetTriple = mkSeL4RustTargetTriple { inherit minimal; };
+    in {
+      inherit seL4ConfigJSON;
+      inherit (seL4Config) PLAT SEL4_ARCH KERNEL_MCS;
+      inherit targetTriple;
+      targetJSON =  "${rustEnvironment.mkTargetPath targetTriple}/${targetTriple.name}.json";
+      inherit runtime;
+      rustdoc = buildDocs {
+        inherit targetTriple;
+        features = commonFeatures ++ lib.optional (runtime != null) runtime;
+      };
+    };
+
+  buildDocs = { targetTriple, features }:
+    let
+      prunedLockfile = pruneLockfile {
+        inherit (rustEnvironment) rustToolchain vendoredSuperLockfile;
+        rootCrates = [ rootCrate ];
+        extraManifest = {
+          # HACK
+          patch.crates-io = {
+            inherit (globalPatchSection.crates-io) hashbrown;
+          };
+        };
+      };
+
+      vendoredLockfile = vendorLockfile {
+        inherit (rustEnvironment) rustToolchain;
+        lockfileContents = builtins.readFile prunedLockfile;
+      };
+
+      inherit (vendoredLockfile) lockfile;
+
+      sysrootHost = buildSysroot {
+        inherit targetTriple;
+        release = false;
+      };
+
+      sysroot = sysrootHost;
+
+      # TODO how does this work without std?
+      # sysrootBuild = buildSysroot {
+      #   targetTriple = buildPlatform.config;
+      #   release = false;
+      # };
+
+      # sysroot = symlinkJoin {
+      #   name = "sysroot";
+      #   paths = [
+      #     sysroot'
+      #     sysroot''
+      #   ];
+      # };
+
+      workspace = linkFarm "workspace" [
+        { name = "Cargo.toml"; path = manifest; }
+        { name = "Cargo.lock"; path = lockfile; }
+        { name = "src"; path = src; }
+      ];
+
+      manifest = crateUtils.toTOMLFile "Cargo.toml" ({
+        workspace.resolver = "3";
+        workspace.members = [ "src/${rootCrate.name}" ];
+        # HACK
+        patch.crates-io = {
+          inherit (globalPatchSection.crates-io) hashbrown;
+        };
+      });
+
+      src = crateUtils.collectReals (lib.attrValues rootCrate.closure);
+
+      config = crateUtils.toTOMLFile "config" (crateUtils.clobber [
+        (crateUtils.baseConfig {
+          inherit rustEnvironment targetTriple;
+        })
+        vendoredLockfile.configFragment
+        {
+          unstable.unstable-options = true;
+
+          target.${targetTriple.name}.rustflags = [
+            "-Zunstable-options"
+            "--sysroot" sysroot
+          ];
+
+          # TODO
+          # target.${targetTriple.name}.rustdocflags = [
+          build.rustdocflags = [
+            "-Zunstable-options"
+            "--sysroot" sysroot
+          ];
+        }
+      ]);
+
+      flags = lib.concatStringsSep " " ([
+        "--offline"
+        "--frozen"
+        "-p" rootCrate.name
+      ] ++ lib.optionals (lib.length features > 0) [
+        "--features" (lib.concatStringsSep "," features)
+      ] ++ [
+        "--target" targetTriple.name
+      ]);
+
+    in
+      runCommandCC "rustdoc-view" ({
+        depsBuildBuild = [ buildPackages.stdenv.cc ];
+        nativeBuildInputs = [ rsync rustToolchain ];
+        RUST_TARGET_PATH = rustEnvironment.mkTargetPath targetTriple;
+        LIBCLANG_PATH = libclangPath;
+      } // lib.optionalAttrs (!rustEnvironment.isNightly) {
+        # HACK
+        RUSTC_BOOTSTRAP = 1;
+      } // seL4RustEnvVars) ''
+        target_dir=$(pwd)/target
+
+        cargo doc \
+          --config ${config} \
+          --manifest-path ${workspace}/Cargo.toml \
+          --target-dir=$target_dir \
+          -j $NIX_BUILD_CORES \
+          ${flags}
+
+        rsync -r $target_dir/ $out/ \
+          --exclude '/debug' \
+          --exclude '/*/debug' \
+          --exclude '/.*.json' \
+          --exclude 'CACHEDIR.TAG'
+      '';
+
+in {
+  inherit mkView;
+}

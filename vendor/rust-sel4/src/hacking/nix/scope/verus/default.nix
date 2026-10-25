@@ -1,0 +1,176 @@
+#
+# Copyright 2024, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+
+{ lib, stdenv
+, callPackage
+, makeWrapper
+, writeShellScriptBin
+, fetchFromGitHub
+, singular
+
+, crateUtils
+, vendorLockfile
+, sources
+, assembleRustToolchain
+, elaborateRustEnvironment
+, mkDefaultElaborateRustEnvironmentArgs
+, mkMkCustomTargetPathForEnvironment
+}:
+
+let
+  z3 = callPackage ./z3.nix {};
+
+  rustToolchainAttrs = builtins.fromTOML (builtins.readFile (src + "/rust-toolchain.toml"));
+
+  inherit (rustToolchainAttrs.toolchain) channel;
+
+  rustToolchain = assembleRustToolchain {
+    inherit channel;
+    sha256 = "sha256-A1abGIbOtcBSdrUMhDGrER3pRM1hQP4fp9gh3Y4PKc8=";
+  };
+
+  rustEnvironment = lib.fix (self: elaborateRustEnvironment (mkDefaultElaborateRustEnvironmentArgs {
+    inherit rustToolchain;
+  } // {
+    inherit channel;
+    mkCustomTargetPath = mkMkCustomTargetPathForEnvironment {
+      rustEnvironment = self;
+    };
+  }));
+
+  toolchainName = "${rustEnvironment.channel}-${stdenv.buildPlatform.config}";
+
+  src = fetchFromGitHub {
+    owner = "verus-lang";
+    repo = "verus";
+    rev = "release/0.2026.08.23.fbbbbcf";
+    sha256 = "sha256-+M+Y21f1ZzRW2J+hlSHZWsundhuqlhjYGqRLppopJjI=";
+  };
+
+  lockfile = vendorLockfile {
+    inherit rustToolchain;
+    lockfile = src + "/source/Cargo.lock";
+  };
+
+  vargoLockfile = vendorLockfile {
+    inherit rustToolchain;
+    lockfile = src + "/tools/vargo/Cargo.lock";
+  };
+
+  config = crateUtils.toTOMLFile "config" lockfile.configFragment;
+
+  vargoConfig = crateUtils.toTOMLFile "config" vargoLockfile.configFragment;
+
+  buildtimeDummyRustup = writeShellScriptBin "rustup" ''
+    set -eu -o pipefail
+
+    args="$@"
+
+    die() {
+      echo "unexpected args: $args" >&2
+      exit 1
+    }
+
+    [ "$1" == "show" ] || die
+    shift
+
+    [ "$1" == "active-toolchain" ] || die
+    shift
+
+    echo "${toolchainName}"
+  '';
+
+  runtimeDummyRustup = writeShellScriptBin "rustup" ''
+    set -eu -o pipefail
+
+    args="$@"
+
+    die() {
+      echo "unexpected args: $args" >&2
+      exit 1
+    }
+
+    case "$1" in
+      run)
+          [ "$1" == "run" ] || die
+          shift
+          shift
+          [ "$1" == "--" ] || die
+          shift
+          exec "$@"
+          ;;
+      toolchain)
+          [ "$1" == "toolchain" ] || die
+          shift
+          [ "$1" == "list" ] || die
+          shift
+          echo "${toolchainName}"
+          ;;
+      *)
+        die
+        ;;
+    esac
+  '';
+
+in
+stdenv.mkDerivation {
+  name = "verus";
+
+  inherit src;
+
+  nativeBuildInputs = [
+    rustToolchain
+    makeWrapper
+    buildtimeDummyRustup
+  ];
+
+  VERUS_Z3_PATH = "${z3}/bin/z3";
+  VERUS_SINGULAR_PATH = "${singular}/bin/Singular";
+
+  # HACK
+  VARGO_BUILD_VERSION = "";
+  VARGO_BUILD_SHA = "";
+  VARGO_TOOLCHAIN = "";
+
+  patchPhase = ''
+    substituteInPlace tools/activate \
+      --replace-fail 'cargo build' 'cargo build --offline'
+    # HACK
+    substituteInPlace source/rust_verify/build.rs \
+      --replace-fail 'get_verus_version(true)' 'Ok::<(String, String), ()>(("".to_owned(), "".to_owned()))' \
+      --replace-fail 'get_git_head_paths()' 'Ok::<&[&std::path::Path], ()>(&[])'
+  '';
+
+  configurePhase = ''
+    cat ${vargoConfig} >> tools/vargo/.cargo/config.toml
+    cat ${config} >> source/.cargo/config.toml
+  '';
+
+  buildPhase = ''
+    cd source
+    source ../tools/activate
+    vargo build --release
+  '';
+
+  installPhase = ''
+    mkdir -p $out/lib $out/bin
+    cp -r target-verus/release $out/lib/verus-root
+    ln -s ../lib/verus-root/cargo-verus $out/bin
+
+    wrapProgram $out/lib/verus-root/verus \
+      --prefix PATH : ${
+        lib.makeBinPath [
+          runtimeDummyRustup
+        ]
+      } \
+      --prefix LD_LIBRARY_PATH : ${rustToolchain}/lib/rustlib/x86_64-unknown-linux-gnu/lib
+  '';
+
+  passthru = {
+    inherit rustEnvironment;
+    inherit z3;
+  };
+}

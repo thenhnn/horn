@@ -1,0 +1,355 @@
+//
+// Copyright 2023, Colias Group, LLC
+//
+// SPDX-License-Identifier: BSD-2-Clause
+//
+
+#![feature(rustc_private)]
+
+extern crate rustc_driver;
+extern crate rustc_target;
+
+use std::borrow::Cow;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+
+use rustc_target::json::ToJson;
+use rustc_target::spec::{
+    Cc, Env, LinkerFlavor, Lld, Os, PanicStrategy, RelocModel, RelroLevel, Target,
+};
+
+cfg_if! {
+    if #[cfg(target_tuple)] {
+        use rustc_target::spec::TargetTuple;
+    } else {
+        use rustc_target::spec::TargetTriple;
+    }
+}
+
+use cfg_if::cfg_if;
+use clap::{Parser, Subcommand};
+
+const CHOSEN_LINKER_FLAVOR: LinkerFlavor = LinkerFlavor::Gnu(Cc::No, Lld::Yes);
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct Config {
+    arch: Arch,
+    context: Context,
+    minimal: bool,
+    unwind: bool,
+    musl: bool,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum Arch {
+    AArch64,
+    Armv7a,
+    RiscV64(RiscVArch),
+    RiscV32(RiscVArch),
+    X86_64,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[allow(clippy::upper_case_acronyms)]
+enum RiscVArch {
+    IMAC,
+    IMAFC,
+    GC,
+}
+
+impl RiscVArch {
+    fn arch_suffix_for_target_name(&self) -> String {
+        match self {
+            Self::IMAFC => "imafc".to_owned(),
+            Self::IMAC => "imac".to_owned(),
+            Self::GC => "gc".to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum Context {
+    Unspecified,
+    RootTask,
+}
+
+impl Config {
+    fn target_spec(&self) -> Target {
+        let mut target = match &self.arch {
+            Arch::AArch64 => {
+                // target.llvm_target = "aarch64-none-elf".into(); // TODO why or why not?
+                builtin("aarch64-unknown-none")
+            }
+            Arch::Armv7a => builtin("armv7a-none-eabi"),
+            Arch::RiscV64(riscv_arch) => builtin(&format!(
+                "riscv64{}-unknown-none-elf",
+                riscv_arch.arch_suffix_for_target_name()
+            )),
+            Arch::RiscV32(riscv_arch) => builtin(&format!(
+                "riscv32{}-unknown-none-elf",
+                riscv_arch.arch_suffix_for_target_name()
+            )),
+            Arch::X86_64 => {
+                let mut target = builtin("x86_64-unknown-none");
+                let options = &mut target.options;
+                options.relocation_model = RelocModel::Static;
+                options.relro_level = RelroLevel::Off;
+                // options.code_model = Some(CodeModel::Small); // TODO necessary?
+                // options.position_independent_executables = false; // TODO necessary?
+                // options.static_position_independent_executables = false; // TODO necessary?
+                target
+            }
+        };
+
+        {
+            let options = &mut target.options;
+            options.exe_suffix = ".elf".into();
+            options.eh_frame_header = true;
+
+            #[cfg(target_spec_has_is_builtin)]
+            {
+                options.is_builtin = false;
+            }
+        }
+
+        assert_eq!(target.options.linker_flavor, CHOSEN_LINKER_FLAVOR);
+
+        if let Context::RootTask = &self.context {
+            target
+                .options
+                .pre_link_args
+                .entry(CHOSEN_LINKER_FLAVOR)
+                .or_default()
+                .extend(vec![
+                    // Determines p_align. Default is 64K, which results in wasted space when
+                    // the ELF file is loaded as a single contiguous region as it is in the case
+                    // of a root task.
+                    "-z".into(),
+                    "max-page-size=4096".into(),
+                    // No use in root task.
+                    // Remove unnecessary alignment gap between segments.
+                    "--no-rosegment".into(),
+                    // TODO
+                    // Consider a configuration with --omagic/--nmagic/similar to further reduce
+                    // wasted space in cases where segments are mapped without regards for
+                    // permissions. --no-rosegment is a place to start.
+                ]);
+        }
+
+        target.options.has_thread_local = !self.minimal;
+
+        if self.unwinding_support() {
+            target.options.panic_strategy = PanicStrategy::Unwind;
+        }
+
+        if self.musl {
+            let options = &mut target.options;
+            options.os = Os::Linux;
+            options.env = Env::Musl;
+            options.families.to_mut().push("unix".into());
+            options.crt_static_default = true;
+            options.crt_static_respected = true;
+        }
+
+        target
+    }
+
+    fn unwinding_support(&self) -> bool {
+        self.arch.unwinding_support() && self.unwind
+    }
+
+    fn filter(&self) -> bool {
+        if self.unwind && !self.arch.unwinding_support() {
+            return false;
+        }
+        if self.unwinding_support() && self.minimal {
+            return false;
+        }
+        if self.musl && self.minimal {
+            return false;
+        }
+        true
+    }
+
+    fn name(&self) -> String {
+        let mut name = self.arch.name();
+        name.push_str("-sel4");
+        match self.context {
+            Context::Unspecified => {}
+            Context::RootTask => {
+                name.push_str("-roottask");
+            }
+        }
+        if self.minimal {
+            name.push_str("-minimal");
+        }
+        if self.unwind {
+            name.push_str("-unwind");
+        }
+        if self.musl {
+            name.push_str("-musl");
+        }
+        name
+    }
+
+    fn all_filtered() -> Vec<Self> {
+        let mut all = vec![];
+        for arch in Arch::all() {
+            for context in Context::all() {
+                for minimal in [true, false] {
+                    for unwind in [true, false] {
+                        for musl in [true, false] {
+                            let config = Self {
+                                arch,
+                                context,
+                                minimal,
+                                unwind,
+                                musl,
+                            };
+                            if config.filter() {
+                                all.push(config);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        all
+    }
+}
+
+impl Arch {
+    fn name(&self) -> String {
+        match self {
+            Self::AArch64 => "aarch64".to_owned(),
+            Self::Armv7a => "armv7a".to_owned(),
+            Self::RiscV64(riscv_arch) => {
+                format!("riscv64{}", riscv_arch.arch_suffix_for_target_name())
+            }
+            Self::RiscV32(riscv_arch) => {
+                format!("riscv32{}", riscv_arch.arch_suffix_for_target_name())
+            }
+            Self::X86_64 => "x86_64".to_owned(),
+        }
+    }
+
+    fn unwinding_support(&self) -> bool {
+        // Due to lack of support (so far) for aarch32 in the 'unwinding' crate
+        !matches!(self, Self::Armv7a)
+    }
+
+    fn all() -> Vec<Self> {
+        vec![
+            Self::AArch64,
+            Self::Armv7a,
+            Self::RiscV64(RiscVArch::IMAC),
+            Self::RiscV64(RiscVArch::GC),
+            Self::RiscV32(RiscVArch::IMAC),
+            Self::RiscV32(RiscVArch::IMAFC),
+            Self::X86_64,
+        ]
+    }
+}
+
+impl Context {
+    fn all() -> Vec<Self> {
+        vec![Self::Unspecified, Self::RootTask]
+    }
+}
+
+fn builtin(tuple: &str) -> Target {
+    cfg_if! {
+        if #[cfg(target_tuple)] {
+            let target_tuple = TargetTuple::from_tuple(tuple);
+        } else {
+            let target_tuple = TargetTriple::from_triple(tuple);
+        }
+    };
+    #[allow(unused_mut)]
+    let mut target = Target::expect_builtin(&target_tuple);
+    #[cfg(target_spec_has_metadata)]
+    {
+        target.metadata = Default::default();
+    }
+    target
+}
+
+fn all_target_specs() -> BTreeMap<String, Target> {
+    Config::all_filtered()
+        .into_iter()
+        .map(|config| (config.name(), config.target_spec()))
+        .collect::<BTreeMap<_, _>>()
+}
+
+fn do_list() {
+    for target_name in all_target_specs().keys() {
+        println!("{target_name}")
+    }
+}
+
+fn do_write(
+    target_dir: impl AsRef<Path>,
+    optional_targets: Option<&[String]>,
+) -> std::io::Result<()> {
+    let all_targets = all_target_specs();
+    let these_targets = optional_targets
+        .map(Cow::Borrowed)
+        .unwrap_or_else(|| Cow::Owned(all_target_specs().keys().cloned().collect::<Vec<_>>()));
+    for target_name in &*these_targets {
+        let target_spec = all_targets.get(target_name).unwrap();
+        write_one(&target_dir, target_name, target_spec)?;
+    }
+    Ok(())
+}
+
+fn write_one(
+    target_dir: impl AsRef<Path>,
+    target_name: &str,
+    target_spec: &Target,
+) -> std::io::Result<()> {
+    let path = target_dir.as_ref().join(format!("{target_name}.json"));
+    let contents = format!("{:#}\n", target_spec.to_json());
+    fs::write(path, contents)
+}
+
+#[derive(Parser, Debug)]
+struct Cli {
+    #[command(subcommand)]
+    subcommand: CliSubcommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum CliSubcommand {
+    List,
+    Write(CliWrite),
+}
+
+#[derive(Parser, Debug)]
+struct CliWrite {
+    #[arg(long, short = 'd')]
+    target_dir: String,
+    #[arg(long, short = 't')]
+    targets: Vec<String>,
+    #[arg(long)]
+    all: bool,
+}
+
+fn main() -> std::io::Result<()> {
+    let cli = Cli::parse();
+    match &cli.subcommand {
+        CliSubcommand::List => {
+            do_list();
+        }
+        CliSubcommand::Write(write_cli) => {
+            let optional_targets = if write_cli.all {
+                None
+            } else {
+                Some(&*write_cli.targets)
+            };
+            do_write(&write_cli.target_dir, optional_targets)?;
+        }
+    }
+
+    Ok(())
+}

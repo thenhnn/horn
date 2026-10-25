@@ -1,0 +1,35 @@
+#
+# Copyright 2023, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+#
+# This file is generated from './Cargo.nix'. You can edit this file directly
+# if you are not using this project's Cargo manifest management tools.
+# See 'hacking/cargo-manifest-management/README.md' for more information.
+#
+
+[package]
+name = "sel4-capdl-initializer"
+version = "0.1.0"
+authors = ["Nick Spinale <nick.spinale@coliasgroup.com>"]
+edition = "2024"
+license = "BSD-2-Clause"
+
+[features]
+alloc = []
+default = ["deflate"]
+deflate = ["sel4-capdl-initializer-types/deflate"]
+
+[dependencies]
+log = "0.4.28"
+rkyv = { version = "0.8.12", default-features = false }
+sel4 = { path = "../sel4" }
+sel4-capdl-initializer-types = { path = "types", features = ["sel4"] }
+sel4-immediate-sync-once-cell = { path = "../sel4-immediate-sync-once-cell" }
+sel4-immutable-cell = { path = "../sel4-immutable-cell" }
+sel4-logging = { path = "../sel4-logging" }
+sel4-no-allocator = { path = "../sel4-no-allocator" }
+sel4-phdrs = { path = "../sel4-phdrs" }
+sel4-phdrs-patched = { path = "../sel4-phdrs/patched" }
+sel4-root-task = { path = "../sel4-root-task", features = ["single-threaded"] }

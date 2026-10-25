@@ -1,0 +1,28 @@
+#
+# Copyright 2023, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+
+{ mk, localCrates, versions, unwindingWith }:
+
+mk {
+  package.name = "sel4-runtime-common";
+  dependencies = {
+    inherit (versions) cfg-if;
+    inherit (localCrates)
+      sel4-panicking-env
+      sel4-phdrs
+      sel4-immutable-cell
+      sel4-stack
+      sel4-ctors-dtors
+    ;
+  };
+  target."cfg(panic = \"unwind\")".dependencies = {
+    unwinding = unwindingWith [];
+  };
+  target."cfg(target_thread_local)".dependencies = {
+    sel4 = localCrates.sel4 // { default-features = false; optional = true; };
+    sel4-initialize-tls = localCrates.sel4-initialize-tls // { features = [ "on-stack" ]; };
+  };
+}
