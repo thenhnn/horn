@@ -17,6 +17,8 @@
     modules =
       [
         ./modules/nixpkgs.nix
+        ./modules/toolchain.nix
+        ./modules/rust.nix
         ../platform/sel4/module.nix
         ../platform/root-task/module.nix
         selected
@@ -26,5 +28,8 @@
 in
   evaluated.config
   // {
-    shell = import ./shell.nix {pkgs = evaluated.config.nixpkgs.pkgs.pkgsBuildBuild;};
+    shell = import ./shell.nix {
+      pkgs = evaluated.config.nixpkgs.pkgs.pkgsBuildBuild;
+      rust = evaluated.config.toolchain.rust;
+    };
   }

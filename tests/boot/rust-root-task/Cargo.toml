@@ -1,0 +1,12 @@
+[package]
+name = "rust-root-task"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "task"
+path = "src/main.rs"
+
+[dependencies]
+sel4 = { path = "../../../vendor/rust-sel4/src/crates/sel4" }
+sel4-root-task = { path = "../../../vendor/rust-sel4/src/crates/sel4-root-task" }

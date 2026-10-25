@@ -1,0 +1,1252 @@
+{
+  "compiler": "rustc 1.101.0-nightly (12433c307 2026-10-24)",
+  "targets": {
+    "aarch64-sel4": {
+      "dev": {
+        "flags": [
+          "debug_assertions",
+          "overflow_checks",
+          "target_has_atomic",
+          "target_has_atomic_load_store",
+          "target_has_reliable_f128",
+          "target_has_reliable_f16",
+          "target_has_reliable_f16_math",
+          "target_has_reliable_f16b",
+          "target_has_threads",
+          "target_thread_local",
+          "ub_checks"
+        ],
+        "values": {
+          "fmt_debug": [
+            "full"
+          ],
+          "panic": [
+            "abort"
+          ],
+          "relocation_model": [
+            "static"
+          ],
+          "target_abi": [
+            ""
+          ],
+          "target_arch": [
+            "aarch64"
+          ],
+          "target_endian": [
+            "little"
+          ],
+          "target_env": [
+            ""
+          ],
+          "target_feature": [
+            "neon"
+          ],
+          "target_has_atomic": [
+            "128",
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_load_store": [
+            "128",
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_primitive_alignment": [
+            "128",
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_object_format": [
+            "elf"
+          ],
+          "target_os": [
+            "none"
+          ],
+          "target_pointer_width": [
+            "64"
+          ],
+          "target_vendor": [
+            "unknown"
+          ]
+        }
+      },
+      "release": {
+        "flags": [
+          "target_has_atomic",
+          "target_has_atomic_load_store",
+          "target_has_reliable_f128",
+          "target_has_reliable_f16",
+          "target_has_reliable_f16_math",
+          "target_has_reliable_f16b",
+          "target_has_threads",
+          "target_thread_local"
+        ],
+        "values": {
+          "fmt_debug": [
+            "full"
+          ],
+          "panic": [
+            "abort"
+          ],
+          "relocation_model": [
+            "static"
+          ],
+          "target_abi": [
+            ""
+          ],
+          "target_arch": [
+            "aarch64"
+          ],
+          "target_endian": [
+            "little"
+          ],
+          "target_env": [
+            ""
+          ],
+          "target_feature": [
+            "neon"
+          ],
+          "target_has_atomic": [
+            "128",
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_load_store": [
+            "128",
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_primitive_alignment": [
+            "128",
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_object_format": [
+            "elf"
+          ],
+          "target_os": [
+            "none"
+          ],
+          "target_pointer_width": [
+            "64"
+          ],
+          "target_vendor": [
+            "unknown"
+          ]
+        }
+      },
+      "specHash": "bf89bdfc5b42a0f5b88715dd826fad6936fabe8d408338ebeba0a84b3f565182"
+    },
+    "aarch64-sel4-roottask": {
+      "dev": {
+        "flags": [
+          "debug_assertions",
+          "overflow_checks",
+          "target_has_atomic",
+          "target_has_atomic_load_store",
+          "target_has_reliable_f128",
+          "target_has_reliable_f16",
+          "target_has_reliable_f16_math",
+          "target_has_reliable_f16b",
+          "target_has_threads",
+          "target_thread_local",
+          "ub_checks"
+        ],
+        "values": {
+          "fmt_debug": [
+            "full"
+          ],
+          "panic": [
+            "abort"
+          ],
+          "relocation_model": [
+            "static"
+          ],
+          "target_abi": [
+            ""
+          ],
+          "target_arch": [
+            "aarch64"
+          ],
+          "target_endian": [
+            "little"
+          ],
+          "target_env": [
+            ""
+          ],
+          "target_feature": [
+            "neon"
+          ],
+          "target_has_atomic": [
+            "128",
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_load_store": [
+            "128",
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_primitive_alignment": [
+            "128",
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_object_format": [
+            "elf"
+          ],
+          "target_os": [
+            "none"
+          ],
+          "target_pointer_width": [
+            "64"
+          ],
+          "target_vendor": [
+            "unknown"
+          ]
+        }
+      },
+      "release": {
+        "flags": [
+          "target_has_atomic",
+          "target_has_atomic_load_store",
+          "target_has_reliable_f128",
+          "target_has_reliable_f16",
+          "target_has_reliable_f16_math",
+          "target_has_reliable_f16b",
+          "target_has_threads",
+          "target_thread_local"
+        ],
+        "values": {
+          "fmt_debug": [
+            "full"
+          ],
+          "panic": [
+            "abort"
+          ],
+          "relocation_model": [
+            "static"
+          ],
+          "target_abi": [
+            ""
+          ],
+          "target_arch": [
+            "aarch64"
+          ],
+          "target_endian": [
+            "little"
+          ],
+          "target_env": [
+            ""
+          ],
+          "target_feature": [
+            "neon"
+          ],
+          "target_has_atomic": [
+            "128",
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_load_store": [
+            "128",
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_primitive_alignment": [
+            "128",
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_object_format": [
+            "elf"
+          ],
+          "target_os": [
+            "none"
+          ],
+          "target_pointer_width": [
+            "64"
+          ],
+          "target_vendor": [
+            "unknown"
+          ]
+        }
+      },
+      "specHash": "f86500774f3336cf4ab11aff7eccc666a922165c065954e3203f8d7be5302061"
+    },
+    "aarch64-unknown-linux-gnu": {
+      "dev": {
+        "flags": [
+          "debug_assertions",
+          "overflow_checks",
+          "target_has_atomic",
+          "target_has_atomic_load_store",
+          "target_has_reliable_f128",
+          "target_has_reliable_f128_math",
+          "target_has_reliable_f16",
+          "target_has_reliable_f16_math",
+          "target_has_reliable_f16b",
+          "target_has_threads",
+          "target_thread_local",
+          "ub_checks",
+          "unix"
+        ],
+        "values": {
+          "fmt_debug": [
+            "full"
+          ],
+          "panic": [
+            "unwind"
+          ],
+          "relocation_model": [
+            "pic"
+          ],
+          "target_abi": [
+            ""
+          ],
+          "target_arch": [
+            "aarch64"
+          ],
+          "target_endian": [
+            "little"
+          ],
+          "target_env": [
+            "gnu"
+          ],
+          "target_family": [
+            "unix"
+          ],
+          "target_feature": [
+            "neon",
+            "outline-atomics"
+          ],
+          "target_has_atomic": [
+            "128",
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_load_store": [
+            "128",
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_primitive_alignment": [
+            "128",
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_object_format": [
+            "elf"
+          ],
+          "target_os": [
+            "linux"
+          ],
+          "target_pointer_width": [
+            "64"
+          ],
+          "target_vendor": [
+            "unknown"
+          ]
+        }
+      },
+      "release": {
+        "flags": [
+          "target_has_atomic",
+          "target_has_atomic_load_store",
+          "target_has_reliable_f128",
+          "target_has_reliable_f128_math",
+          "target_has_reliable_f16",
+          "target_has_reliable_f16_math",
+          "target_has_reliable_f16b",
+          "target_has_threads",
+          "target_thread_local",
+          "unix"
+        ],
+        "values": {
+          "fmt_debug": [
+            "full"
+          ],
+          "panic": [
+            "unwind"
+          ],
+          "relocation_model": [
+            "pic"
+          ],
+          "target_abi": [
+            ""
+          ],
+          "target_arch": [
+            "aarch64"
+          ],
+          "target_endian": [
+            "little"
+          ],
+          "target_env": [
+            "gnu"
+          ],
+          "target_family": [
+            "unix"
+          ],
+          "target_feature": [
+            "neon",
+            "outline-atomics"
+          ],
+          "target_has_atomic": [
+            "128",
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_load_store": [
+            "128",
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_primitive_alignment": [
+            "128",
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_object_format": [
+            "elf"
+          ],
+          "target_os": [
+            "linux"
+          ],
+          "target_pointer_width": [
+            "64"
+          ],
+          "target_vendor": [
+            "unknown"
+          ]
+        }
+      },
+      "specHash": null
+    },
+    "riscv64imac-sel4": {
+      "dev": {
+        "flags": [
+          "debug_assertions",
+          "overflow_checks",
+          "target_has_atomic",
+          "target_has_atomic_load_store",
+          "target_has_reliable_f128",
+          "target_has_reliable_f16",
+          "target_has_reliable_f16_math",
+          "target_has_threads",
+          "target_thread_local",
+          "ub_checks"
+        ],
+        "values": {
+          "fmt_debug": [
+            "full"
+          ],
+          "panic": [
+            "abort"
+          ],
+          "relocation_model": [
+            "static"
+          ],
+          "target_abi": [
+            ""
+          ],
+          "target_arch": [
+            "riscv64"
+          ],
+          "target_endian": [
+            "little"
+          ],
+          "target_env": [
+            ""
+          ],
+          "target_feature": [
+            "a",
+            "c",
+            "m",
+            "zaamo",
+            "zalrsc",
+            "zca",
+            "zmmul"
+          ],
+          "target_has_atomic": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_load_store": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_primitive_alignment": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_object_format": [
+            "elf"
+          ],
+          "target_os": [
+            "none"
+          ],
+          "target_pointer_width": [
+            "64"
+          ],
+          "target_vendor": [
+            "unknown"
+          ]
+        }
+      },
+      "release": {
+        "flags": [
+          "target_has_atomic",
+          "target_has_atomic_load_store",
+          "target_has_reliable_f128",
+          "target_has_reliable_f16",
+          "target_has_reliable_f16_math",
+          "target_has_threads",
+          "target_thread_local"
+        ],
+        "values": {
+          "fmt_debug": [
+            "full"
+          ],
+          "panic": [
+            "abort"
+          ],
+          "relocation_model": [
+            "static"
+          ],
+          "target_abi": [
+            ""
+          ],
+          "target_arch": [
+            "riscv64"
+          ],
+          "target_endian": [
+            "little"
+          ],
+          "target_env": [
+            ""
+          ],
+          "target_feature": [
+            "a",
+            "c",
+            "m",
+            "zaamo",
+            "zalrsc",
+            "zca",
+            "zmmul"
+          ],
+          "target_has_atomic": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_load_store": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_primitive_alignment": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_object_format": [
+            "elf"
+          ],
+          "target_os": [
+            "none"
+          ],
+          "target_pointer_width": [
+            "64"
+          ],
+          "target_vendor": [
+            "unknown"
+          ]
+        }
+      },
+      "specHash": "8417dd512603ff4010abc23dfdb37c6ace00f48fdc080189072f61f05feb4c0b"
+    },
+    "riscv64imac-sel4-roottask": {
+      "dev": {
+        "flags": [
+          "debug_assertions",
+          "overflow_checks",
+          "target_has_atomic",
+          "target_has_atomic_load_store",
+          "target_has_reliable_f128",
+          "target_has_reliable_f16",
+          "target_has_reliable_f16_math",
+          "target_has_threads",
+          "target_thread_local",
+          "ub_checks"
+        ],
+        "values": {
+          "fmt_debug": [
+            "full"
+          ],
+          "panic": [
+            "abort"
+          ],
+          "relocation_model": [
+            "static"
+          ],
+          "target_abi": [
+            ""
+          ],
+          "target_arch": [
+            "riscv64"
+          ],
+          "target_endian": [
+            "little"
+          ],
+          "target_env": [
+            ""
+          ],
+          "target_feature": [
+            "a",
+            "c",
+            "m",
+            "zaamo",
+            "zalrsc",
+            "zca",
+            "zmmul"
+          ],
+          "target_has_atomic": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_load_store": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_primitive_alignment": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_object_format": [
+            "elf"
+          ],
+          "target_os": [
+            "none"
+          ],
+          "target_pointer_width": [
+            "64"
+          ],
+          "target_vendor": [
+            "unknown"
+          ]
+        }
+      },
+      "release": {
+        "flags": [
+          "target_has_atomic",
+          "target_has_atomic_load_store",
+          "target_has_reliable_f128",
+          "target_has_reliable_f16",
+          "target_has_reliable_f16_math",
+          "target_has_threads",
+          "target_thread_local"
+        ],
+        "values": {
+          "fmt_debug": [
+            "full"
+          ],
+          "panic": [
+            "abort"
+          ],
+          "relocation_model": [
+            "static"
+          ],
+          "target_abi": [
+            ""
+          ],
+          "target_arch": [
+            "riscv64"
+          ],
+          "target_endian": [
+            "little"
+          ],
+          "target_env": [
+            ""
+          ],
+          "target_feature": [
+            "a",
+            "c",
+            "m",
+            "zaamo",
+            "zalrsc",
+            "zca",
+            "zmmul"
+          ],
+          "target_has_atomic": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_load_store": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_primitive_alignment": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_object_format": [
+            "elf"
+          ],
+          "target_os": [
+            "none"
+          ],
+          "target_pointer_width": [
+            "64"
+          ],
+          "target_vendor": [
+            "unknown"
+          ]
+        }
+      },
+      "specHash": "393cc096231a473a8bf834c53cece1875cc21892aef918244c89e980d4a90aa2"
+    },
+    "x86_64-sel4": {
+      "dev": {
+        "flags": [
+          "debug_assertions",
+          "overflow_checks",
+          "target_has_atomic",
+          "target_has_atomic_load_store",
+          "target_has_reliable_f128",
+          "target_has_reliable_f16",
+          "target_has_reliable_f16_math",
+          "target_has_threads",
+          "target_thread_local",
+          "ub_checks"
+        ],
+        "values": {
+          "fmt_debug": [
+            "full"
+          ],
+          "panic": [
+            "abort"
+          ],
+          "relocation_model": [
+            "static"
+          ],
+          "target_abi": [
+            ""
+          ],
+          "target_arch": [
+            "x86_64"
+          ],
+          "target_endian": [
+            "little"
+          ],
+          "target_env": [
+            ""
+          ],
+          "target_feature": [
+            "fxsr",
+            "x87"
+          ],
+          "target_has_atomic": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_load_store": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_primitive_alignment": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_object_format": [
+            "elf"
+          ],
+          "target_os": [
+            "none"
+          ],
+          "target_pointer_width": [
+            "64"
+          ],
+          "target_vendor": [
+            "unknown"
+          ]
+        }
+      },
+      "release": {
+        "flags": [
+          "target_has_atomic",
+          "target_has_atomic_load_store",
+          "target_has_reliable_f128",
+          "target_has_reliable_f16",
+          "target_has_reliable_f16_math",
+          "target_has_threads",
+          "target_thread_local"
+        ],
+        "values": {
+          "fmt_debug": [
+            "full"
+          ],
+          "panic": [
+            "abort"
+          ],
+          "relocation_model": [
+            "static"
+          ],
+          "target_abi": [
+            ""
+          ],
+          "target_arch": [
+            "x86_64"
+          ],
+          "target_endian": [
+            "little"
+          ],
+          "target_env": [
+            ""
+          ],
+          "target_feature": [
+            "fxsr",
+            "x87"
+          ],
+          "target_has_atomic": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_load_store": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_primitive_alignment": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_object_format": [
+            "elf"
+          ],
+          "target_os": [
+            "none"
+          ],
+          "target_pointer_width": [
+            "64"
+          ],
+          "target_vendor": [
+            "unknown"
+          ]
+        }
+      },
+      "specHash": "23bbd53c566358fde8a5dee2bfa29d69a4b309f7aec567284f2df4d181147d76"
+    },
+    "x86_64-sel4-roottask": {
+      "dev": {
+        "flags": [
+          "debug_assertions",
+          "overflow_checks",
+          "target_has_atomic",
+          "target_has_atomic_load_store",
+          "target_has_reliable_f128",
+          "target_has_reliable_f16",
+          "target_has_reliable_f16_math",
+          "target_has_threads",
+          "target_thread_local",
+          "ub_checks"
+        ],
+        "values": {
+          "fmt_debug": [
+            "full"
+          ],
+          "panic": [
+            "abort"
+          ],
+          "relocation_model": [
+            "static"
+          ],
+          "target_abi": [
+            ""
+          ],
+          "target_arch": [
+            "x86_64"
+          ],
+          "target_endian": [
+            "little"
+          ],
+          "target_env": [
+            ""
+          ],
+          "target_feature": [
+            "fxsr",
+            "x87"
+          ],
+          "target_has_atomic": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_load_store": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_primitive_alignment": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_object_format": [
+            "elf"
+          ],
+          "target_os": [
+            "none"
+          ],
+          "target_pointer_width": [
+            "64"
+          ],
+          "target_vendor": [
+            "unknown"
+          ]
+        }
+      },
+      "release": {
+        "flags": [
+          "target_has_atomic",
+          "target_has_atomic_load_store",
+          "target_has_reliable_f128",
+          "target_has_reliable_f16",
+          "target_has_reliable_f16_math",
+          "target_has_threads",
+          "target_thread_local"
+        ],
+        "values": {
+          "fmt_debug": [
+            "full"
+          ],
+          "panic": [
+            "abort"
+          ],
+          "relocation_model": [
+            "static"
+          ],
+          "target_abi": [
+            ""
+          ],
+          "target_arch": [
+            "x86_64"
+          ],
+          "target_endian": [
+            "little"
+          ],
+          "target_env": [
+            ""
+          ],
+          "target_feature": [
+            "fxsr",
+            "x87"
+          ],
+          "target_has_atomic": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_load_store": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_primitive_alignment": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_object_format": [
+            "elf"
+          ],
+          "target_os": [
+            "none"
+          ],
+          "target_pointer_width": [
+            "64"
+          ],
+          "target_vendor": [
+            "unknown"
+          ]
+        }
+      },
+      "specHash": "d3080ba09a573974b35a52d061cd2cedf8f99fc7219552353be2312ed46c00e6"
+    },
+    "x86_64-unknown-linux-gnu": {
+      "dev": {
+        "flags": [
+          "debug_assertions",
+          "overflow_checks",
+          "target_has_atomic",
+          "target_has_atomic_load_store",
+          "target_has_reliable_f128",
+          "target_has_reliable_f16",
+          "target_has_reliable_f16_math",
+          "target_has_threads",
+          "target_thread_local",
+          "ub_checks",
+          "unix"
+        ],
+        "values": {
+          "fmt_debug": [
+            "full"
+          ],
+          "panic": [
+            "unwind"
+          ],
+          "relocation_model": [
+            "pic"
+          ],
+          "target_abi": [
+            ""
+          ],
+          "target_arch": [
+            "x86_64"
+          ],
+          "target_endian": [
+            "little"
+          ],
+          "target_env": [
+            "gnu"
+          ],
+          "target_family": [
+            "unix"
+          ],
+          "target_feature": [
+            "fxsr",
+            "sse",
+            "sse2",
+            "x87"
+          ],
+          "target_has_atomic": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_load_store": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_primitive_alignment": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_object_format": [
+            "elf"
+          ],
+          "target_os": [
+            "linux"
+          ],
+          "target_pointer_width": [
+            "64"
+          ],
+          "target_vendor": [
+            "unknown"
+          ]
+        }
+      },
+      "release": {
+        "flags": [
+          "target_has_atomic",
+          "target_has_atomic_load_store",
+          "target_has_reliable_f128",
+          "target_has_reliable_f16",
+          "target_has_reliable_f16_math",
+          "target_has_threads",
+          "target_thread_local",
+          "unix"
+        ],
+        "values": {
+          "fmt_debug": [
+            "full"
+          ],
+          "panic": [
+            "unwind"
+          ],
+          "relocation_model": [
+            "pic"
+          ],
+          "target_abi": [
+            ""
+          ],
+          "target_arch": [
+            "x86_64"
+          ],
+          "target_endian": [
+            "little"
+          ],
+          "target_env": [
+            "gnu"
+          ],
+          "target_family": [
+            "unix"
+          ],
+          "target_feature": [
+            "fxsr",
+            "sse",
+            "sse2",
+            "x87"
+          ],
+          "target_has_atomic": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_load_store": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_has_atomic_primitive_alignment": [
+            "16",
+            "32",
+            "64",
+            "8",
+            "ptr"
+          ],
+          "target_object_format": [
+            "elf"
+          ],
+          "target_os": [
+            "linux"
+          ],
+          "target_pointer_width": [
+            "64"
+          ],
+          "target_vendor": [
+            "unknown"
+          ]
+        }
+      },
+      "specHash": null
+    }
+  },
+  "toolchainVersion": "1.101.0-nightly-2026-10-25"
+}

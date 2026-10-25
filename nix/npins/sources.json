@@ -7,6 +7,19 @@
       "url": "https://releases.nixos.org/nixos/unstable/nixos-26.11pre1100280.3ec636362e18/nixexprs.tar.xz",
       "hash": "sha256-17eNBI5Khe4JZaRkL5hRGPWf8MZ6qv+bWAr4V8YeKBw="
     },
+    "rust-overlay": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "oxalica",
+        "repo": "rust-overlay"
+      },
+      "branch": "master",
+      "submodules": false,
+      "revision": "fad80eb74614f7dc37c1c83df8caae64361eda22",
+      "url": "https://github.com/oxalica/rust-overlay/archive/fad80eb74614f7dc37c1c83df8caae64361eda22.tar.gz",
+      "hash": "sha256-wjoZGhxH/Yr+OsFRpNyV9DpMGQIdNEjjAOinfzQvadk="
+    },
     "treefmt-nix": {
       "type": "Git",
       "repository": {

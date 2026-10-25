@@ -224,7 +224,7 @@ pub fn __abort_macro_helper(message: Option<fmt::Arguments>) -> ! {
 /// ```
 ///
 /// This macro first invokes an externally defined abort hook which is resolved at link time, and
-/// then calls `core::intrinsics::abort()`.
+/// then calls `core::intrinsics::abort_immediate()`.
 ///
 /// The following externally defined symbol is used as the abort hook:
 ///

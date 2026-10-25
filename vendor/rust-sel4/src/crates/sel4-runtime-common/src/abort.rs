@@ -10,5 +10,5 @@ sel4_panicking_env::register_abort_trap! {
 }
 
 fn trap() -> ! {
-    core::intrinsics::abort()
+    core::intrinsics::abort_immediate()
 }
