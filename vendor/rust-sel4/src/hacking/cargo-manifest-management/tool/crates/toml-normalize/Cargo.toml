@@ -1,0 +1,22 @@
+#
+# Copyright 2023, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+
+[package]
+name = "toml-normalize"
+version = "0.1.0"
+authors = ["Nick Spinale <nick.spinale@coliasgroup.com>"]
+edition = "2024"
+license = "BSD-2-Clause"
+
+[dependencies]
+clap = { version = "4.4.6", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_with = "3.4.0"
+serde_json = "1.0"
+thiserror = "1.0"
+toml = "0.8.6"
+toml_edit = "0.20.4"
+toml-path-regex = { path = "../toml-path-regex" }

@@ -1,0 +1,130 @@
+#
+# Copyright 2023, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+
+{ lib, buildPackages
+, runCommand, runCommandCC, linkFarm
+, crateUtils
+, defaultRustEnvironment, defaultRustTargetTriple
+}:
+
+{ rustEnvironment ? defaultRustEnvironment
+, targetTriple ? defaultRustTargetTriple
+, release ? true
+, profile ? if release then "release" else "dev"
+, alloc ? true
+, std ? false
+, compilerBuiltinsMem ? true
+, src ? null
+, extraManifest ? {}
+, extraConfig ? {}
+}:
+
+let
+  workspace = linkFarm "workspace" [
+    { name = "Cargo.toml"; path = manifest; }
+    { name = "Cargo.lock"; path = lockfile; }
+  ];
+
+  package = {
+    name = "dummy";
+    version = "0.0.0";
+  };
+
+  manifest = crateUtils.toTOMLFile "Cargo.toml" (crateUtils.clobber [
+    {
+      package = package // {
+        edition = "2024";
+      };
+      lib.path = crateUtils.dummyLibWithoutStdInSrc;
+    }
+    extraManifest
+  ]);
+
+  lockfile = crateUtils.toTOMLFile "Cargo.lock" {
+    package = [
+      package
+    ];
+  };
+
+  config = crateUtils.toTOMLFile "config" (crateUtils.clobber [
+    # baseConfig # TODO will trigger rebuild
+    {
+      unstable.unstable-options = true;
+      target = {
+        "${targetTriple.name}" = {
+          rustflags = [
+            "-Zunstable-options"
+            "--sysroot" "/dev/null"
+            "-C" "embed-bitcode=yes"
+            # "-C" "force-unwind-tables=yes" # TODO compare with "requires-uwtable" in target.json
+          ];
+        };
+      };
+    }
+    rustEnvironment.vendoredSysrootLockfile.configFragment
+    extraConfig
+  ]);
+
+  crates = lib.concatStringsSep "," ([
+    "core"
+    "compiler_builtins"
+  ] ++ lib.optionals alloc [
+    "alloc"
+  ] ++ lib.optionals std [
+    "std"
+  ]);
+
+  features = lib.concatStringsSep "," (lib.flatten [
+    (lib.optional compilerBuiltinsMem "compiler-builtins-mem")
+  ]);
+
+  profileDirName = {
+    "dev" = "debug";
+  }.${profile} or profile;
+
+in
+runCommand "sysroot" ({
+  depsBuildBuild = [ buildPackages.stdenv.cc ];
+  nativeBuildInputs = [ rustEnvironment.rustToolchain ];
+  RUST_TARGET_PATH = rustEnvironment.mkTargetPath targetTriple;
+} // lib.optionalAttrs (!rustEnvironment.isNightly) {
+  # HACK
+  RUSTC_BOOTSTRAP = 1;
+} // lib.optionalAttrs (src != null) {
+  # HACK
+  __CARGO_TESTS_ONLY_SRC_ROOT = src;
+}) ''
+  cargo build \
+    --offline \
+    --frozen \
+    --config ${config} \
+    ${lib.optionalString (profile != null) "--profile ${profile}"} \
+    --target ${targetTriple.name} \
+    -Z build-std=${crates} \
+    -Z build-std-features=${features} \
+    --manifest-path ${workspace}/Cargo.toml \
+    --target-dir $(pwd)/target
+
+  dst=$out/lib/rustlib/${targetTriple.name}/lib
+  mkdir -p $dst
+
+  src=target/${targetTriple.name}/${profileDirName}
+
+  # HACK for compatiblity across rust toolchain versions
+  if [ -d "$src/deps" ]; then
+    mv $src/deps/* $dst
+  else
+    mv $src/build/*/*/out/*.{rlib,rmeta} $dst
+  fi
+''
+
+# TODO
+# rel=lib/rustlib/${buildPlatform.config}/bin
+# d=$out/$rel
+# mkdir -p $d
+# ln -s ${rustToolchain}/$rel/* $d
+
+# NOTE "-Z avoid-dev-deps" for deps of std

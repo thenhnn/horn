@@ -1,0 +1,34 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: seL4
+Upstream-Contact: seL4 team <support@sel4.systems>
+Source: http://sel4.systems
+
+Files:
+  VERSION
+Copyright: 2024, Colias Group, LLC
+License: CC-BY-SA-4.0
+
+Files:
+  Cargo.lock
+  support/*.json
+  crates/sel4-generate-target-specs/src/resettable.lds
+  hacking/Cargo.lock
+  hacking/unstable-feature-monitoring/wishlist/Cargo.lock
+  hacking/nix/scope/capdl-tool/capDL-tool.nix
+  hacking/nix/scope/capdl-tool/base-compat-0-12-2.nix
+  hacking/nix/scope/capdl-tool/base-compat-batteries-0-12-2.nix
+  hacking/nix/scope/capdl-tool/network-3.1.4.0.nix
+  hacking/nix/scope/capdl-tool/MissingH-1.5.0.1.nix
+  hacking/vscode/default-excludes.txt
+Copyright: 2023, Colias Group, LLC
+License: BSD-2-Clause
+
+Files:
+  hacking/nix/scope/dafny/deps.nix
+Copyright: 2024, Colias Group, LLC
+License: BSD-2-Clause
+
+Files:
+  crates/examples/microkit/banscii/pds/assistant/core/assets/fonts/rock-salt/*.ttf
+Copyright: 2010 by Font Diner, Inc DBA Sideshow. All rights reserved.
+License: Apache-2.0

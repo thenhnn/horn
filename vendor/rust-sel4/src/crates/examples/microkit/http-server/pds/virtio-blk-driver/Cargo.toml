@@ -1,0 +1,37 @@
+#
+# Copyright 2023, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+#
+# This file is generated from './Cargo.nix'. You can edit this file directly
+# if you are not using this project's Cargo manifest management tools.
+# See 'hacking/cargo-manifest-management/README.md' for more information.
+#
+
+[package]
+name = "microkit-http-server-example-virtio-blk-driver"
+version = "0.1.0"
+authors = ["Nick Spinale <nick.spinale@coliasgroup.com>"]
+edition = "2024"
+license = "BSD-2-Clause"
+
+[dependencies]
+log = "0.4.28"
+sel4 = { path = "../../../../../sel4" }
+sel4-abstract-allocator = { path = "../../../../../experimental/sel4-abstract-allocator" }
+sel4-driver-interfaces = { path = "../../../../../experimental/sel4-driver-interfaces" }
+sel4-immediate-sync-once-cell = { path = "../../../../../sel4-immediate-sync-once-cell" }
+sel4-logging = { path = "../../../../../sel4-logging" }
+sel4-microkit = { path = "../../../../../sel4-microkit" }
+sel4-shared-memory = { path = "../../../../../sel4-shared-memory" }
+sel4-shared-ring-buffer = { path = "../../../../../experimental/sel4-shared-ring-buffer" }
+sel4-virtio-blk = { path = "../../../../../drivers/virtio/blk" }
+sel4-virtio-hal-impl = { path = "../../../../../drivers/virtio/hal-impl" }
+virtio-drivers = { version = "0.13.0", default-features = false }
+
+[dependencies.sel4-microkit-driver-adapters]
+path = "../../../../../experimental/sel4-microkit/driver-adapters"
+
+[dependencies.sel4-shared-ring-buffer-block-io-types]
+path = "../../../../../experimental/sel4-shared-ring-buffer/block-io/types"

@@ -1,0 +1,39 @@
+#
+# Copyright 2023, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+#
+# This file is generated from './Cargo.nix'. You can edit this file directly
+# if you are not using this project's Cargo manifest management tools.
+# See 'hacking/cargo-manifest-management/README.md' for more information.
+#
+
+[package]
+name = "sel4-sys"
+version = "0.1.0"
+authors = ["Nick Spinale <nick.spinale@coliasgroup.com>"]
+build = "build/main.rs"
+edition = "2024"
+license = "BSD-2-Clause"
+links = "sel4"
+
+[dependencies]
+log = "0.4.28"
+sel4-bitfield-ops = { path = "../bitfield-ops" }
+sel4-config = { path = "../config" }
+
+[build-dependencies]
+bindgen = "0.72.1"
+glob = "0.3.3"
+pest = "2.8.3"
+pest_derive = "2.8.3"
+prettyplease = "0.3.0"
+proc-macro2 = "1.0.103"
+quote = "1.0.41"
+regex = "1.12.2"
+sel4-build-env = { path = "../build-env" }
+sel4-config = { path = "../config" }
+sel4-config-data = { path = "../config/data" }
+syn = { version = "3.0.4", features = ["parsing"] }
+xmltree = "0.12.0"

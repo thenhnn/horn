@@ -1,0 +1,45 @@
+#
+# Copyright 2023, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+#
+# This file is generated from './Cargo.nix'. You can edit this file directly
+# if you are not using this project's Cargo manifest management tools.
+# See 'hacking/cargo-manifest-management/README.md' for more information.
+#
+
+[package]
+name = "microkit-http-server-example-server-core"
+version = "0.1.0"
+authors = ["Nick Spinale <nick.spinale@coliasgroup.com>"]
+edition = "2024"
+license = "BSD-2-Clause"
+
+[dependencies]
+embedded-io-async = "0.7.0"
+futures = { version = "0.3.31", default-features = false, features = ["async-await", "alloc"] }
+httparse = { version = "1.10.1", default-features = false }
+log = "0.4.28"
+rustls = { version = "0.23.5", default-features = false, features = ["logging", "ring", "tls12"] }
+rustls-pemfile = { version = "2.0.0", default-features = false }
+sel4-async-block-io = { path = "../../../../../../experimental/sel4-async/block-io" }
+sel4-async-block-io-fat = { path = "../../../../../../experimental/sel4-async/block-io/fat" }
+sel4-async-io = { path = "../../../../../../experimental/sel4-async/io" }
+sel4-async-network = { path = "../../../../../../experimental/sel4-async/network" }
+sel4-async-network-rustls = { path = "../../../../../../experimental/sel4-async/network/rustls" }
+sel4-async-time = { path = "../../../../../../experimental/sel4-async/time" }
+sel4-async-unsync = { path = "../../../../../../experimental/sel4-async/unsync" }
+sel4-panicking-env = { path = "../../../../../../sel4-panicking/env" }
+webpki-roots = "1.0.3"
+
+[dependencies.sel4-async-network-rustls-utils]
+path = "../../../../../../experimental/sel4-async/network/rustls/utils"
+
+[dependencies.sel4-async-single-threaded-executor]
+path = "../../../../../../experimental/sel4-async/single-threaded-executor"
+
+[dependencies.smoltcp]
+version = "0.14.0"
+default-features = false
+features = ["proto-ipv4", "proto-dhcpv4", "proto-dns", "socket-dhcpv4", "socket-dns", "socket-tcp"]

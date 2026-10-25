@@ -1,0 +1,19 @@
+#
+# Copyright 2024, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+
+{ mk, localCrates }:
+
+mk {
+  package.name = "tests-root-task-dafny-task";
+  dependencies = {
+    inherit (localCrates)
+      sel4
+      sel4-root-task
+      sel4-test-root-task
+      tests-root-task-dafny-core
+    ;
+  };
+}

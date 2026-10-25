@@ -1,0 +1,32 @@
+#
+# Copyright 2023, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+#
+# This file is generated from './Cargo.nix'. You can edit this file directly
+# if you are not using this project's Cargo manifest management tools.
+# See 'hacking/cargo-manifest-management/README.md' for more information.
+#
+
+[package]
+name = "sel4-shared-ring-buffer-smoltcp"
+version = "0.1.0"
+authors = ["Nick Spinale <nick.spinale@coliasgroup.com>"]
+edition = "2024"
+license = "BSD-2-Clause"
+
+[dependencies]
+lock_api = "0.4.14"
+log = "0.4.28"
+one-shot-mutex = "0.2.1"
+sel4-abstract-allocator = { path = "../../sel4-abstract-allocator" }
+sel4-abstract-rc = { path = "../../sel4-abstract-rc" }
+sel4-shared-memory = { path = "../../../sel4-shared-memory" }
+sel4-shared-ring-buffer = { path = ".." }
+sel4-shared-ring-buffer-bookkeeping = { path = "../bookkeeping" }
+
+[dependencies.smoltcp]
+version = "0.14.0"
+default-features = false
+features = ["proto-ipv4", "proto-dhcpv4", "proto-dns", "socket-dhcpv4", "socket-dns", "socket-tcp"]

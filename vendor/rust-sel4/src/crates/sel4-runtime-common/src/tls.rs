@@ -1,0 +1,57 @@
+//
+// Copyright 2023, Colias Group, LLC
+//
+// SPDX-License-Identifier: BSD-2-Clause
+//
+
+use cfg_if::cfg_if;
+
+use sel4_panicking_env::abort;
+use sel4_phdrs::PT_TLS;
+use sel4_phdrs::locate_phdrs;
+
+#[allow(unused_imports)]
+use sel4_initialize_tls::{DEFAULT_SET_THREAD_POINTER_FN, SetThreadPointerFn, UncheckedTlsImage};
+
+#[allow(clippy::missing_safety_doc)]
+pub(crate) unsafe fn with_tls(f: impl FnOnce() -> !) -> ! {
+    let phdr = locate_phdrs()
+        .unwrap_or_else(|err| abort!("{err}"))
+        .find_by_type(PT_TLS)
+        .unwrap_or_else(|| abort!("no PT_TLS segment"));
+    let unchecked = UncheckedTlsImage {
+        vaddr: phdr.p_vaddr,
+        filesz: phdr.p_filesz,
+        memsz: phdr.p_memsz,
+        align: phdr.p_align,
+    };
+    let checked = unchecked
+        .check()
+        .unwrap_or_else(|_| abort!("invalid TLS image: {unchecked:#x?}"));
+    unsafe { checked.with_initialize_on_stack(CHOSEN_SET_THREAD_POINTER_FN, f) }
+}
+
+#[allow(unused_macros)]
+macro_rules! use_default_set_thread_pointer_fn {
+    () => {
+        const CHOSEN_SET_THREAD_POINTER_FN: SetThreadPointerFn = DEFAULT_SET_THREAD_POINTER_FN;
+    };
+}
+
+cfg_if! {
+    if #[cfg(feature = "sel4")] {
+        sel4::sel4_cfg_if! {
+            if #[sel4_cfg(all(ARCH_X86_64, SET_TLS_BASE_SELF))] {
+                const CHOSEN_SET_THREAD_POINTER_FN: SetThreadPointerFn = set_thread_pointer_via_syscall;
+
+                unsafe extern "C" fn set_thread_pointer_via_syscall(val: usize) {
+                    sel4::set_tls_base(val);
+                }
+            } else {
+                use_default_set_thread_pointer_fn!();
+            }
+        }
+    } else {
+        use_default_set_thread_pointer_fn!();
+    }
+}

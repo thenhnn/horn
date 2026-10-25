@@ -1,0 +1,245 @@
+#
+# Copyright 2023, Colias Group, LLC
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+
+{ lib
+, stdenv
+, buildPackages
+, runCommand, runCommandCC, linkFarm, writeScript
+, jq
+, symlinkToRegularFile
+, crateUtils
+, mkSeL4
+, mkMicrokit
+, sources
+}:
+
+let
+  elaborateWorldConfig =
+    { isMicrokit ? false
+    , kernelConfig ? null
+    , kernelLoaderConfig ? null
+    , microkitConfig ? null
+    , canSimulate ? false
+    , platformRequiresLoader ? true
+    , mkQEMUCmd ? null
+    , mkPlatformSystemExtension ? _: { attrs = {}; links = []; }
+    , ...
+    } @ args:
+    args // {
+      inherit
+        isMicrokit
+        kernelConfig
+        kernelLoaderConfig
+        microkitConfig
+        canSimulate
+        platformRequiresLoader
+        mkQEMUCmd
+        mkPlatformSystemExtension
+      ;
+    };
+in
+
+unelaboratedWorldConfig:
+
+let
+  worldConfig = elaborateWorldConfig unelaboratedWorldConfig;
+in
+
+self: with self;
+
+{
+  __isWorld = true;
+
+  inherit worldConfig;
+
+  microkit = assert worldConfig.isMicrokit; mkMicrokit worldConfig;
+
+  microkitForUserspace = microkit;
+  microkitForBoot = microkit;
+
+  microkitDir =
+    let
+      inherit (worldConfig.microkitConfig) board config;
+    in
+      "${microkitForUserspace.sdk}/board/${board}/${config}";
+
+  seL4 = assert !worldConfig.isMicrokit; mkSeL4 worldConfig.kernelConfig;
+
+  seL4ForUserspace = seL4;
+
+  seL4ForBoot = seL4.overrideAttrs (_: {
+    # src = lib.cleanSource (sources.localRoot + "/seL4");
+  });
+
+  seL4IncludeDir =
+    if worldConfig.isMicrokit
+    then
+      "${microkitDir}/include"
+    else
+      "${seL4ForUserspace}/libsel4/include";
+
+  seL4RustEnvVars =
+    if worldConfig.isMicrokit
+    then {
+      SEL4_INCLUDE_DIRS = "${microkitDir}/include";
+      SEL4_PLATFORM_INFO = "${microkitDir}/platform_gen.json";
+    }
+    else {
+      SEL4_PREFIX = seL4ForUserspace;
+    };
+
+  seL4Modifications = crateUtils.elaborateModifications {
+    modifyDerivation = drv: drv.overrideAttrs (self: super: seL4RustEnvVars);
+  };
+
+  kernelBinary =
+    if worldConfig.isMicrokit
+    then "${microkitDir}/elf/sel4.elf"
+    else "${seL4ForBoot}/bin/kernel.elf"
+  ;
+
+  kernelBinary32Bit =
+    assert stdenv.hostPlatform.isx86_64;
+    runCommandCC "kernel32.elf" {} ''
+      $OBJCOPY -O elf32-i386 ${kernelBinary} $out
+    '';
+
+  libsel4 = if worldConfig.isMicrokit then microkitDir else "${seL4ForUserspace}/libsel4";
+
+  seL4KernelConfigFile = "${seL4IncludeDir}/kernel/gen_config.json";
+
+  seL4Config =
+    let
+      f = seg: builtins.fromJSON (builtins.readFile (symlinkToRegularFile "${seg}-gen_config.json" "${seL4IncludeDir}/${seg}/gen_config.json"));
+    in
+      f "kernel" // f "sel4";
+
+  seL4ConfigJSON = runCommand "sel4-config.json" {
+    nativeBuildInputs = [
+      jq
+    ];
+    json = builtins.toJSON seL4Config;
+    passAsFile = [ "json" ];
+  } ''
+    jq . $jsonPath > $out
+  '';
+
+  mkTask = callPackage ./mk-task.nix {};
+
+  sel4-capdl-initializer = callPackage ./capdl/sel4-capdl-initializer.nix {};
+  objectSizes = callPackage ./capdl/object-sizes.nix {};
+  serializeCapDLSpec = callPackage ./capdl/serialize-capdl-spec.nix {};
+  mkSimpleCompositionCapDLSpec = callPackage ./capdl/mk-simple-composition-capdl-spec.nix {};
+  mkCapDLInitializerWithSpec = callPackage ./capdl/mk-capdl-initializer-with-spec.nix {};
+
+  genSDF = callPackage ./gen-sdf.nix {};
+
+  simulateScript = if !worldConfig.canSimulate then null else buildPackages.writeShellApplication {
+    name = "simulate";
+    checkPhase = "";
+    text = ''
+      image="$1"
+      shift
+      exec ${lib.concatStringsSep " " (worldConfig.mkQEMUCmd ''"$image"'')} "$@"
+    '';
+  };
+
+  mkCapDLInitializer =
+    { spec ? null
+    , specAttrs ? spec.specAttrs
+    , embedFrames ? true
+    , deflate ? true
+    , alloc ? true
+    , extraDebuggingLinks ? []
+    }:
+
+    lib.fix (self:
+      mkCapDLInitializerWithSpec (spec.specAttrs // {
+        inherit embedFrames;
+        inherit deflate;
+        inherit alloc;
+      }) // {
+        inherit spec;
+        debuggingLinks = [
+          { name = "spec.cdl"; path = spec.specAttrs.cdl; }
+          { name = "fill"; path = spec.specAttrs.fill; }
+          { name = "initializer.full.elf"; path = self.split.full; }
+        ] ++ lib.optionals (spec != null) [
+          { name = "spec"; path = spec; }
+        ] ++ extraDebuggingLinks;
+      }
+    );
+
+  sel4-kernel-loader = callPackage ./sel4-kernel-loader.nix {
+    inherit (worldConfig) kernelLoaderConfig;
+  };
+
+  mkSeL4KernelLoaderWithPayload = { appELF }: callPackage ./mk-sel4-kernel-loader-with-payload.nix {} {
+    app = appELF;
+  };
+
+  mkSystem =
+    { rootTask
+    , extraDebuggingLinks ? []
+    , passthru ? {}
+    }:
+    let
+      loader =
+        assert worldConfig.platformRequiresLoader;
+        mkSeL4KernelLoaderWithPayload {
+          appELF = rootTask.elf;
+        };
+
+      symbolizeRootTaskBacktrace = writeScript "x.sh" ''
+        #!${buildPackages.runtimeShell}
+        exec ${buildPackages.this.sel4-backtrace-cli}/bin/sel4-symbolize-backtrace -f ${rootTask.elf} "$@"
+      '';
+    in {
+      inherit loader rootTask;
+      rootTaskImage = rootTask.elf;
+      loaderImage = loader.elf;
+      debuggingLinks = [
+        { name = "kernel.elf"; path = "${seL4ForBoot}/bin/kernel.elf"; }
+        { name = "root-task.elf"; path = rootTask.elf; }
+        { name = "symbolize-root-task-backtrace"; path = symbolizeRootTaskBacktrace; }
+        { name = "sel4-symbolize-backtrace";
+          path = "${buildPackages.this.sel4-backtrace-cli}/bin/sel4-symbolize-backtrace";
+        }
+      ] ++ lib.optionals worldConfig.platformRequiresLoader [
+        { name = "loader.elf"; path = loader.elf; }
+        { name = "loader.debug.elf"; path = loader.split.full; }
+      ] ++ (rootTask.debuggingLinks or []) ++ extraDebuggingLinks;
+    } // passthru;
+
+  callPlatform =
+    { system
+    , extraPlatformArgs ? {}
+    , extraDebuggingLinks ? []
+    , ...
+    } @ args:
+    let
+      platformSystemExtension = worldConfig.mkPlatformSystemExtension ({
+        inherit worldConfig;
+      } // (
+        if worldConfig.platformRequiresLoader
+        then { inherit (system) loaderImage; }
+        else { inherit (system) rootTaskImage; }
+      ) // extraPlatformArgs);
+    in {
+      links = linkFarm "links" (
+        system.debuggingLinks ++ platformSystemExtension.links ++ extraDebuggingLinks
+      );
+    }
+    // platformSystemExtension.attrs
+    // builtins.removeAttrs system [ "debuggingLinks" ]
+    // builtins.removeAttrs args [ "extraPlatformArgs" "extraDebuggingLinks" ];
+
+  instances = callPackage ./instances {};
+
+  docs = callPackage ./docs.nix {};
+
+  shell = callPackage ./shell.nix {};
+}

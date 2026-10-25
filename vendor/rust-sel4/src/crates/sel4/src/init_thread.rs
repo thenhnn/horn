@@ -1,0 +1,167 @@
+//
+// Copyright 2024, Colias Group, LLC
+//
+// SPDX-License-Identifier: MIT
+//
+
+//! Items that are applicable within the context of the root task's initial thread's CSpace.
+
+use core::marker::PhantomData;
+use core::ops::Range;
+
+use sel4_config::sel4_cfg;
+
+use crate::{
+    CPtr, CPtrBits, Cap, CapType, cap_type,
+    const_helpers::{u32_into_usize, usize_into_word, word_into_usize},
+    sys,
+};
+
+/// The index of a slot in the initial thread's root CNode.
+#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
+pub struct Slot<T: CapType = cap_type::Unspecified> {
+    index: usize,
+    _phantom: PhantomData<T>,
+}
+
+impl<T: CapType> Slot<T> {
+    const fn from_sys(slot: u32) -> Self {
+        Self::from_index(u32_into_usize(slot))
+    }
+
+    pub const fn from_index(index: usize) -> Self {
+        Self {
+            index,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub const fn index(&self) -> usize {
+        self.index
+    }
+
+    pub const fn cptr_bits(&self) -> CPtrBits {
+        usize_into_word(self.index)
+    }
+
+    pub const fn cptr(&self) -> CPtr {
+        CPtr::from_bits(self.cptr_bits())
+    }
+
+    pub const fn cap(&self) -> Cap<T> {
+        self.cptr().cast()
+    }
+
+    pub const fn cast<T1: CapType>(&self) -> Slot<T1> {
+        Slot::from_index(self.index)
+    }
+
+    pub const fn upcast(&self) -> Slot {
+        self.cast()
+    }
+}
+
+impl Slot {
+    pub const fn downcast<T: CapType>(&self) -> Slot<T> {
+        self.cast()
+    }
+}
+
+/// Corresponds to `seL4_SlotRegion`.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SlotRegion<T: CapType> {
+    range: Range<usize>,
+    _phantom: PhantomData<T>,
+}
+
+#[allow(clippy::len_without_is_empty)]
+impl<T: CapType> SlotRegion<T> {
+    pub(crate) const fn from_range(range: Range<usize>) -> Self {
+        Self {
+            range,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub(crate) const fn from_sys(sys: sys::seL4_SlotRegion) -> Self {
+        Self::from_range(word_into_usize(sys.start)..word_into_usize(sys.end))
+    }
+
+    pub const fn start(&self) -> usize {
+        self.range.start
+    }
+
+    pub const fn end(&self) -> usize {
+        self.range.end
+    }
+
+    pub const fn range(&self) -> Range<usize> {
+        self.start()..self.end()
+    }
+
+    pub fn len(&self) -> usize {
+        self.range.len()
+    }
+
+    pub fn index(&self, i: usize) -> Slot<T> {
+        assert!(i < self.len());
+        Slot::from_index(self.range.start + i)
+    }
+}
+
+/// Initial CSpace slot constants corresponding to `seL4_Cap*`.
+pub mod slot {
+    use super::{Slot, cap_type, sel4_cfg, sys};
+
+    macro_rules! mk {
+        [
+            $(
+                $(#[$outer:meta])*
+                ($name:ident, $cap_type:ident, $sys_name:ident),
+            )*
+        ] => {
+            $(
+                $(#[$outer])*
+                #[doc = "Corresponds to `"]
+                #[doc = stringify!($sys_name)]
+                #[doc = "`."]
+                pub const $name: Slot<cap_type::$cap_type> = Slot::from_sys(sys::seL4_RootCNodeCapSlots::$sys_name);
+            )*
+        };
+    }
+
+    mk![
+        (NULL, Null, seL4_CapNull),
+        (TCB, Tcb, seL4_CapInitThreadTCB),
+        (CNODE, CNode, seL4_CapInitThreadCNode),
+        (VSPACE, VSpace, seL4_CapInitThreadVSpace),
+        (IRQ_CONTROL, IrqControl, seL4_CapIRQControl),
+        (ASID_CONTROL, AsidControl, seL4_CapASIDControl),
+        (ASID_POOL, AsidPool, seL4_CapInitThreadASIDPool),
+        #[sel4_cfg(not(ARCH_X86_64))]
+        (IO_PORT_CONTROL, Null, seL4_CapIOPortControl),
+        #[sel4_cfg(ARCH_X86_64)]
+        (IO_PORT_CONTROL, IOPortControl, seL4_CapIOPortControl),
+        #[sel4_cfg(all(ARCH_X86_64, IOMMU))]
+        (IO_SPACE, IOSpace, seL4_CapIOSpace),
+        (BOOT_INFO_FRAME, Granule, seL4_CapBootInfoFrame),
+        (IPC_BUFFER, Granule, seL4_CapInitThreadIPCBuffer),
+        (DOMAIN_SET, DomainSet, seL4_CapDomain),
+        #[cfg(false)] // TODO
+        (SMMU_SID_CONTROL, Null, seL4_CapSMMUSIDControl),
+        #[cfg(false)] // TODO
+        (SMMU_CB_CONTROL, Null, seL4_CapSMMUCBControl),
+        #[sel4_cfg(KERNEL_MCS)]
+        (SC, SchedContext, seL4_CapInitThreadSC),
+        #[sel4_cfg(all(ARCH_AARCH64, ALLOW_SMC_CALLS))]
+        (SMC, Null, seL4_CapSMC),
+    ];
+}
+
+/// Suspends the initial thread using [`slot::TCB`].
+#[cfg(feature = "state")]
+pub fn suspend_self<T>() -> T {
+    slot::TCB.cap().tcb_suspend().unwrap();
+
+    unreachable!()
+}
