@@ -61,6 +61,10 @@ in
       cp ${build.writeText "sel4-config.json" (builtins.toJSON settings)} "$out/share/sel4/config.json"
       cp CMakeCache.txt "$out/share/sel4/CMakeCache.txt"
       test -s "$out/bin/kernel.elf"
+      ${lib.optionalString hostPlatform.isx86_64 ''
+        # qemu multiboot loader requires an ELF32 container
+        llvm-objcopy -O elf32-i386 "$out/bin/kernel.elf" "$out/bin/kernel-multiboot.elf"
+      ''}
       test -s "$out/libsel4/include/sel4/sel4.h"
       test -s "$out/libsel4/include/sel4/gen_config.h"
       test -s "$out/libsel4/include/kernel/gen_config.json"
