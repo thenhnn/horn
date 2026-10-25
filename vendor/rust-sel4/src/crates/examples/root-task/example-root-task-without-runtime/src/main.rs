@@ -234,5 +234,5 @@ unsafe extern "C" fn __rust_entry(bootinfo: *const sel4::BootInfo) -> ! {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     sel4::debug_println!("{}", info);
-    core::intrinsics::abort()
+    core::intrinsics::abort_immediate()
 }

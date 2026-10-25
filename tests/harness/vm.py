@@ -126,6 +126,12 @@ class VM:
     def start(self):
         if self.process is not None:
             raise RuntimeError("VM already started")
+        for image in (
+            self.kernel / "bin/kernel-multiboot.elf",
+            self.root_task / "bin/task.elf",
+        ):
+            if not image.is_file():
+                raise FileNotFoundError(image)
         command = [
             "qemu-system-x86_64",
             "-machine",
@@ -154,7 +160,7 @@ class VM:
             "-kernel",
             str(self.kernel / "bin/kernel-multiboot.elf"),
             "-initrd",
-            str(self.root_task / "bin/root-task.elf"),
+            str(self.root_task / "bin/task.elf"),
             "-append",
             "console_port=0x3f8 debug_port=0x3f8",
         ]

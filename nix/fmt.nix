@@ -14,5 +14,8 @@ in
       "vendor/**"
       "work/**"
       "nix/npins/**"
+      "Cargo.nix"
+      "nix/rust/sysroot.nix"
+      "nix/rust/cfg.json"
     ];
   }

@@ -21,10 +21,11 @@ in {
     };
     pkgs = lib.mkOption {
       type = lib.types.pkgs;
-      default = import sources.nixpkgs {
-        localSystem = cfg.buildPlatform;
-        crossSystem = cfg.hostPlatform;
-      };
+      default = assert lib.assertMsg cfg.buildPlatform.isLinux "Horn builds require a Linux host.";
+        import sources.nixpkgs {
+          localSystem = cfg.buildPlatform;
+          crossSystem = cfg.hostPlatform;
+        };
       description = "Package set supplied to modules as pkgs.";
     };
   };
