@@ -1,7 +1,6 @@
 {
   pkgs,
-  platform,
-  profile ? "debug",
+  settings,
 }: let
   inherit (pkgs) lib;
   inherit (pkgs.stdenv) hostPlatform;
@@ -9,10 +8,10 @@
   llvm = build.llvmPackages;
   binutils = pkgs.buildPackages.binutils-unwrapped;
   upstream = builtins.fromJSON (builtins.readFile ../../vendor/sel4/upstream.json);
-  settings =
-    (import ./profiles).${profile}
-    // platform.settings
-    // {KernelSel4Arch = hostPlatform.parsed.cpu.name;};
+  profile =
+    if settings.KernelDebugBuild
+    then "debug"
+    else "release";
 in
   pkgs.stdenvNoCC.mkDerivation {
     pname = "horn-sel4-${settings.KernelPlatform}-${profile}";
