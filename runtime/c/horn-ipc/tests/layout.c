@@ -59,15 +59,14 @@ static horn_status_t mock_delete(void *ctx, horn_cap_t cap) {
     return HORN_OK;
 }
 
-static const horn_cap_entry_t node_entries[] = {
-    { .slot = 0, .is_child = false, .leaf = { .path = "a", .slot = 0, .mode = HORN_CAP_COPY, .rights = 0xfu } },
-    { .slot = 1, .is_child = false, .leaf = { .path = "b", .slot = 1, .mode = HORN_CAP_MOVE, .rights = 0xfu } },
-    { .slot = 2, .is_child = false, .leaf = { .path = "c", .slot = 2, .mode = HORN_CAP_BORROW, .rights = 0xfu } },
-    { .slot = 3, .is_child = false, .leaf = { .path = "d", .slot = 3, .mode = HORN_CAP_COPY, .rights = 0xfu } },
+static const horn_cap_slot_t node_slots[] = {
+    { .path = "a", .slot = 0, .mode = HORN_CAP_COPY, .rights = 0xfu },
+    { .path = "b", .slot = 1, .mode = HORN_CAP_MOVE, .rights = 0xfu },
+    { .path = "c", .slot = 2, .mode = HORN_CAP_BORROW, .rights = 0xfu },
+    { .path = "d", .slot = 3, .mode = HORN_CAP_COPY, .rights = 0xfu },
 };
-static const horn_cap_node_t node = { .size_bits = 2, .entries = node_entries, .entry_count = 4 };
-static const horn_cap_node_t *const roots[] = { &node };
-static const horn_cap_layout_t layout = { .direct = NULL, .direct_count = 0, .roots = roots, .root_count = 1 };
+static const horn_cap_node_t node = { .size_bits = 2, .slots = node_slots, .slot_count = 4 };
+static const horn_cap_layout_t layout = { .direct = NULL, .direct_count = 0, .cnode = &node };
 
 int main(void) {
     mock_space_t space = {0};

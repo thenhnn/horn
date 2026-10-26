@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
-from ..layout import CapEntryLayout, CapLayout, CapNodeLayout
+from ..layout import CapLayout
 from ..model import Interface, Method, Object, Schema
 from ..types import (
     ArrayType,
@@ -335,37 +335,7 @@ class CEmitter:
     def _emit_layout(self, prefix: str, kind: str, layout: CapLayout) -> list[str]:
         base = f"{prefix}_{kind}"
         lines: list[str] = []
-        counter = [0]
-
-        def emit_node(node: CapNodeLayout) -> str:
-            name = f"{base}_node_{counter[0]}"
-            counter[0] += 1
-            child_names: dict[int, str] = {}
-            for index, entry in enumerate(node.entries):
-                if entry.child is not None:
-                    child_names[index] = emit_node(entry.child)
-            lines.append(f"static const horn_cap_entry_t {name}_entries[] = {{")
-            for index, entry in enumerate(node.entries):
-                if entry.leaf is not None:
-                    leaf = entry.leaf
-                    lines.append(
-                        "    { .slot = "
-                        f"{entry.slot}u, .is_child = false, .leaf = {{ .path = \"{leaf.path}\", "
-                        f".slot = {leaf.slot}u, .mode = {c_mode(leaf.mode)}, .rights = {c_rights(leaf.rights)} }} }},"
-                    )
-                else:
-                    lines.append(
-                        "    { .slot = "
-                        f"{entry.slot}u, .is_child = true, .child = &{child_names[index]} }},"
-                    )
-            lines.append("};")
-            lines.append(
-                f"static const horn_cap_node_t {name} = {{ .size_bits = {node.size_bits}u, "
-                f".entries = {name}_entries, .entry_count = {len(node.entries)}u }};"
-            )
-            return name
-
-        root_names = [emit_node(root) for root in layout.roots]
+        node_name = f"{base}_node"
         if layout.direct:
             lines.append(f"static const horn_cap_slot_t {base}_direct[] = {{")
             for slot in layout.direct:
@@ -377,24 +347,31 @@ class CEmitter:
             lines.append("};")
             lines.append(
                 f"const horn_cap_layout_t horn_{base}_layout = {{ .direct = {base}_direct, "
-                f".direct_count = {len(layout.direct)}u, .roots = NULL, .root_count = 0u }};"
+                f".direct_count = {len(layout.direct)}u, .cnode = NULL }};"
+            )
+        elif layout.cnode is not None:
+            node = layout.cnode
+            lines.append(f"static const horn_cap_slot_t {node_name}_slots[] = {{")
+            for slot in node.slots:
+                lines.append(
+                    "    { .path = "
+                    f"\"{slot.path}\", .slot = {slot.slot}u, .mode = {c_mode(slot.mode)}, "
+                    f".rights = {c_rights(slot.rights)} }},"
+                )
+            lines.append("};")
+            lines.append(
+                f"static const horn_cap_node_t {node_name} = {{ .size_bits = {node.size_bits}u, "
+                f".slots = {node_name}_slots, .slot_count = {len(node.slots)}u }};"
+            )
+            lines.append(
+                f"const horn_cap_layout_t horn_{base}_layout = {{ .direct = NULL, "
+                f".direct_count = 0u, .cnode = &{node_name} }};"
             )
         else:
-            if root_names:
-                lines.append(
-                    f"static const horn_cap_node_t *const {base}_roots[] = {{ "
-                    + ", ".join(f"&{name}" for name in root_names)
-                    + " };"
-                )
-                lines.append(
-                    f"const horn_cap_layout_t horn_{base}_layout = {{ .direct = NULL, "
-                    f".direct_count = 0u, .roots = {base}_roots, .root_count = {len(root_names)}u }};"
-                )
-            else:
-                lines.append(
-                    f"const horn_cap_layout_t horn_{base}_layout = {{ .direct = NULL, "
-                    ".direct_count = 0u, .roots = NULL, .root_count = 0u };"
-                )
+            lines.append(
+                f"const horn_cap_layout_t horn_{base}_layout = {{ .direct = NULL, "
+                ".direct_count = 0u, .cnode = NULL };"
+            )
         lines.append("")
         return lines
 

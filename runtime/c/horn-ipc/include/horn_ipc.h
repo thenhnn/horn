@@ -33,26 +33,16 @@ typedef struct horn_cap_slot {
     uint32_t rights;
 } horn_cap_slot_t;
 
-typedef struct horn_cap_node horn_cap_node_t;
-
-typedef struct horn_cap_entry {
-    uint32_t slot;
-    bool is_child;
-    horn_cap_slot_t leaf;
-    const horn_cap_node_t *child;
-} horn_cap_entry_t;
-
-struct horn_cap_node {
+typedef struct horn_cap_node {
     uint8_t size_bits;
-    const horn_cap_entry_t *entries;
-    size_t entry_count;
-};
+    const horn_cap_slot_t *slots;
+    size_t slot_count;
+} horn_cap_node_t;
 
 typedef struct horn_cap_layout {
     const horn_cap_slot_t *direct;
     size_t direct_count;
-    const horn_cap_node_t *const *roots;
-    size_t root_count;
+    const horn_cap_node_t *cnode;
 } horn_cap_layout_t;
 
 typedef enum horn_status {
@@ -144,42 +134,33 @@ horn_status_t horn_cap_source_pop(horn_cap_source_t *source, horn_cap_t *cap);
 horn_cap_sink_t horn_cap_list_sink(horn_cap_list_t *list);
 horn_cap_source_t horn_cap_list_source(horn_cap_list_t *list);
 
-#define HORN_MAX_LAYOUT_DEPTH 16
-
-typedef struct horn_cap_cursor {
-    horn_cap_t cnode;
-    const horn_cap_node_t *node;
-    size_t entry;
-    uint32_t attach_slot;
-} horn_cap_cursor_t;
-
 typedef struct horn_cap_packer {
     horn_cap_space_t *space;
     const horn_cap_layout_t *layout;
     bool direct;
-    size_t root_index;
-    horn_cap_list_t roots;
-    horn_cap_cursor_t stack[HORN_MAX_LAYOUT_DEPTH];
-    size_t depth;
+    horn_cap_t cnode;
+    bool have_cnode;
+    size_t next_slot;
+    horn_cap_list_t caps;
 } horn_cap_packer_t;
 
 void horn_cap_packer_init(horn_cap_packer_t *packer, horn_cap_space_t *space, const horn_cap_layout_t *layout);
 horn_status_t horn_cap_packer_push(horn_cap_packer_t *packer, horn_cap_t cap);
-horn_status_t horn_cap_packer_finish(horn_cap_packer_t *packer, horn_cap_list_t *roots);
+horn_status_t horn_cap_packer_finish(horn_cap_packer_t *packer, horn_cap_list_t *caps);
 horn_cap_sink_t horn_cap_packer_sink(horn_cap_packer_t *packer);
 
 typedef struct horn_cap_unpacker {
     horn_cap_space_t *space;
     const horn_cap_layout_t *layout;
     bool direct;
-    horn_cap_list_t roots;
+    horn_cap_list_t caps;
     size_t direct_index;
-    size_t root_index;
-    horn_cap_cursor_t stack[HORN_MAX_LAYOUT_DEPTH];
-    size_t depth;
+    horn_cap_t cnode;
+    bool have_cnode;
+    size_t next_slot;
 } horn_cap_unpacker_t;
 
-void horn_cap_unpacker_init(horn_cap_unpacker_t *unpacker, horn_cap_space_t *space, const horn_cap_layout_t *layout, horn_cap_list_t roots);
+void horn_cap_unpacker_init(horn_cap_unpacker_t *unpacker, horn_cap_space_t *space, const horn_cap_layout_t *layout, horn_cap_list_t caps);
 horn_status_t horn_cap_unpacker_pop(horn_cap_unpacker_t *unpacker, horn_cap_t *cap);
 horn_cap_source_t horn_cap_unpacker_source(horn_cap_unpacker_t *unpacker);
 

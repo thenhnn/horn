@@ -19,8 +19,9 @@ src/horn_ipc_sel4.o: src/horn_ipc_sel4.c include/horn_ipc_sel4.h include/horn_ip
 	$(CC) $(CFLAGS) -I$(SEL4_INCLUDE) -c -o $@ $<
 
 test: libhorn_ipc.a
-	$(CC) $(CFLAGS) tests/layout.c libhorn_ipc.a -o tests/layout
-	./tests/layout
+	$(CC) $(CFLAGS) tests/layout.c libhorn_ipc.a -o tests/layout-test
+	./tests/layout-test
+	rm -f tests/layout-test
 
 clean:
-	rm -f src/horn_ipc.o src/horn_ipc_sel4.o libhorn_ipc.a libhorn_ipc_sel4.a tests/layout
+	rm -f src/horn_ipc.o src/horn_ipc_sel4.o libhorn_ipc.a libhorn_ipc_sel4.a tests/layout-test

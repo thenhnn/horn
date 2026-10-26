@@ -1,10 +1,25 @@
-{config, lib, ...}: let
-  base = config.rust.workspace.override {target = "sel4";};
-  child = base.members.idl-demo-child;
+{config, lib, pkgs, ...}: let
+  schema = "${./schema.py}";
+  idl = "${../../../tools/idl}";
+
+  demoOverride = old: {
+    HORN_SCHEMA = schema;
+    HORN_IDL = idl;
+    nativeBuildInputs = (old.nativeBuildInputs or []) ++ [pkgs.python3];
+  };
+
+  childWorkspace = config.rust.workspace.override {
+    target = "sel4";
+    crateOverrides = {
+      idl-demo-child = demoOverride;
+    };
+  };
+  child = childWorkspace.members.idl-demo-child;
+
   rootWorkspace = config.rust.workspace.override {
     target = "sel4-roottask";
     crateOverrides = {
-      idl-demo-root = old: {
+      idl-demo-root = old: (demoOverride old) // {
         CHILD_ELF = "${child}/bin/task.elf";
       };
       memchr = old: {

@@ -13,6 +13,47 @@ use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 pub const MAX_CAPS: usize = 3;
+/// Pad a component name into the fixed-size HornTag component field.
+pub const fn horn_tag_component(bytes: &[u8]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    let mut index = 0;
+    while index < bytes.len() && index < out.len() {
+        out[index] = bytes[index];
+        index += 1;
+    }
+    out
+}
+
+/// Emit a `.horn` ELF tag for a generated component.
+///
+/// The tag is intentionally simple: magic, version, padded component name,
+/// and a reserved layout hash.  The root task validates the magic at build
+/// time before loading the image.
+#[macro_export]
+macro_rules! horn_tag {
+    ($component:expr) => {
+        $crate::horn_tag!($component, 0)
+    };
+    ($component:expr, $layout_hash:expr) => {
+        #[repr(C)]
+        pub struct HornTag {
+            pub magic: [u8; 4],
+            pub version: u32,
+            pub component: [u8; 32],
+            pub layout_hash: u64,
+        }
+
+        #[used]
+        #[unsafe(link_section = ".horn")]
+        pub static HORN_TAG: HornTag = HornTag {
+            magic: *b"HORN",
+            version: 1,
+            component: $crate::horn_tag_component($component.as_bytes()),
+            layout_hash: $layout_hash,
+        };
+    };
+}
+
 pub const MAX_MESSAGE_WORDS: usize = 120;
 pub const MAX_MESSAGE_BYTES: usize = MAX_MESSAGE_WORDS * 8;
 
@@ -105,21 +146,15 @@ pub struct CapSlot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CapEntry {
-    Leaf(CapSlot),
-    Node { slot: u32, layout: &'static CapNode },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapNode {
     pub size_bits: u8,
-    pub entries: &'static [CapEntry],
+    pub slots: &'static [CapSlot],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapLayout {
     pub direct: &'static [CapSlot],
-    pub roots: &'static [&'static CapNode],
+    pub cnode: Option<&'static CapNode>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,19 +257,19 @@ impl<T: CapType> Default for Cap<T> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CapList {
+pub struct WireCaps {
     refs: [Option<CapRef>; MAX_CAPS],
     len: usize,
     read: usize,
 }
 
-impl Default for CapList {
+impl Default for WireCaps {
     fn default() -> Self {
         Self { refs: [None; MAX_CAPS], len: 0, read: 0 }
     }
 }
 
-impl CapList {
+impl WireCaps {
     pub fn push(&mut self, cap: CapRef) -> Result<(), RpcError> {
         if self.len >= MAX_CAPS {
             return Err(RpcError::TooManyCaps);
@@ -274,15 +309,15 @@ pub trait CapSource {
     fn pop(&mut self) -> Result<CapRef, RpcError>;
 }
 
-impl CapSink for CapList {
+impl CapSink for WireCaps {
     fn push(&mut self, cap: CapRef) -> Result<(), RpcError> {
-        CapList::push(self, cap)
+        WireCaps::push(self, cap)
     }
 }
 
-impl CapSource for CapList {
+impl CapSource for WireCaps {
     fn pop(&mut self) -> Result<CapRef, RpcError> {
-        CapList::pop(self)
+        WireCaps::pop(self)
     }
 }
 
@@ -628,6 +663,31 @@ pub struct Region<T: Copy, const N: usize> {
 
 pub mod layout;
 pub use layout::{CapPacker, CapSpace, CapUnpacker, SlotRef};
+
+/// A deferred reply that can be completed after the request handler returns.
+pub trait AsyncReply {
+    fn reply_wire<S: CapSpace, W: Wire>(
+        self,
+        space: &mut S,
+        result: &W,
+        result_layout: &'static CapLayout,
+    ) -> Result<(), RpcError>;
+}
+
+/// Server-side request receive path for deferred replies.
+pub trait AsyncServer {
+    type Authority;
+    type Reply: AsyncReply;
+
+    fn recv_request<A, F>(
+        &mut self,
+        request_layout: &'static CapLayout,
+        reply: Self::Authority,
+        decode: F,
+    ) -> Result<(u64, A, Self::Reply), RpcError>
+    where
+        F: for<'a> FnOnce(u64, &mut Decoder<'a>) -> Result<A, RpcError>;
+}
 
 #[cfg(feature = "sel4")]
 pub mod sel4_backend;

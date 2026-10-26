@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use horn_ipc::layout::{CapPacker, CapSpace, CapUnpacker, SlotRef};
 use horn_ipc::{
-    CapEntry, CapLayout, CapMode, CapNode, CapRef, CapSink, CapSlot, CapSource, Rights, RpcError,
+    CapLayout, CapMode, CapNode, CapRef, CapSink, CapSlot, CapSource, Rights, RpcError,
 };
 
 #[derive(Default)]
@@ -62,39 +62,39 @@ impl CapSpace for MockSpace {
     }
 }
 
-static LEAF_NODE: CapNode = CapNode {
+static CNODE: CapNode = CapNode {
     size_bits: 2,
-    entries: &[
-        CapEntry::Leaf(CapSlot {
+    slots: &[
+        CapSlot {
             path: "a",
             slot: 0,
             mode: CapMode::COPY,
             rights: Rights::ALL,
-        }),
-        CapEntry::Leaf(CapSlot {
+        },
+        CapSlot {
             path: "b",
             slot: 1,
             mode: CapMode::MOVE,
             rights: Rights::ALL,
-        }),
-        CapEntry::Leaf(CapSlot {
+        },
+        CapSlot {
             path: "c",
             slot: 2,
             mode: CapMode::BORROW,
             rights: Rights::ALL,
-        }),
-        CapEntry::Leaf(CapSlot {
+        },
+        CapSlot {
             path: "d",
             slot: 3,
             mode: CapMode::COPY,
             rights: Rights::ALL,
-        }),
+        },
     ],
 };
 
-static TREE_LAYOUT: CapLayout = CapLayout {
+static CNODE_LAYOUT: CapLayout = CapLayout {
     direct: &[],
-    roots: &[&LEAF_NODE],
+    cnode: Some(&CNODE),
 };
 
 static DIRECT_LAYOUT: CapLayout = CapLayout {
@@ -112,20 +112,20 @@ static DIRECT_LAYOUT: CapLayout = CapLayout {
             rights: Rights::ALL,
         },
     ],
-    roots: &[],
+    cnode: None,
 };
 
 #[test]
-fn packs_and_unpacks_a_cnode_tree() {
+fn packs_and_unpacks_a_cnode() {
     let mut space = MockSpace::default();
-    let mut packer = CapPacker::new(&mut space, &TREE_LAYOUT);
+    let mut packer = CapPacker::new(&mut space, &CNODE_LAYOUT);
     for slot in 10..14 {
         packer.push(MockSpace::cap(slot)).unwrap();
     }
-    let roots = packer.finish().unwrap();
-    assert_eq!(roots.len(), 1);
+    let caps = packer.finish().unwrap();
+    assert_eq!(caps.len(), 1);
 
-    let mut unpacker = CapUnpacker::new(&mut space, &TREE_LAYOUT, roots);
+    let mut unpacker = CapUnpacker::new(&mut space, &CNODE_LAYOUT, caps);
     let mut modes = Vec::new();
     let mut slots = Vec::new();
     for _ in 0..4 {
@@ -146,10 +146,10 @@ fn packs_direct_caps_without_a_cnode() {
     let mut packer = CapPacker::new(&mut space, &DIRECT_LAYOUT);
     packer.push(MockSpace::cap(1)).unwrap();
     packer.push(MockSpace::cap(2)).unwrap();
-    let roots = packer.finish().unwrap();
-    assert_eq!(roots.len(), 2);
+    let caps = packer.finish().unwrap();
+    assert_eq!(caps.len(), 2);
 
-    let mut unpacker = CapUnpacker::new(&mut space, &DIRECT_LAYOUT, roots);
+    let mut unpacker = CapUnpacker::new(&mut space, &DIRECT_LAYOUT, caps);
     assert_eq!(unpacker.pop().unwrap().slot, 1);
     assert_eq!(unpacker.pop().unwrap().slot, 2);
     assert!(unpacker.pop().is_err());

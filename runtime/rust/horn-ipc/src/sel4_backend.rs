@@ -9,7 +9,7 @@ use sel4::{sel4_cfg, sel4_cfg_if, CPtr, Cap, MessageInfo, Word};
 
 use crate::layout::{CapPacker, CapSpace, CapUnpacker};
 use crate::{
-    CapLayout, CapList, CapMode, CapRef, CapSink, Decoder, Encoder, Rights, RpcError, Transport,
+    CapLayout, WireCaps, CapMode, CapRef, CapSink, Decoder, Encoder, Rights, RpcError, Transport,
     Wire, MAX_MESSAGE_BYTES,
 };
 
@@ -40,7 +40,7 @@ impl<S: CapSpace> Sel4Transport<S> {
         (buf, len)
     }
 
-    fn install(&self, caps: &CapList, buf: &[u8], len: usize) {
+    fn install(&self, caps: &WireCaps, buf: &[u8], len: usize) {
         sel4::with_ipc_buffer_mut(|ipc| {
             ipc.msg_bytes_mut()[..len].copy_from_slice(buf);
             for index in 0..caps.len() {
@@ -50,7 +50,7 @@ impl<S: CapSpace> Sel4Transport<S> {
         });
     }
 
-    fn commit_moves(&self, caps: &CapList) {
+    fn commit_moves(&self, caps: &WireCaps) {
         for index in 0..caps.len() {
             let cap = caps.as_slice()[index].unwrap();
             if cap.mode == CapMode::MOVE {
@@ -72,12 +72,12 @@ impl<S: CapSpace> Transport for Sel4Transport<S> {
         let (buf, len) = self.encode_args(args);
         let mut packer = CapPacker::new(&mut self.space, request_layout);
         args.caps(&mut packer)?;
-        let root_caps = packer.finish()?;
-        self.install(&root_caps, &buf[..len], len);
+        let wire_caps = packer.finish()?;
+        self.install(&wire_caps, &buf[..len], len);
         let words = (len + 7) / 8;
         let target_cptr = self.space.cptr(target)?;
         let reply = Cap::<Endpoint>::from_bits(target_cptr as Word)
-            .call(MessageInfo::new(label, 0, root_caps.len(), words));
+            .call(MessageInfo::new(label, 0, wire_caps.len(), words));
         let result = sel4::with_ipc_buffer_mut(|ipc| {
             let length = reply.length();
             let extra = reply.extra_caps();
@@ -92,7 +92,7 @@ impl<S: CapSpace> Transport for Sel4Transport<S> {
             if status != 0 {
                 return Err(RpcError::Server(status));
             }
-            let mut received = CapList::default();
+            let mut received = WireCaps::default();
             for index in 0..extra {
                 received.push(CapRef::new(
                     self.cnode.cptr().bits() as u64,
@@ -108,7 +108,7 @@ impl<S: CapSpace> Transport for Sel4Transport<S> {
             R::decode(&mut dec)
         });
         if result.is_ok() {
-            self.commit_moves(&root_caps);
+            self.commit_moves(&wire_caps);
         }
         result
     }
@@ -123,13 +123,13 @@ impl<S: CapSpace> Transport for Sel4Transport<S> {
         let (buf, len) = self.encode_args(args);
         let mut packer = CapPacker::new(&mut self.space, request_layout);
         args.caps(&mut packer)?;
-        let root_caps = packer.finish()?;
-        self.install(&root_caps, &buf[..len], len);
+        let wire_caps = packer.finish()?;
+        self.install(&wire_caps, &buf[..len], len);
         let words = (len + 7) / 8;
         let target_cptr = self.space.cptr(target)?;
         let endpoint = Cap::<Endpoint>::from_bits(target_cptr as Word);
-        endpoint.send(MessageInfo::new(label, 0, root_caps.len(), words));
-        self.commit_moves(&root_caps);
+        endpoint.send(MessageInfo::new(label, 0, wire_caps.len(), words));
+        self.commit_moves(&wire_caps);
         Ok(())
     }
 }
@@ -209,7 +209,7 @@ impl<S: CapSpace> Sel4Server<S> {
         let (info, _badge) = endpoint.recv(reply);
         let space = &mut self.space;
         let args = sel4::with_ipc_buffer_mut(|ipc| {
-            let mut received = CapList::default();
+            let mut received = WireCaps::default();
             for index in 0..info.extra_caps() {
                 received.push(CapRef::new(
                     self.cnode.cptr().bits() as u64,
@@ -235,7 +235,7 @@ impl<S: CapSpace> Sel4Server<S> {
         ))
     }
 
-    /// Raw receive: request caps remain in the received CNode tree.
+    /// Raw receive: request caps remain in the received CNode.
     pub fn recv_raw<A: Wire>(
         &mut self,
         request_layout: &'static CapLayout,
@@ -245,9 +245,37 @@ impl<S: CapSpace> Sel4Server<S> {
     }
 }
 
+impl<S: CapSpace> crate::AsyncServer for Sel4Server<S> {
+    type Authority = sel4::ReplyAuthority;
+    type Reply = Sel4Reply;
+
+    fn recv_request<A, F>(
+        &mut self,
+        request_layout: &'static CapLayout,
+        reply: Self::Authority,
+        decode: F,
+    ) -> Result<(u64, A, Self::Reply), RpcError>
+    where
+        F: for<'a> FnOnce(u64, &mut Decoder<'a>) -> Result<A, RpcError>,
+    {
+        Sel4Server::recv_request(self, request_layout, reply, decode)
+    }
+}
+
 pub struct Sel4Reply {
     reply: sel4::ReplyAuthority,
     pub label: u64,
+}
+
+impl crate::AsyncReply for Sel4Reply {
+    fn reply_wire<S: CapSpace, W: Wire>(
+        self,
+        space: &mut S,
+        result: &W,
+        result_layout: &'static CapLayout,
+    ) -> Result<(), RpcError> {
+        self.reply(space, result, result_layout)
+    }
 }
 
 impl Sel4Reply {
@@ -278,7 +306,7 @@ impl Sel4Reply {
     {
         let mut packer = CapPacker::new(space, result_layout);
         caps(&mut packer)?;
-        let root_caps = packer.finish()?;
+        let wire_caps = packer.finish()?;
         let mut result_buf = [0u8; MAX_MESSAGE_BYTES];
         let mut result_enc = Encoder::new(&mut result_buf);
         encode(&mut result_enc);
@@ -290,15 +318,15 @@ impl Sel4Reply {
         let words = (len + 7) / 8;
         sel4::with_ipc_buffer_mut(|ipc| {
             ipc.msg_bytes_mut()[..len].copy_from_slice(&buf[..len]);
-            for index in 0..root_caps.len() {
-                let cap = root_caps.as_slice()[index].unwrap();
+            for index in 0..wire_caps.len() {
+                let cap = wire_caps.as_slice()[index].unwrap();
                 ipc.caps_or_badges_mut()[index] = cap.slot as Word;
             }
         });
         self.reply
-            .send_reply(MessageInfo::new(self.label, 0, root_caps.len(), words));
-        for index in 0..root_caps.len() {
-            let cap = root_caps.as_slice()[index].unwrap();
+            .send_reply(MessageInfo::new(self.label, 0, wire_caps.len(), words));
+        for index in 0..wire_caps.len() {
+            let cap = wire_caps.as_slice()[index].unwrap();
             if cap.mode == CapMode::MOVE {
                 space.delete(cap)?;
             }

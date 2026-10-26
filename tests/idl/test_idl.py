@@ -69,6 +69,7 @@ def test_rust_and_c_glue_reference_runtime():
     assert "pub struct CounterTag;" in rust
     assert "pub struct CounterServiceTag;" in rust
     assert "pub fn counter_service_dispatch" in rust
+    assert 'horn_ipc::horn_tag!("gpos.counter", 0);' in rust
     header, source = emit_c(schema)
     assert "#include <horn_ipc.h>" in header
     assert "horn_counter_add" in header
@@ -125,8 +126,9 @@ class Many:
     layout = schema.interfaces[0].methods[0].request_layout()
     assert len(layout.direct) == 0
     assert layout.root_count == 1
-    assert layout.roots[0].size_bits == 2
-    assert [entry.slot for entry in layout.roots[0].entries] == [0, 1, 2, 3]
+    assert layout.cnode is not None
+    assert layout.cnode.size_bits == 2
+    assert [slot.slot for slot in layout.cnode.slots] == [0, 1, 2, 3]
 
 
 def test_ring_elements_cannot_hold_caps(tmp_path):
@@ -142,6 +144,26 @@ class Bad:
     pass
 """,
         )
+
+
+def test_ring_and_region_record_elements_rejected(tmp_path):
+    for kind in ("ring", "region"):
+        with pytest.raises(DeclarationError, match="cannot be records yet"):
+            load_source(
+                tmp_path,
+                f"record_{kind}",
+                f"""
+from horn_idl import U32, {kind}, record
+
+@record
+class Item:
+    value: U32
+
+@{kind}(element=Item, capacity=8)
+class Items:
+    pass
+""",
+            )
 
 
 def test_recursive_record_rejected(tmp_path):
@@ -218,9 +240,9 @@ def test_generated_rust_compiles_against_runtime(tmp_path):
     )
 
 
-def test_cnode_layout_prefers_up_to_three_roots():
+def test_cnode_layout_uses_one_flat_cnode():
     from horn_idl import CapType, CapMode, Rights
-    from horn_idl.layout import build_layout
+    from horn_idl.layout import MAX_LAYOUT_CAPS, build_layout
     from horn_idl.types import CapPath
 
     def caps(count):
@@ -229,22 +251,43 @@ def test_cnode_layout_prefers_up_to_three_roots():
 
     direct = build_layout(caps(3))
     assert len(direct.direct) == 3
-    assert direct.root_count == 0
+    assert direct.cnode is None
 
-    one = build_layout(caps(256))
+    one = build_layout(caps(MAX_LAYOUT_CAPS))
     assert one.root_count == 1
-    assert one.roots[0].size_bits == 8
+    assert one.cnode is not None
+    assert one.cnode.size_bits == 8
+    assert len(one.cnode.slots) == MAX_LAYOUT_CAPS
 
-    two = build_layout(caps(257))
-    assert two.root_count == 2
+    with pytest.raises(ValueError, match="CNode limit"):
+        build_layout(caps(MAX_LAYOUT_CAPS + 1))
 
-    three = build_layout(caps(768))
-    assert three.root_count == 3
 
-    tree = build_layout(caps(769))
-    assert tree.root_count == 1
-    assert len(tree.roots[0].entries) == 4
-    assert all(entry.child is not None for entry in tree.roots[0].entries)
+def test_async_methods_generate_deferred_server_helpers(tmp_path):
+    from horn_idl.declarations import Transport
+
+    schema = load_source(
+        tmp_path,
+        "async_schema",
+        """
+from horn_idl import U32, iface, method, object
+from horn_idl.declarations import Transport
+
+@iface("test.async", version=(1, 0))
+class Async:
+    @method(transport=Transport.ASYNC)
+    def work(self, value: U32) -> U32: ...
+
+@object(implements=(Async,))
+class AsyncObject:
+    pass
+""",
+    )
+    rust = emit_rust(schema)
+    assert "pub fn async_work_recv_async<S: AsyncServer>" in rust
+    assert "pub fn async_work_reply_async<S: CapSpace, R: AsyncReply>" in rust
+    assert "let (_label, args, reply) = server.recv_request" in rust
+    assert "reply.reply_wire(space, result" in rust
 
 
 def test_typed_capset_generates_slot_layout(tmp_path):

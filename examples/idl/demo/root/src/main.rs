@@ -15,7 +15,11 @@ mod child_image {
 }
 mod child_vspace;
 mod object_allocator;
-mod protocol;
+
+#[allow(dead_code, unused_imports, non_camel_case_types)]
+mod protocol {
+    include!(concat!(env!("OUT_DIR"), "/protocol.rs"));
+}
 
 use child_image::CHILD_IMAGE;
 use child_vspace::create_child_vspace;

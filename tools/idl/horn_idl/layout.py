@@ -1,10 +1,9 @@
 """Capability layout planning.
 
 The wire message can carry at most three capabilities directly.  When a
-message has more, the generator builds a compact CNode layout: one to three
-root CNodes are transferred, and each root may contain child CNodes.
-
-The layout is static per method, so no tree metadata is needed on the wire.
+message has more, the generator transfers one flat CNode containing the caps.
+There are no nested CNodes and no multi-root trees: the layout is static per
+method, so the wire only needs the root CNode capability.
 """
 
 from __future__ import annotations
@@ -14,7 +13,9 @@ from dataclasses import dataclass
 from .types import CapMode, CapPath, CapType, Rights
 
 DEFAULT_FANOUT = 256
-MAX_LAYOUT_CAPS = 4096
+MAX_LAYOUT_CAPS = DEFAULT_FANOUT
+# Slot 0 of a capset CNode holds the self-CNode capability.
+MAX_CAPSET_CAPS = MAX_LAYOUT_CAPS - 1
 
 
 @dataclass(frozen=True)
@@ -26,30 +27,27 @@ class CapSlotLayout:
 
 
 @dataclass(frozen=True)
-class CapEntryLayout:
-    slot: int
-    leaf: CapSlotLayout | None = None
-    child: CapNodeLayout | None = None
-
-
-@dataclass(frozen=True)
 class CapNodeLayout:
     size_bits: int
-    entries: tuple[CapEntryLayout, ...]
+    slots: tuple[CapSlotLayout, ...]
 
     @property
-    def slots(self) -> int:
+    def slot_count(self) -> int:
+        return len(self.slots)
+
+    @property
+    def capacity(self) -> int:
         return 1 << self.size_bits
 
 
 @dataclass(frozen=True)
 class CapLayout:
     direct: tuple[CapSlotLayout, ...]
-    roots: tuple[CapNodeLayout, ...]
+    cnode: CapNodeLayout | None = None
 
     @property
     def root_count(self) -> int:
-        return len(self.roots)
+        return 0 if self.cnode is None else 1
 
 
 def _size_bits(count: int) -> int:
@@ -58,13 +56,13 @@ def _size_bits(count: int) -> int:
     return (count - 1).bit_length()
 
 
-def _chunks(items: list[CapPath], size: int) -> list[list[CapPath]]:
-    return [items[index : index + size] for index in range(0, len(items), size)]
+def build_layout(caps: list[CapPath]) -> CapLayout:
+    """Choose direct caps or one flat CNode."""
 
-
-def build_layout(caps: list[CapPath], fanout: int = DEFAULT_FANOUT, max_roots: int = 3) -> CapLayout:
-    """Choose direct caps, one CNode, up to three CNodes, or a tree."""
-
+    if len(caps) > MAX_LAYOUT_CAPS:
+        raise ValueError(
+            f"{len(caps)} capabilities exceed the {MAX_LAYOUT_CAPS}-cap CNode limit"
+        )
     if len(caps) <= 3:
         return CapLayout(
             direct=tuple(
@@ -76,70 +74,42 @@ def build_layout(caps: list[CapPath], fanout: int = DEFAULT_FANOUT, max_roots: i
                 )
                 for index, cap in enumerate(caps)
             ),
-            roots=(),
+            cnode=None,
         )
-
-    nodes: list[CapNodeLayout] = []
-    for group in _chunks(caps, fanout):
-        entries = tuple(
-            CapEntryLayout(
-                slot=index,
-                leaf=CapSlotLayout(
-                    path=cap.path,
-                    slot=index,
-                    mode=cap.cap.mode,
-                    rights=cap.cap.rights,
-                ),
-            )
-            for index, cap in enumerate(group)
+    slots = tuple(
+        CapSlotLayout(
+            path=cap.path,
+            slot=index,
+            mode=cap.cap.mode,
+            rights=cap.cap.rights,
         )
-        nodes.append(CapNodeLayout(_size_bits(len(group)), entries))
-
-    while len(nodes) > max_roots:
-        parents: list[CapNodeLayout] = []
-        for group in _chunks(nodes, fanout):
-            entries = tuple(
-                CapEntryLayout(slot=index, child=child)
-                for index, child in enumerate(group)
-            )
-            parents.append(CapNodeLayout(_size_bits(len(group)), entries))
-        nodes = parents
-
-    return CapLayout(direct=(), roots=tuple(nodes))
+        for index, cap in enumerate(caps)
+    )
+    return CapLayout(direct=(), cnode=CapNodeLayout(_size_bits(len(slots)), slots))
 
 
-def build_capset_layout(fields, fanout: int = DEFAULT_FANOUT) -> CapLayout:
-    """A capset is always a CNode layout, even when it has <= 3 caps."""
+def build_capset_layout(fields) -> CapLayout:
+    """A capset is always one flat CNode, even when it has <= 3 caps."""
 
     caps = [CapPath(field.name, field.type) for field in fields]
     if len(caps) != len(fields) or any(not isinstance(field.type, CapType) for field in fields):
         raise TypeError("capset fields must be Cap[...]")
     if not caps:
-        return CapLayout(direct=(), roots=())
-    if len(caps) <= fanout:
-        entries = tuple(
-            CapEntryLayout(
-                slot=index + 1,
-                leaf=CapSlotLayout(
-                    path=cap.path,
-                    slot=index + 1,
-                    mode=cap.cap.mode,
-                    rights=cap.cap.rights,
-                ),
-            )
-            for index, cap in enumerate(caps)
+        return CapLayout(direct=(), cnode=None)
+    if len(caps) > MAX_CAPSET_CAPS:
+        raise ValueError(
+            f"{len(caps)} capset fields exceed the {MAX_CAPSET_CAPS}-cap CNode limit"
         )
-        return CapLayout(
-            direct=(),
-            roots=(CapNodeLayout(_size_bits(len(caps) + 1), entries),),
+    slots = tuple(
+        CapSlotLayout(
+            path=cap.path,
+            slot=index + 1,
+            mode=cap.cap.mode,
+            rights=cap.cap.rights,
         )
-    layout = build_layout(caps, fanout=fanout, max_roots=1)
-    root = layout.roots[0]
-    shifted = CapNodeLayout(
-        root.size_bits,
-        tuple(
-            CapEntryLayout(slot=entry.slot + 1, child=entry.child, leaf=entry.leaf)
-            for entry in root.entries
-        ),
+        for index, cap in enumerate(caps)
     )
-    return CapLayout(direct=(), roots=(shifted,))
+    return CapLayout(
+        direct=(),
+        cnode=CapNodeLayout(_size_bits(len(caps) + 1), slots),
+    )

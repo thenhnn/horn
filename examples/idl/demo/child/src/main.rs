@@ -1,9 +1,12 @@
 #![no_std]
 #![no_main]
 
-mod protocol;
 mod runtime;
-mod tag;
+
+#[allow(dead_code, unused_imports, non_camel_case_types)]
+mod protocol {
+    include!(concat!(env!("OUT_DIR"), "/protocol.rs"));
+}
 
 use horn_ipc::*;
 use protocol::*;

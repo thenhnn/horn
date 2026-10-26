@@ -14,7 +14,7 @@ from typing import Any, get_args, get_origin
 
 from . import sel4
 from .declarations import MethodOptions, Transport
-from .layout import MAX_LAYOUT_CAPS
+from .layout import MAX_CAPSET_CAPS, MAX_LAYOUT_CAPS
 from .model import (
     CapSet,
     EnumDecl,
@@ -40,6 +40,7 @@ from .types import (
     FlagsType,
     ListType,
     OptionType,
+    ParcelType,
     RecordType,
     RegionType,
     RingType,
@@ -53,6 +54,20 @@ from .types import (
 MAX_CAPS = 3
 MAX_MESSAGE_WORDS = 120
 MAX_MESSAGE_BYTES = MAX_MESSAGE_WORDS * 8
+
+
+def _contains_record(type_: Type) -> bool:
+    if isinstance(type_, RecordType):
+        return True
+    if isinstance(type_, (ArrayType, ListType)):
+        return _contains_record(type_.element)
+    if isinstance(type_, OptionType):
+        return _contains_record(type_.inner)
+    if isinstance(type_, TupleType):
+        return any(_contains_record(element) for element in type_.elements)
+    if isinstance(type_, ParcelType):
+        return _contains_record(type_.inner)
+    return False
 
 
 class DeclarationError(Exception):
@@ -319,6 +334,11 @@ class _Resolver:
             raise DeclarationError(f"{name}: ring/region elements cannot contain capabilities")
         if isinstance(element, Void) or element.size == 0:
             raise DeclarationError(f"{name}: element has no wire representation")
+        if _contains_record(element):
+            raise DeclarationError(
+                f"{name}: ring/region elements cannot be records yet "
+                "(generated records are not repr(C))"
+            )
         type_ = (
             RegionType(name, element, capacity)
             if region
@@ -360,6 +380,11 @@ class _Resolver:
                 slots.append((name, len(slots) + 1))
             if not fields:
                 raise DeclarationError(f"{capset.name}: capset has no slots")
+            if len(fields) > MAX_CAPSET_CAPS:
+                raise DeclarationError(
+                    f"{capset.name}: {len(fields)} slots exceed the "
+                    f"{MAX_CAPSET_CAPS}-slot capset limit"
+                )
             type_ = CapSetType(capset.name, tuple(fields), tuple(slots))
             capset.type = type_
             return type_
@@ -443,6 +468,10 @@ class _Resolver:
             raise DeclarationError(f"{interface.fqn}.{method.name}: events cannot return a value")
         if method.oneway and method.result is not None:
             raise DeclarationError(f"{interface.fqn}.{method.name}: one-way methods cannot return a value")
+        if transport is Transport.ASYNC and (method.oneway or method.event):
+            raise DeclarationError(
+                f"{interface.fqn}.{method.name}: async methods cannot be one-way or events"
+            )
         return method
 
     # -- objects ----------------------------------------------------------------

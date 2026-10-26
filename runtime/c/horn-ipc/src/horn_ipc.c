@@ -215,112 +215,61 @@ horn_cap_source_t horn_cap_list_source(horn_cap_list_t *list) {
     return source;
 }
 
-static horn_status_t horn_cap_packer_next_leaf(horn_cap_packer_t *packer, horn_slot_ref_t *out, bool *found) {
-    *found = false;
-    for (;;) {
-        if (packer->depth == 0) {
-            if (packer->root_index >= packer->layout->root_count) {
-                return HORN_OK;
-            }
-            const horn_cap_node_t *node = packer->layout->roots[packer->root_index++];
-            horn_cap_t cnode;
-            horn_status_t status = packer->space->alloc_cnode(packer->space->ctx, NULL, node->size_bits, &cnode);
-            if (status != HORN_OK) {
-                return status;
-            }
-            packer->stack[0] = (horn_cap_cursor_t){ .cnode = cnode, .node = node, .entry = 0, .attach_slot = 0 };
-            packer->depth = 1;
-        }
-        horn_cap_cursor_t *top = &packer->stack[packer->depth - 1];
-        if (top->entry >= top->node->entry_count) {
-            horn_cap_cursor_t finished = *top;
-            packer->depth--;
-            if (packer->depth == 0) {
-                horn_status_t status = horn_cap_list_push(&packer->roots, (horn_cap_t){
-                    .slot = finished.cnode.slot,
-                    .mode = HORN_CAP_MOVE,
-                    .rights = 0xfu,
-                });
-                if (status != HORN_OK) {
-                    return status;
-                }
-            } else {
-                horn_cap_cursor_t *parent = &packer->stack[packer->depth - 1];
-                horn_status_t status = packer->space->move_into(
-                    packer->space->ctx, parent->cnode, finished.attach_slot, finished.cnode);
-                if (status != HORN_OK) {
-                    return status;
-                }
-            }
-            continue;
-        }
-        horn_cap_entry_t entry = top->node->entries[top->entry++];
-        if (!entry.is_child) {
-            out->cnode = top->cnode;
-            out->slot = entry.leaf.slot;
-            *found = true;
-            return HORN_OK;
-        }
-        if (packer->depth >= HORN_MAX_LAYOUT_DEPTH) {
-            return HORN_ERR_INVALID;
-        }
-        horn_cap_t child;
-        horn_slot_ref_t parent = { .cnode = top->cnode, .slot = entry.slot };
-        horn_status_t status = packer->space->alloc_cnode(
-            packer->space->ctx, &parent, entry.child->size_bits, &child);
-        if (status != HORN_OK) {
-            return status;
-        }
-        packer->stack[packer->depth++] = (horn_cap_cursor_t){
-            .cnode = child,
-            .node = entry.child,
-            .entry = 0,
-            .attach_slot = entry.slot,
-        };
-    }
-}
-
 void horn_cap_packer_init(horn_cap_packer_t *packer, horn_cap_space_t *space, const horn_cap_layout_t *layout) {
     memset(packer, 0, sizeof(*packer));
     packer->space = space;
     packer->layout = layout;
-    packer->direct = layout->root_count == 0;
+    packer->direct = layout->cnode == NULL;
 }
 
 horn_status_t horn_cap_packer_push(horn_cap_packer_t *packer, horn_cap_t cap) {
     if (packer->direct) {
-        return horn_cap_list_push(&packer->roots, cap);
+        if (packer->caps.len >= packer->layout->direct_count) {
+            return HORN_ERR_TOO_MANY_CAPS;
+        }
+        return horn_cap_list_push(&packer->caps, cap);
     }
-    horn_slot_ref_t slot;
-    bool found = false;
-    horn_status_t status = horn_cap_packer_next_leaf(packer, &slot, &found);
-    if (status != HORN_OK) {
-        return status;
+    const horn_cap_node_t *node = packer->layout->cnode;
+    if (!packer->have_cnode) {
+        horn_status_t status = packer->space->alloc_cnode(
+            packer->space->ctx, NULL, node->size_bits, &packer->cnode);
+        if (status != HORN_OK) {
+            return status;
+        }
+        packer->have_cnode = true;
     }
-    if (!found) {
+    if (packer->next_slot >= node->slot_count) {
         return HORN_ERR_TOO_MANY_CAPS;
     }
+    const horn_cap_slot_t *slot = &node->slots[packer->next_slot++];
     if (cap.mode == HORN_CAP_MOVE) {
-        return packer->space->move_into(packer->space->ctx, slot.cnode, slot.slot, cap);
+        return packer->space->move_into(
+            packer->space->ctx, packer->cnode, slot->slot, cap);
     }
-    return packer->space->copy_into(packer->space->ctx, slot.cnode, slot.slot, cap, cap.rights);
+    return packer->space->copy_into(
+        packer->space->ctx, packer->cnode, slot->slot, cap, cap.rights);
 }
 
-horn_status_t horn_cap_packer_finish(horn_cap_packer_t *packer, horn_cap_list_t *roots) {
-    if (!packer->direct) {
-        for (;;) {
-            horn_slot_ref_t slot;
-            bool found = false;
-            horn_status_t status = horn_cap_packer_next_leaf(packer, &slot, &found);
-            if (status != HORN_OK) {
-                return status;
-            }
-            if (!found) {
-                break;
-            }
+horn_status_t horn_cap_packer_finish(horn_cap_packer_t *packer, horn_cap_list_t *caps) {
+    if (packer->direct) {
+        if (packer->caps.len != packer->layout->direct_count) {
+            return HORN_ERR_MISSING_CAP;
+        }
+    } else {
+        const horn_cap_node_t *node = packer->layout->cnode;
+        if (!packer->have_cnode || packer->next_slot != node->slot_count) {
+            return HORN_ERR_MISSING_CAP;
+        }
+        horn_status_t status = horn_cap_list_push(&packer->caps, (horn_cap_t){
+            .slot = packer->cnode.slot,
+            .mode = HORN_CAP_MOVE,
+            .rights = 0xfu,
+        });
+        if (status != HORN_OK) {
+            return status;
         }
     }
-    *roots = packer->roots;
+    *caps = packer->caps;
     return HORN_OK;
 }
 
@@ -333,66 +282,12 @@ horn_cap_sink_t horn_cap_packer_sink(horn_cap_packer_t *packer) {
     return sink;
 }
 
-static horn_status_t horn_cap_unpacker_next_leaf(horn_cap_unpacker_t *unpacker, horn_cap_t *out, bool *found) {
-    *found = false;
-    for (;;) {
-        if (unpacker->depth == 0) {
-            horn_cap_t root;
-            horn_status_t status = horn_cap_list_pop(&unpacker->roots, &root);
-            if (status != HORN_OK) {
-                return status;
-            }
-            if (unpacker->root_index >= unpacker->layout->root_count) {
-                return HORN_ERR_MISSING_CAP;
-            }
-            const horn_cap_node_t *node = unpacker->layout->roots[unpacker->root_index++];
-            unpacker->stack[0] = (horn_cap_cursor_t){ .cnode = root, .node = node, .entry = 0, .attach_slot = 0 };
-            unpacker->depth = 1;
-        }
-        horn_cap_cursor_t *top = &unpacker->stack[unpacker->depth - 1];
-        if (top->entry >= top->node->entry_count) {
-            unpacker->depth--;
-            continue;
-        }
-        horn_cap_entry_t entry = top->node->entries[top->entry++];
-        horn_cap_t cnode = top->cnode;
-        if (!entry.is_child) {
-            horn_cap_t cap;
-            horn_status_t status = unpacker->space->cap_at(
-                unpacker->space->ctx, cnode, entry.leaf.slot, &cap);
-            if (status != HORN_OK) {
-                return status;
-            }
-            cap.mode = entry.leaf.mode;
-            cap.rights = entry.leaf.rights;
-            *out = cap;
-            *found = true;
-            return HORN_OK;
-        }
-        if (unpacker->depth >= HORN_MAX_LAYOUT_DEPTH) {
-            return HORN_ERR_INVALID;
-        }
-        horn_cap_t child;
-        horn_status_t status = unpacker->space->cap_at(
-            unpacker->space->ctx, cnode, entry.slot, &child);
-        if (status != HORN_OK) {
-            return status;
-        }
-        unpacker->stack[unpacker->depth++] = (horn_cap_cursor_t){
-            .cnode = child,
-            .node = entry.child,
-            .entry = 0,
-            .attach_slot = entry.slot,
-        };
-    }
-}
-
-void horn_cap_unpacker_init(horn_cap_unpacker_t *unpacker, horn_cap_space_t *space, const horn_cap_layout_t *layout, horn_cap_list_t roots) {
+void horn_cap_unpacker_init(horn_cap_unpacker_t *unpacker, horn_cap_space_t *space, const horn_cap_layout_t *layout, horn_cap_list_t caps) {
     memset(unpacker, 0, sizeof(*unpacker));
     unpacker->space = space;
     unpacker->layout = layout;
-    unpacker->direct = layout->root_count == 0;
-    unpacker->roots = roots;
+    unpacker->direct = layout->cnode == NULL;
+    unpacker->caps = caps;
 }
 
 horn_status_t horn_cap_unpacker_pop(horn_cap_unpacker_t *unpacker, horn_cap_t *cap) {
@@ -401,7 +296,7 @@ horn_status_t horn_cap_unpacker_pop(horn_cap_unpacker_t *unpacker, horn_cap_t *c
             return HORN_ERR_MISSING_CAP;
         }
         const horn_cap_slot_t *slot = &unpacker->layout->direct[unpacker->direct_index++];
-        horn_status_t status = horn_cap_list_pop(&unpacker->roots, cap);
+        horn_status_t status = horn_cap_list_pop(&unpacker->caps, cap);
         if (status != HORN_OK) {
             return status;
         }
@@ -409,12 +304,26 @@ horn_status_t horn_cap_unpacker_pop(horn_cap_unpacker_t *unpacker, horn_cap_t *c
         cap->rights = slot->rights;
         return HORN_OK;
     }
-    bool found = false;
-    horn_status_t status = horn_cap_unpacker_next_leaf(unpacker, cap, &found);
+    const horn_cap_node_t *node = unpacker->layout->cnode;
+    if (unpacker->next_slot >= node->slot_count) {
+        return HORN_ERR_MISSING_CAP;
+    }
+    if (!unpacker->have_cnode) {
+        horn_status_t status = horn_cap_list_pop(&unpacker->caps, &unpacker->cnode);
+        if (status != HORN_OK) {
+            return status;
+        }
+        unpacker->have_cnode = true;
+    }
+    const horn_cap_slot_t *slot = &node->slots[unpacker->next_slot++];
+    horn_status_t status = unpacker->space->cap_at(
+        unpacker->space->ctx, unpacker->cnode, slot->slot, cap);
     if (status != HORN_OK) {
         return status;
     }
-    return found ? HORN_OK : HORN_ERR_MISSING_CAP;
+    cap->mode = slot->mode;
+    cap->rights = slot->rights;
+    return HORN_OK;
 }
 
 static horn_status_t horn_cap_unpacker_source_pop(void *ctx, horn_cap_t *cap) {

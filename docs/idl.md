@@ -77,14 +77,14 @@ model it explicitly (return the cap, or use a future revocable handle).
 The generator automatically compacts capabilities:
 
 - 0–3 caps are transferred directly in the IPC message.
-- More caps are packed into one to three root CNodes; each root may contain
-  child CNodes.  The layout is static per method, so no tree metadata is sent.
-- The planner prefers the fewest CNodes that fit: one CNode up to the fanout,
-  then two or three roots, then a tree when more than `3 * fanout` caps are
-  present.
+- More caps are packed into one flat CNode with up to 256 slots.  The layout is
+  static per method, so no tree metadata is sent.
+- More than 256 caps in one request or result is rejected at schema time.
+  Use an opaque `Cap[sel4.CNode]` field when you need a larger, manually
+  managed capability set.
 
 This works around seL4's per-message limit (`seL4_MsgMaxExtraCaps = 3`)
-without a broker round trip.  The root CNode capabilities are the only caps
+without a broker round trip.  The root CNode capability is the only cap
 placed in the IPC message.
 
 ### Rights
@@ -122,8 +122,20 @@ The generated Rust client is generic over `horn_ipc::Transport`; the generated
 C client calls a `horn_transport_t` vtable.  The Rust seL4 backend implements
 `Sel4Transport` and `Sel4Server`; the server returns a `Sel4Reply` handle, so
 sync is just `recv` followed immediately by `reply`, while async holds the
-handle and replies later.  The C backend exposes the same split through
-`horn_sel4_recv`/`horn_sel4_reply` and will gain a deferred reply handle.
+handle and replies later.
+
+For `async` methods the Rust generator emits a pair of server helpers:
+
+```rust
+async_work_recv_async(server, authority) -> (AsyncWorkArgs, S::Reply)
+async_work_reply_async(reply, space, &result)
+```
+
+`Sel4Server` implements `AsyncServer`, and `Sel4Reply` implements
+`AsyncReply`.  The C backend exposes the same split through
+`horn_sel4_recv_deferred`/`horn_sel4_reply_deferred`.  The generated client
+still uses synchronous `Call`; a fully non-blocking client needs an explicit
+reply endpoint/notification protocol.
 
 Bulk data should not go through RPC.  A driver exports rings and regions;
 control methods configure them.  This mirrors sDDF's split between a
@@ -148,7 +160,7 @@ message registers.
   not, the schema must explicitly use `Parcel[T]` or a `Region`/`Ring` field;
   there is no silent out-of-line fallback.
 
-The runtime libraries own the `Encoder`, `Decoder`, `CapList`, and `Cap`
+The runtime libraries own the `Encoder`, `Decoder`, `WireCaps`, and `Cap`
 types.  Generated code contains only schema-specific `Wire` implementations,
 label constants, cap paths, client stubs, and dispatch glue.
 
@@ -184,8 +196,8 @@ facet without creating another kernel object.
 A `Parcel` is the transport envelope for a logical value: encoded data plus
 the capabilities reachable from that value, optionally plus shared regions.
 The generator computes a `CapLayout` per method from the argument/result type
-graph.  The layout is static and both sides know it, so the wire only carries
-the root CNode capabilities.
+graph.  The layout is static and both sides know it, so the wire carries at
+most one flat CNode capability.
 
 The runtime owns `CapPacker`/`CapUnpacker`, which build and walk the CNode
 layout using a `CapSpace` implementation.  The Rust and C runtimes both have
@@ -203,7 +215,7 @@ the slot index, `depth` is the number of bits needed to resolve that slot,
 and `cnode_bits` is the size of the CNode object when the ref itself names a
 CNode.
 
-A capability unpacked from a received CNode tree is *reachable* immediately,
+A capability unpacked from a received CNode is *reachable* immediately,
 but it is not necessarily a CPtr in the receiver's current CSpace.  The
 runtime therefore distinguishes:
 
@@ -216,9 +228,10 @@ If the received CNode is installed as the receiver's CSpace root (or a known
 sub-CNode), its slots are directly addressable and no `localize` copy is
 needed.  For runtime results, `localize` is the general safe path.
 
-The current `Sel4CapSpace` supports root CNodes and one level of child
-CNodes.  Deeper trees are rejected rather than guessed at; use an opaque CNode
-or install the subtree as a CSpace root if you need more depth.
+Generated request/result layouts use one flat CNode.  `Sel4CapSpace` also
+supports manually managed one-level child CNodes, but nested trees are
+rejected rather than guessed at; use an opaque CNode or install a subtree as
+a CSpace root if you need more depth.
 
 `Parcel[T]` is currently an inline parcel: it is wire-compatible with `T` and
 exists to make the transport boundary explicit.  Shared-memory payloads are
@@ -239,8 +252,11 @@ class ConsoleTx:
 The generated Rust alias is `Ring<u8, 4096>`; the C typedef has the same
 layout.  A ring is reached through `Cap[ConsoleTx, Move]`, which is a frame
 capability.  The receiver maps the frame and casts it to the generated layout.
-Ring elements must be value types with no capabilities.  Wakeups are separate
-notification capabilities, usually grouped in a connection record:
+Ring and region elements must be value types with no capabilities.  Record
+elements are rejected for now because generated Rust records are not
+`#[repr(C)]`; use scalar, enum, or flags elements until the shared-memory
+layout is guaranteed.  Wakeups are separate notification capabilities,
+usually grouped in a connection record:
 
 ```python
 @record
@@ -263,7 +279,7 @@ For each schema the compiler emits:
 
 The runtime lives in:
 
-- `runtime/rust/horn-ipc`: `Wire`, `Encoder`, `Decoder`, `Cap`, `CapList`,
+- `runtime/rust/horn-ipc`: `Wire`, `Encoder`, `Decoder`, `Cap`, `WireCaps`,
   `Ring`, `Region`, and the `Transport` trait.
 - `runtime/c/horn-ipc`: the same primitives with a `horn_transport_t` vtable.
 
@@ -325,8 +341,9 @@ transfers the CNode cap.  The receiver can install the CNode as its CSpace
 root/sub-CNode and use slots directly, or copy/move caps out by index.
 
 `@capset` is optional typed sugar over the same mechanism: it generates slot
-constants and `pack`/`unpack` helpers when the layout is fixed.  Both forms
-put one CNode cap on the wire.
+constants and `pack`/`unpack` helpers when the layout is fixed.  A capset is
+one flat CNode with at most 255 fields.  Both forms put one CNode cap on the
+wire.
 
 Capset slot 0 is reserved for a capability to the capset CNode itself.  The
 generated `pack` helper populates it by copying the CNode cap to a temporary
@@ -346,6 +363,15 @@ struct HornTag {
     uint64_t layout_hash; // expected capset/CSpace layout
 };
 ```
+
+Generated Rust protocols emit the tag through the runtime macro:
+
+```rust
+horn_ipc::horn_tag!("gpos.demo.counter", 0);
+```
+
+The macro defines `HornTag` and the `.horn`-section `HORN_TAG` static, padding
+the component name to 32 bytes.
 
 The loader reads the section with the `object` crate before mapping the
 image.  This is not a substitute for the ELF OSABI field: OSABI is coarse,
@@ -367,6 +393,9 @@ field is reserved for the next step, where the generator will hash the
   starts the child, and calls the generated `CounterClient`.
 - `child` serves one request with the generated `CounterService` handler and
   signals a wake notification.
+- `root/build.rs` and `child/build.rs` run the Python IDL generator and
+  `include!` the generated protocol from `OUT_DIR`; no generated protocol is
+  checked in.
 - `root/build.rs` uses the `object` crate to parse the child ELF, verify the
   `.horn` tag, and emit a `ChildImage` table of segments.  The root task does
   not parse ELF at runtime.
