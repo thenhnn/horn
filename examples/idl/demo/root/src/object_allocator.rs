@@ -1,55 +1,36 @@
 use core::ops::Range;
+use horn_memory::sel4::KernelAllocator;
 
-pub(crate) struct ObjectAllocator {
-    empty_slots: Range<usize>,
-    ut: sel4::cap::Untyped,
-}
+/// Demo convenience wrapper; the reusable allocator itself is fallible.
+pub(crate) struct ObjectAllocator(pub(crate) KernelAllocator);
 
 impl ObjectAllocator {
     pub(crate) fn new(bootinfo: &sel4::BootInfo, empty_slots: Range<usize>) -> Self {
-        Self {
+        Self(KernelAllocator::new(
+            sel4::init_thread::slot::CNODE.cap(),
+            find_largest_kernel_untyped(bootinfo),
             empty_slots,
-            ut: find_largest_kernel_untyped(bootinfo),
-        }
+        ))
     }
 
     pub(crate) fn allocate(&mut self, blueprint: sel4::ObjectBlueprint) -> sel4::cap::Unspecified {
-        let slot_index = self.empty_slots.next().unwrap();
-        self.ut
-            .untyped_retype(
-                &blueprint,
-                &sel4::init_thread::slot::CNODE
-                    .cap()
-                    .absolute_cptr_for_self(),
-                slot_index,
-                1,
-            )
-            .unwrap();
-        sel4::init_thread::Slot::from_index(slot_index).cap()
+        self.0.allocate(blueprint).unwrap()
     }
 
-    pub(crate) fn allocate_fixed_sized<T: sel4::CapTypeForObjectOfFixedSize>(
-        &mut self,
-    ) -> sel4::Cap<T> {
-        self.allocate(T::object_blueprint()).cast()
+    pub(crate) fn allocate_fixed_sized<T: sel4::CapTypeForObjectOfFixedSize>(&mut self) -> sel4::Cap<T> {
+        self.0.allocate_fixed_sized().unwrap()
     }
 
     pub(crate) fn allocate_variable_sized<T: sel4::CapTypeForObjectOfVariableSize>(
-        &mut self,
-        size_bits: usize,
+        &mut self, size_bits: usize,
     ) -> sel4::Cap<T> {
         self.allocate(T::object_blueprint(size_bits)).cast()
     }
 }
 
 pub(crate) fn find_largest_kernel_untyped(bootinfo: &sel4::BootInfo) -> sel4::cap::Untyped {
-    let (ut_ix, _desc) = bootinfo
-        .untyped_list()
-        .iter()
-        .enumerate()
-        .filter(|(_i, desc)| !desc.is_device())
-        .max_by_key(|(_i, desc)| desc.size_bits())
-        .unwrap();
-
-    bootinfo.untyped().index(ut_ix).cap()
+    let (index, _) = bootinfo.untyped_list().iter().enumerate()
+        .filter(|(_, desc)| !desc.is_device())
+        .max_by_key(|(_, desc)| desc.size_bits()).unwrap();
+    bootinfo.untyped().index(index).cap()
 }

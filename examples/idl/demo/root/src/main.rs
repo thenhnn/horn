@@ -15,6 +15,7 @@ mod child_image {
 }
 mod child_vspace;
 mod object_allocator;
+mod memory;
 
 #[allow(dead_code, unused_imports, non_camel_case_types)]
 mod protocol {
@@ -49,6 +50,11 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
     );
 
     let service = allocator.allocate_fixed_sized::<::sel4::cap_type::Endpoint>();
+    let memory_endpoint = allocator.allocate_fixed_sized::<::sel4::cap_type::Endpoint>();
+    let memory_reply: ::sel4::cap::Reply = allocator.allocate(::sel4::ObjectBlueprint::Reply).cast();
+    let memory_authority = memory::mint(&mut client_space, memory_endpoint, memory::ALLOCATOR_BADGE).unwrap();
+    let memory_cap = ::sel4::cap::Endpoint::from_bits(memory_authority.path().bits());
+    let memory_handle = client_space.register(memory_cap).unwrap();
     let wake = allocator.allocate_fixed_sized::<::sel4::cap_type::Notification>();
     let reply: ::sel4::cap::Reply = allocator.allocate(::sel4::ObjectBlueprint::Reply).cast();
     let child_tcb = allocator.allocate_fixed_sized::<::sel4::cap_type::Tcb>();
@@ -72,6 +78,7 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
         wake: Cap::from_ref(wake_handle.with_mode(CapMode::COPY)),
         reply: Cap::from_ref(reply_handle.with_mode(CapMode::MOVE)),
         tcb: Cap::from_ref(tcb_handle.with_mode(CapMode::COPY)),
+        memory: Cap::from_ref(memory_handle.with_mode(CapMode::COPY)),
     };
     let child_cnode_cap = child_caps.pack(&mut client_space).unwrap();
     let child_cnode =
@@ -107,6 +114,14 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
         )
         .unwrap();
 
+    // The loader has finished using this reserved scratch page.
+    let pool = unsafe {
+        horn_memory::sel4::FramePool::new(
+            &mut allocator.0, root_cnode, ::sel4::init_thread::slot::VSPACE.cap(),
+            free_page_addr, 4,
+        ).unwrap()
+    };
+
     let mut ctx = ::sel4::UserContext::default();
     *ctx.pc_mut() = CHILD_IMAGE.entry as ::sel4::Word;
     child_tcb.tcb_write_all_registers(true, &mut ctx).unwrap();
@@ -120,6 +135,10 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
     wake.wait();
     ::sel4::debug_println!("IDL_DEMO_PASS value={}", value.value);
 
+    let transport = client.transport;
+    let server = Sel4Server::new(root_cnode, memory_endpoint, recv_slot, transport.space);
+    memory::serve(server, memory_reply, pool);
+    wake.wait();
     ::sel4::init_thread::suspend_self()
 }
 

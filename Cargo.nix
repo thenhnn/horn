@@ -53,6 +53,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-memory" = rec {
+      packageId = "horn-memory";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-memory";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "idl-demo-child" = rec {
       packageId = "idl-demo-child";
       build = internal.buildRustCrateWithFeatures {
@@ -479,6 +489,24 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "sel4" ];
       };
+      "horn-memory" = rec {
+        crateName = "horn-memory";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/core/memory; };
+        libName = "horn_memory";
+        dependencies = [
+          {
+            name = "sel4";
+            packageId = "sel4";
+            optional = true;
+          }
+        ];
+        features = {
+          "sel4" = [ "dep:sel4" ];
+        };
+        resolvedDefaultFeatures = [ "sel4" ];
+      };
       "idl-demo-child" = rec {
         crateName = "idl-demo-child";
         version = "0.1.0";
@@ -546,6 +574,11 @@ rec {
           {
             name = "horn-ipc";
             packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "horn-memory";
+            packageId = "horn-memory";
             features = [ "sel4" ];
           }
           {
@@ -791,9 +824,9 @@ rec {
       };
       "pest" = rec {
         crateName = "pest";
-        version = "2.9.4";
+        version = "2.9.5";
         edition = "2021";
-        sha256 = "08xvj2lwj450ki4mmr5s369pfgk5fq6vy8kyki1b7hybm5ha8izx";
+        sha256 = "0q3nkmv7947j750m63adihzynqn8mn6g096rdsriq0066lapbnx8";
         authors = [
           "Dragoș Tiselice <dragostiselice@gmail.com>"
         ];
@@ -804,13 +837,8 @@ rec {
             optional = true;
           }
           {
-            name = "psm";
-            packageId = "psm";
-            optional = true;
-          }
-          {
-            name = "stacker";
-            packageId = "stacker";
+            name = "pest_stack_guard";
+            packageId = "pest_stack_guard";
             optional = true;
           }
           {
@@ -824,15 +852,16 @@ rec {
           "memchr" = [ "dep:memchr" ];
           "miette-error" = [ "std" "pretty-print" "dep:miette" ];
           "pretty-print" = [ "dep:serde" "dep:serde_json" ];
-          "std" = [ "ucd-trie/std" "dep:stacker" "dep:psm" ];
+          "stack-guard" = [ "std" "pest_stack_guard/stack-guard" ];
+          "std" = [ "ucd-trie/std" "dep:pest_stack_guard" ];
         };
         resolvedDefaultFeatures = [ "default" "memchr" "std" ];
       };
       "pest_derive" = rec {
         crateName = "pest_derive";
-        version = "2.9.4";
+        version = "2.9.5";
         edition = "2021";
-        sha256 = "0i7g26dkang3zyl0hvcfdfsaz713i77r70v0n6d53xq8fxllcgi0";
+        sha256 = "1d1kv4khnw50xgb57v5n679618spmjps052jgnv68mmk3zhigai0";
         procMacro = true;
         authors = [
           "Dragoș Tiselice <dragostiselice@gmail.com>"
@@ -858,9 +887,9 @@ rec {
       };
       "pest_generator" = rec {
         crateName = "pest_generator";
-        version = "2.9.4";
+        version = "2.9.5";
         edition = "2021";
-        sha256 = "1mflbrhm9abanrgf43fdhhj0psfgyf635kvkzin3v3a518sfcjp8";
+        sha256 = "17gyswbjnzdh1z5sz4fq6jzv8mdv21jk2cmjnbzcnk7lrjpwavk2";
         authors = [
           "Dragoș Tiselice <dragostiselice@gmail.com>"
         ];
@@ -896,9 +925,9 @@ rec {
       };
       "pest_meta" = rec {
         crateName = "pest_meta";
-        version = "2.9.4";
+        version = "2.9.5";
         edition = "2021";
-        sha256 = "04774dlh7acgf8hzl0w11dbp4q3ay3qwvxfqixcydg1x5grr4zxm";
+        sha256 = "0p8gf9lm82b887s7n2il8r0rja95khala9w3hs0v1hb5m9n5px5k";
         authors = [
           "Dragoș Tiselice <dragostiselice@gmail.com>"
         ];
@@ -911,6 +940,90 @@ rec {
         features = {
         };
         resolvedDefaultFeatures = [ "default" ];
+      };
+      "pest_stack_guard" = rec {
+        crateName = "pest_stack_guard";
+        version = "1.0.0";
+        edition = "2021";
+        sha256 = "1wm5w1vrjwmbwwsix8spp5sxi2c0wlbjjldadrmshzq52wicvrlp";
+        authors = [
+          "DTomas Tauber <me@tomtau.be>"
+        ];
+        dependencies = [
+          {
+            name = "psm";
+            packageId = "psm";
+            optional = true;
+          }
+          {
+            name = "psm";
+            packageId = "psm";
+            target = { target, features }: (target.name == "aarch64-apple-darwin");
+          }
+          {
+            name = "psm";
+            packageId = "psm";
+            target = { target, features }: (target.name == "aarch64-pc-windows-msvc");
+          }
+          {
+            name = "psm";
+            packageId = "psm";
+            target = { target, features }: (target.name == "aarch64-unknown-linux-gnu");
+          }
+          {
+            name = "psm";
+            packageId = "psm";
+            target = { target, features }: (target.name == "x86_64-apple-darwin");
+          }
+          {
+            name = "psm";
+            packageId = "psm";
+            target = { target, features }: (target.name == "x86_64-pc-windows-msvc");
+          }
+          {
+            name = "psm";
+            packageId = "psm";
+            target = { target, features }: (target.name == "x86_64-unknown-linux-gnu");
+          }
+          {
+            name = "stacker";
+            packageId = "stacker";
+            optional = true;
+          }
+          {
+            name = "stacker";
+            packageId = "stacker";
+            target = { target, features }: (target.name == "aarch64-apple-darwin");
+          }
+          {
+            name = "stacker";
+            packageId = "stacker";
+            target = { target, features }: (target.name == "aarch64-pc-windows-msvc");
+          }
+          {
+            name = "stacker";
+            packageId = "stacker";
+            target = { target, features }: (target.name == "aarch64-unknown-linux-gnu");
+          }
+          {
+            name = "stacker";
+            packageId = "stacker";
+            target = { target, features }: (target.name == "x86_64-apple-darwin");
+          }
+          {
+            name = "stacker";
+            packageId = "stacker";
+            target = { target, features }: (target.name == "x86_64-pc-windows-msvc");
+          }
+          {
+            name = "stacker";
+            packageId = "stacker";
+            target = { target, features }: (target.name == "x86_64-unknown-linux-gnu");
+          }
+        ];
+        features = {
+          "stack-guard" = [ "dep:stacker" "dep:psm" ];
+        };
       };
       "prettyplease 0.2.37" = rec {
         crateName = "prettyplease";

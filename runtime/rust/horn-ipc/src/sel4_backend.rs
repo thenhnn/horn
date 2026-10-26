@@ -73,40 +73,36 @@ impl<S: CapSpace> Transport for Sel4Transport<S> {
         let mut packer = CapPacker::new(&mut self.space, request_layout);
         args.caps(&mut packer)?;
         let wire_caps = packer.finish()?;
+        if wire_caps.len() > 1 { return Err(RpcError::TooManyCaps); }
         self.install(&wire_caps, &buf[..len], len);
+        sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&self.recv_slot));
         let words = (len + 7) / 8;
         let target_cptr = self.space.cptr(target)?;
         let reply = Cap::<Endpoint>::from_bits(target_cptr as Word)
             .call(MessageInfo::new(label, 0, wire_caps.len(), words));
-        let result = sel4::with_ipc_buffer_mut(|ipc| {
-            let length = reply.length();
-            let extra = reply.extra_caps();
-            if length == 0 {
-                return Err(RpcError::Truncated);
-            }
-            let bytes = &ipc.msg_bytes()[..length * 8];
-            if bytes.len() < 4 {
-                return Err(RpcError::Truncated);
-            }
-            let status = u32::from_le_bytes(bytes[..4].try_into().unwrap());
-            if status != 0 {
-                return Err(RpcError::Server(status));
-            }
-            let mut received = WireCaps::default();
-            for index in 0..extra {
-                received.push(CapRef::new(
-                    self.cnode.cptr().bits() as u64,
-                    ipc.caps_or_badges()[index] as u32,
-                    sel4::WORD_SIZE as u8,
-                    0,
-                    CapMode::MOVE,
-                    Rights::ALL,
-                ))?;
-            }
+        sel4::debug_println!("rpc call reply extra={} unwrapped={}", reply.extra_caps(), reply.caps_unwrapped());
+        let mut bytes = [0u8; MAX_MESSAGE_BYTES];
+        let length = reply.length() * 8;
+        if length < 4 || length > bytes.len() { return Err(RpcError::Truncated); }
+        sel4::with_ipc_buffer_mut(|ipc| bytes[..length].copy_from_slice(&ipc.msg_bytes()[..length]));
+        if reply.extra_caps() > 1 || reply.caps_unwrapped() != 0 { return Err(RpcError::InvalidValue); }
+        let status = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+        if status != 0 { return Err(RpcError::Server(status)); }
+        let mut received = WireCaps::default();
+        let received_cap = CapRef::new(
+            self.recv_slot.root().bits() as u64,
+            self.recv_slot.path().bits() as u32,
+            self.recv_slot.path().depth() as u8,
+            0, CapMode::MOVE, Rights::ALL,
+        );
+        if reply.extra_caps() == 1 { received.push(received_cap)?; }
+        // Capture bytes before localization: CNode calls overwrite the IPC buffer.
+        let result = {
             let mut unpacker = CapUnpacker::new_localizing(&mut self.space, result_layout, received);
-            let mut dec = Decoder::new(&bytes[4..], &mut unpacker);
+            let mut dec = Decoder::new(&bytes[4..length], &mut unpacker);
             R::decode(&mut dec)
-        });
+        };
+        if reply.extra_caps() == 1 { self.space.delete(received_cap)?; }
         if result.is_ok() {
             self.commit_moves(&wire_caps);
         }
@@ -223,7 +219,7 @@ impl<S: CapSpace> Sel4Server<S> {
         let endpoint = self.endpoint;
         let recv_slot = self.recv_slot;
         sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&recv_slot));
-        let (info, _badge) = endpoint.recv(reply);
+        let (info, badge) = endpoint.recv(reply);
         let label = info.label();
         let request_layout = layout_for(label)?;
         let space = &mut self.space;
@@ -247,7 +243,7 @@ impl<S: CapSpace> Sel4Server<S> {
         Ok((
             label,
             args,
-            Sel4Reply { reply, label },
+            Sel4Reply { reply, label, badge },
         ))
     }
 
@@ -282,6 +278,8 @@ impl<S: CapSpace> crate::AsyncServer for Sel4Server<S> {
 pub struct Sel4Reply {
     reply: sel4::ReplyAuthority,
     pub label: u64,
+    /// Kernel-supplied identity of the endpoint capability used by the caller.
+    pub badge: Word,
 }
 
 impl crate::AsyncReply for Sel4Reply {
@@ -324,6 +322,7 @@ impl Sel4Reply {
         let mut packer = CapPacker::new(space, result_layout);
         caps(&mut packer)?;
         let wire_caps = packer.finish()?;
+        if wire_caps.len() > 1 { return Err(RpcError::TooManyCaps); }
         let mut result_buf = [0u8; MAX_MESSAGE_BYTES];
         let mut result_enc = Encoder::new(&mut result_buf);
         encode(&mut result_enc);
@@ -340,6 +339,7 @@ impl Sel4Reply {
                 ipc.caps_or_badges_mut()[index] = cap.slot as Word;
             }
         });
+        sel4::debug_println!("rpc reply sending caps={}", wire_caps.len());
         self.reply
             .send_reply(MessageInfo::new(self.label, 0, wire_caps.len(), words));
         for index in 0..wire_caps.len() {

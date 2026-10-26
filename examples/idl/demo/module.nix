@@ -5,6 +5,7 @@
   demoOverride = old: {
     HORN_SCHEMA = schema;
     HORN_IDL = idl;
+    HORN_MEMORY_IDL = "${../../../platform/core/memory/idl}";
     nativeBuildInputs = (old.nativeBuildInputs or []) ++ [pkgs.python3];
   };
 

@@ -1,0 +1,10 @@
+[package]
+name = "horn-memory"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+sel4 = ["dep:sel4"]
+
+[dependencies]
+sel4 = { path = "../../../vendor/rust-sel4/src/crates/sel4", optional = true }

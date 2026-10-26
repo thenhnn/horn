@@ -242,9 +242,8 @@ impl CapSpace for Sel4CapSpace {
     }
 
     fn localize(&mut self, cap: CapRef) -> Result<CapRef, RpcError> {
-        if cap.cnode == self.root_cptr() && cap.depth == sel4::WORD_SIZE as u8 {
-            return Ok(cap);
-        }
+        // Even root-local receive caps need their own slot: the receive slot
+        // must be empty for the next reply, while returned handles stay live.
         let slot = self.alloc_root_slot()?;
         let dest = SlotRef {
             cnode: self.root_ref,
@@ -278,14 +277,15 @@ impl CapSpace for Sel4CapSpace {
             CapMode::COPY,
             Rights::ALL,
         );
-        self.copy_into(
-            SlotRef {
-                cnode: self.root_ref,
-                slot: temp_slot as u32,
-            },
-            cnode,
-            Rights::ALL,
-        )?;
+        // Retyped CNode caps have no guard. Mint a full-width self view,
+        // while preserving the original cap's short lookup form.
+        self.slot_abs(self.root_ref, temp_slot as u32)?
+            .mint(
+                &self.cap_abs(cnode)?,
+                CapRights::all(),
+                sel4::CNodeCapData::skip_high_bits(cnode.cnode_bits as usize).into_word(),
+            )
+            .map_err(|_| RpcError::Transport)?;
         self.move_into(SlotRef { cnode, slot: 0 }, temp)
     }
 
