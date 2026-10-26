@@ -12,3 +12,9 @@ rust-generate:
 
 npins-bump:
     npins -d nix/npins update
+
+check-idl:
+    ./tools/idl/check.sh
+
+demo:
+    pytest -q tests/boot/test_idl_demo.py -s

@@ -1,0 +1,16 @@
+[package]
+name = "idl-demo-root"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "task"
+path = "src/main.rs"
+
+[build-dependencies]
+object = { version = "0.40.0", default-features = false, features = ["read"] }
+
+[dependencies]
+horn-ipc = { path = "../../../../runtime/rust/horn-ipc", features = ["sel4"] }
+sel4 = { path = "../../../../vendor/rust-sel4/src/crates/sel4" }
+sel4-root-task = { path = "../../../../vendor/rust-sel4/src/crates/sel4-root-task" }

@@ -1,0 +1,345 @@
+from pathlib import Path
+
+import pytest
+
+from horn_idl import (
+    Borrow,
+    Cap,
+    Copy,
+    DeclarationError,
+    Move,
+    U8,
+    U32,
+    U64,
+    compile_path,
+    iface,
+    method,
+    object,
+    record,
+    ring,
+    sel4,
+)
+from horn_idl.emit.c import emit as emit_c
+from horn_idl.emit.rust import emit as emit_rust
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def load_source(tmp_path, name, source):
+    path = tmp_path / f"{name}.py"
+    path.write_text(source)
+    return compile_path(path)
+
+
+def test_example_schema_has_stable_shape():
+    schema = compile_path(ROOT / "examples/idl/schema.py")
+    assert [interface.fqn for interface in schema.interfaces] == [
+        "gpos.counter",
+        "gpos.control",
+    ]
+    counter = schema.interfaces[0]
+    assert [method.name for method in counter.methods] == ["add", "exchange"]
+    assert counter.methods[0].label != counter.methods[1].label
+    exchange = counter.methods[1]
+    assert [(cap.path, cap.cap.mode) for cap in exchange.request_caps()] == [
+        ("connection.service", Copy),
+        ("connection.wake", Borrow),
+    ]
+    assert [(cap.path, cap.cap.mode) for cap in exchange.result_caps()] == [
+        ("result", Move)
+    ]
+    assert schema.objects[0].python_name == "CounterService"
+    assert schema.rings[0].name == "ConsoleTx"
+
+
+def test_labels_are_deterministic_and_schema_local():
+    schema = compile_path(ROOT / "examples/idl/schema.py")
+    labels = [method.label for _, method in schema.methods()]
+    assert len(labels) == len(set(labels))
+    assert all(label != 0 for label in labels)
+    again = compile_path(ROOT / "examples/idl/schema.py")
+    assert labels == [method.label for _, method in again.methods()]
+
+
+def test_rust_and_c_glue_reference_runtime():
+    schema = compile_path(ROOT / "examples/idl/schema.py")
+    rust = emit_rust(schema)
+    assert "use horn_ipc::*;" in rust
+    assert "pub const COUNTER_ADD_LABEL" in rust
+    assert "pub struct CounterTag;" in rust
+    assert "pub struct CounterServiceTag;" in rust
+    assert "pub fn counter_service_dispatch" in rust
+    header, source = emit_c(schema)
+    assert "#include <horn_ipc.h>" in header
+    assert "horn_counter_add" in header
+    assert "horn_counter_service_dispatch" in header
+    assert "void horn_encoder_u64(" not in source
+
+
+def test_cap_target_must_be_capability_backed(tmp_path):
+    with pytest.raises(DeclarationError, match="not a capability-backed type"):
+        load_source(
+            tmp_path,
+            "bad_cap",
+            """
+from horn_idl import U32, Cap, Copy, iface, method
+
+@iface("test.bad")
+class Bad:
+    @method
+    def use(self, value: Cap[U32, Copy]) -> None: ...
+""",
+        )
+
+
+def test_borrow_requires_reply_boundary(tmp_path):
+    with pytest.raises(DeclarationError, match="borrow needs a reply boundary"):
+        load_source(
+            tmp_path,
+            "bad_borrow",
+            """
+from horn_idl import Cap, Borrow, iface, method, sel4
+
+@iface("test.bad")
+class Bad:
+    @method(oneway=True)
+    def use(self, value: Cap[sel4.Notification, Borrow]) -> None: ...
+""",
+        )
+
+
+def test_many_caps_are_packed_into_a_cnode(tmp_path):
+    schema = load_source(
+        tmp_path,
+        "many_caps",
+        """
+from horn_idl import Cap, Copy, iface, method, sel4
+
+@iface("test.many")
+class Many:
+    @method
+    def use(self, a: Cap[sel4.Endpoint, Copy], b: Cap[sel4.Endpoint, Copy],
+            c: Cap[sel4.Endpoint, Copy], d: Cap[sel4.Endpoint, Copy]) -> None: ...
+""",
+    )
+    layout = schema.interfaces[0].methods[0].request_layout()
+    assert len(layout.direct) == 0
+    assert layout.root_count == 1
+    assert layout.roots[0].size_bits == 2
+    assert [entry.slot for entry in layout.roots[0].entries] == [0, 1, 2, 3]
+
+
+def test_ring_elements_cannot_hold_caps(tmp_path):
+    with pytest.raises(DeclarationError, match="cannot contain capabilities"):
+        load_source(
+            tmp_path,
+            "bad_ring",
+            """
+from horn_idl import Cap, Copy, ring, sel4
+
+@ring(element=Cap[sel4.Endpoint, Copy], capacity=8)
+class Bad:
+    pass
+""",
+        )
+
+
+def test_recursive_record_rejected(tmp_path):
+    with pytest.raises(DeclarationError, match="recursive record"):
+        load_source(
+            tmp_path,
+            "bad_record",
+            """
+from horn_idl import U32, record
+
+@record
+class Node:
+    value: U32
+    next: "Node"
+""",
+        )
+
+
+def test_generated_c_compiles_against_runtime(tmp_path):
+    import shutil
+    import subprocess
+
+    cc = shutil.which("cc")
+    if cc is None:
+        pytest.skip("no C compiler")
+    schema = compile_path(ROOT / "examples/idl/schema.py")
+    header, source = emit_c(schema)
+    (tmp_path / "protocol.h").write_text(header)
+    (tmp_path / "protocol.c").write_text(source)
+    subprocess.run(
+        [
+            cc,
+            "-std=c11",
+            "-Wall",
+            "-Werror",
+            "-I",
+            str(ROOT / "runtime/c/horn-ipc/include"),
+            "-I",
+            str(tmp_path),
+            "-fsyntax-only",
+            str(tmp_path / "protocol.c"),
+        ],
+        check=True,
+    )
+
+
+def test_generated_rust_compiles_against_runtime(tmp_path):
+    import shutil
+    import subprocess
+
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip("no cargo")
+    schema = compile_path(ROOT / "examples/idl/schema.py")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/lib.rs").write_text("#![no_std]\npub mod protocol;\n")
+    (tmp_path / "src/protocol.rs").write_text(emit_rust(schema))
+    runtime = ROOT / "runtime/rust/horn-ipc"
+    (tmp_path / "Cargo.toml").write_text(
+        "[package]\n"
+        'name = "idl-check"\n'
+        'version = "0.1.0"\n'
+        'edition = "2024"\n'
+        "\n"
+        "[dependencies]\n"
+        f'horn-ipc = {{ path = "{runtime}" }}\n'
+        "\n"
+        "[workspace]\n"
+    )
+    subprocess.run(
+        [cargo, "check", "--quiet", "--offline"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+
+def test_cnode_layout_prefers_up_to_three_roots():
+    from horn_idl import CapType, CapMode, Rights
+    from horn_idl.layout import build_layout
+    from horn_idl.types import CapPath
+
+    def caps(count):
+        cap = CapType(sel4.Endpoint, CapMode.COPY, Rights.ALL)
+        return [CapPath(f"cap[{index}]", cap) for index in range(count)]
+
+    direct = build_layout(caps(3))
+    assert len(direct.direct) == 3
+    assert direct.root_count == 0
+
+    one = build_layout(caps(256))
+    assert one.root_count == 1
+    assert one.roots[0].size_bits == 8
+
+    two = build_layout(caps(257))
+    assert two.root_count == 2
+
+    three = build_layout(caps(768))
+    assert three.root_count == 3
+
+    tree = build_layout(caps(769))
+    assert tree.root_count == 1
+    assert len(tree.roots[0].entries) == 4
+    assert all(entry.child is not None for entry in tree.roots[0].entries)
+
+
+def test_typed_capset_generates_slot_layout(tmp_path):
+    from horn_idl import capset
+
+    schema = load_source(
+        tmp_path,
+        "capset_schema",
+        """
+from horn_idl import Cap, Copy, Move, U32, capset, iface, method, object, sel4
+
+@iface("test.service", version=(1, 0))
+class Service:
+    @method
+    def ping(self) -> U32: ...
+
+@object(implements=(Service,))
+class ServiceObject:
+    pass
+
+@capset
+class ServiceCaps:
+    service: Cap[ServiceObject, Move]
+    wake: Cap[sel4.Notification, Copy]
+""",
+    )
+    assert len(schema.capsets) == 1
+    assert schema.capsets[0].type.slots == (("service", 1), ("wake", 2))
+    rust = emit_rust(schema)
+    assert "pub struct ServiceCapsTag;" in rust
+    assert "SERVICE_CAPS_SLOTS" in rust
+    assert "install_self_cnode" in rust
+    header, _ = emit_c(schema)
+    assert "HORN_SERVICE_CAPS_SLOT_SERVICE 1u" in header
+    assert "HORN_SERVICE_CAPS_SLOT_WAKE 2u" in header
+
+
+def test_inline_parcel_and_region_field(tmp_path):
+    schema = load_source(
+        tmp_path,
+        "parcel_schema",
+        """
+from horn_idl import Cap, Move, Parcel, U8, U64, iface, method, record, region
+
+@region(element=U8, capacity=4096)
+class Buffer:
+    pass
+
+@record
+class BlockRequest:
+    block: U64
+    data: Cap[Buffer, Move]
+
+@iface("test.parcel", version=(1, 0))
+class ParcelService:
+    @method
+    def send(self, value: Parcel[BlockRequest]) -> Parcel[U64]: ...
+""",
+    )
+    method = schema.interfaces[0].methods[0]
+    assert [(cap.path, cap.cap.mode) for cap in method.request_caps()] == [
+        ("value.data", Move)
+    ]
+    rust = emit_rust(schema)
+    assert "Parcel<BlockRequest, false>" in rust
+    header, source = emit_c(schema)
+    assert "horn_BlockRequest_t" in header
+    assert "horn_ring" not in source
+
+
+def test_opaque_cnode_bulk_transfer(tmp_path):
+    schema = load_source(
+        tmp_path,
+        "opaque_cnode",
+        """
+from horn_idl import Cap, Copy, Move, U32, iface, method, record, sel4
+
+@record
+class Bootstrap:
+    cspace: Cap[sel4.CNode, Move]
+    image: Cap[sel4.Frame, Copy]
+
+@iface("test.spawn", version=(1, 0))
+class Spawn:
+    @method
+    def start(self, bootstrap: Bootstrap) -> Cap[sel4.TCB, Move]: ...
+""",
+    )
+    method = schema.interfaces[0].methods[0]
+    assert [(cap.path, cap.cap.mode) for cap in method.request_caps()] == [
+        ("bootstrap.cspace", Move),
+        ("bootstrap.image", Copy),
+    ]
+    layout = method.request_layout()
+    assert len(layout.direct) == 2
+    assert layout.root_count == 0
+    rust = emit_rust(schema)
+    assert "Cap<CNode>" in rust

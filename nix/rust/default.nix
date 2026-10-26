@@ -5,6 +5,7 @@
   release ? false,
   cargoNix ? ../../Cargo.nix,
   target ? "sel4",
+  crateOverrides ? {},
 }: let
   inherit (pkgs) lib;
   build = pkgs.pkgsBuildBuild;
@@ -145,7 +146,10 @@
     lib.makeOverridable ({features ? ["default"]}: let
       graph = cargo.internal.builtRustCratesWithFeatures {
         inherit packageId features;
-        buildRustCrateForPkgsFunc = builder;
+        buildRustCrateForPkgsFunc = pkgs: args: let
+          override = crateOverrides.${args.crateName} or (_: {});
+        in
+          builder pkgs (args // override args);
         makeTarget = makeTarget release;
         runTests = false;
       };

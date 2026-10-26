@@ -43,6 +43,36 @@ rec {
   # You can override the features with
   # workspaceMembers."${crateName}".build.override { features = [ "default" "feature1" ... ]; }.
   workspaceMembers = {
+    "horn-ipc" = rec {
+      packageId = "horn-ipc";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-ipc";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "idl-demo-child" = rec {
+      packageId = "idl-demo-child";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "idl-demo-child";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "idl-demo-root" = rec {
+      packageId = "idl-demo-root";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "idl-demo-root";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "rtl-compiler" = rec {
       packageId = "rtl-compiler";
       build = internal.buildRustCrateWithFeatures {
@@ -431,6 +461,112 @@ rec {
         ];
 
       };
+      "horn-ipc" = rec {
+        crateName = "horn-ipc";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./runtime/rust/horn-ipc; };
+        libName = "horn_ipc";
+        dependencies = [
+          {
+            name = "sel4";
+            packageId = "sel4";
+            optional = true;
+          }
+        ];
+        features = {
+          "sel4" = [ "dep:sel4" ];
+        };
+        resolvedDefaultFeatures = [ "default" "sel4" ];
+      };
+      "idl-demo-child" = rec {
+        crateName = "idl-demo-child";
+        version = "0.1.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "task";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./examples/idl/demo/child; };
+        dependencies = [
+          {
+            name = "cfg-if";
+            packageId = "cfg-if";
+          }
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "one-shot-mutex";
+            packageId = "one-shot-mutex";
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+          }
+          {
+            name = "sel4-dlmalloc";
+            packageId = "sel4-dlmalloc";
+          }
+          {
+            name = "sel4-panicking";
+            packageId = "sel4-panicking";
+            features = [ "personality" "panic-handler" "alloc" ];
+          }
+          {
+            name = "sel4-panicking-env";
+            packageId = "sel4-panicking-env";
+          }
+          {
+            name = "sel4-runtime-common";
+            packageId = "sel4-runtime-common";
+            features = [ "sel4" ];
+          }
+        ];
+
+      };
+      "idl-demo-root" = rec {
+        crateName = "idl-demo-root";
+        version = "0.1.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "task";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./examples/idl/demo/root; };
+        dependencies = [
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+          }
+          {
+            name = "sel4-root-task";
+            packageId = "sel4-root-task";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "object";
+            packageId = "object";
+            usesDefaultFeatures = false;
+            features = [ "read" ];
+          }
+        ];
+
+      };
       "itertools" = rec {
         crateName = "itertools";
         version = "0.13.0";
@@ -602,6 +738,56 @@ rec {
           "std" = [ "alloc" "memchr/std" "minimal-lexical/std" ];
         };
         resolvedDefaultFeatures = [ "alloc" "std" ];
+      };
+      "object" = rec {
+        crateName = "object";
+        version = "0.40.0";
+        edition = "2024";
+        sha256 = "170br99f2pl58gaadjmpxbmpwj3zi5jjvq3nc4wx9l5rc41rl8nx";
+        dependencies = [
+          {
+            name = "memchr";
+            packageId = "memchr";
+            usesDefaultFeatures = false;
+          }
+        ];
+        features = {
+          "all" = [ "read" "write" "build" "std" "compression" "names" "wasm" ];
+          "alloc" = [ "dep:alloc" ];
+          "build" = [ "build_core" "write_std" "elf" ];
+          "build_core" = [ "read_core" "write_core" ];
+          "compression" = [ "dep:flate2" "dep:ruzstd" "std" ];
+          "core" = [ "dep:core" ];
+          "default" = [ "read" "compression" ];
+          "doc" = [ "all" ];
+          "pe" = [ "coff" ];
+          "read" = [ "read_core" "archive" "coff" "elf" "macho" "pe" "xcoff" ];
+          "rustc-dep-of-std" = [ "core" "alloc" "memchr/rustc-dep-of-std" ];
+          "std" = [ "memchr/std" ];
+          "unstable-all" = [ "all" "unstable" "goff" ];
+          "wasm" = [ "dep:wasmparser" ];
+          "write" = [ "write_std" "coff" "elf" "macho" "pe" "xcoff" ];
+          "write_core" = [ "dep:crc32fast" "dep:indexmap" "dep:hashbrown" ];
+          "write_std" = [ "write_core" "std" "indexmap?/std" "crc32fast?/std" ];
+        };
+        resolvedDefaultFeatures = [ "archive" "coff" "elf" "macho" "pe" "read" "read_core" "xcoff" ];
+      };
+      "one-shot-mutex" = rec {
+        crateName = "one-shot-mutex";
+        version = "0.2.1";
+        edition = "2021";
+        sha256 = "0d4kz9ac6h3in21knmj4mcd7d6lgg1b1chpinz5iyrryl0a0dcfb";
+        libName = "one_shot_mutex";
+        authors = [
+          "Martin Kröning <mkroening@posteo.net>"
+        ];
+        dependencies = [
+          {
+            name = "lock_api";
+            packageId = "lock_api";
+          }
+        ];
+
       };
       "pest" = rec {
         crateName = "pest";
@@ -1449,7 +1635,7 @@ rec {
         features = {
           "personality" = [ "unwinding/personality" ];
         };
-        resolvedDefaultFeatures = [ "panic-handler" "personality" ];
+        resolvedDefaultFeatures = [ "alloc" "panic-handler" "personality" ];
       };
       "sel4-panicking-env" = rec {
         crateName = "sel4-panicking-env";
