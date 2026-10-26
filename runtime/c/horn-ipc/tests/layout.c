@@ -81,6 +81,16 @@ int main(void) {
     };
 
     horn_cap_packer_t packer;
+    horn_cap_layout_t variable = layout;
+    variable.variable = true;
+    horn_cap_list_t active;
+    horn_cap_packer_init(&packer, &cap_space, &variable);
+    assert(horn_cap_packer_finish(&packer, &active) == HORN_OK);
+    assert(active.len == 0 && space.next == 0);
+    horn_cap_packer_init(&packer, &cap_space, &variable);
+    assert(horn_cap_packer_push(&packer, (horn_cap_t){.slot = 42, .mode = HORN_CAP_COPY}) == HORN_OK);
+    assert(horn_cap_packer_finish(&packer, &active) == HORN_OK);
+    assert(active.len == 1);
     horn_cap_packer_init(&packer, &cap_space, &layout);
     for (uint64_t i = 0; i < 4; ++i) {
         horn_cap_t cap = { .slot = 10 + i, .mode = i == 1 ? HORN_CAP_MOVE : HORN_CAP_COPY, .rights = 0xfu };

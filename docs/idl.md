@@ -52,6 +52,38 @@ class CounterService:
     pass
 ```
 
+## Payload enums
+
+Integer enums are unchanged. Add decorated, zero-argument variants for a
+payload-carrying enum:
+
+```python
+@enum
+class Outcome:
+    @enum.value(0)
+    def Empty(): ...
+
+    @enum.value(1, type=CounterValue)
+    def Value(): ...
+
+    @enum.value(2, type=Cap[sel4.Notification, Move])
+    def Wake(): ...
+```
+
+Rust emits `Outcome::{Empty, Value(CounterValue), Wake(Cap<Notification>)}`;
+C emits a tag and payload union. Omitting the tag assigns the next integer,
+starting at zero; use explicit tags for a stable ABI. Tags use unsigned
+`U32` by default and may use an explicit unsigned integer `base`.
+A string payload type supports forward references. Recursive variants and
+payload enums in shared rings are rejected.
+
+Wire storage is a tag followed by aligned storage for the largest payload.
+Unused bytes are zeroed; unknown tags, truncated storage, and nonzero unused
+variant bytes are rejected. Only the active payload contributes capabilities.
+Layouts reserve the largest variant's capability budget, not their sum, and
+active caps occupy consecutive slots. Payloads can nest records, enums,
+tuples, arrays, lists, and options. See `examples/idl/tagged.py`.
+
 ## Capability transfer
 
 Every capability field names its transfer mode explicitly.  `Cap[T]` is a
@@ -76,16 +108,17 @@ model it explicitly (return the cap, or use a future revocable handle).
 
 The generator automatically compacts capabilities:
 
-- 0–3 caps are transferred directly in the IPC message.
+- 0–1 caps are transferred directly in the IPC message.
 - More caps are packed into one flat CNode with up to 256 slots.  The layout is
-  static per method, so no tree metadata is sent.
+  reserved per method; conditional payloads transfer only their active caps.
+  No tree metadata is sent.
 - More than 256 caps in one request or result is rejected at schema time.
   Use an opaque `Cap[sel4.CNode]` field when you need a larger, manually
   managed capability set.
 
-This works around seL4's per-message limit (`seL4_MsgMaxExtraCaps = 3`)
-without a broker round trip.  The root CNode capability is the only cap
-placed in the IPC message.
+Ordinary seL4 IPC receives one non-unwrapped capability, despite having three
+extra-capability message registers. Bundles use that receive slot for the
+root CNode capability, without a broker round trip.
 
 ### Rights
 
@@ -188,10 +221,34 @@ operation.  The server side generates a request enum, a response enum, a
 `dispatch` function that calls the handler traits, and object-level helpers
 that hide layout selection and reply encoding.
 
-Two-way Rust handlers return `Result<T, RpcError>`. Generated dispatch propagates
-errors; the reply helper sends `RpcError::Server(nonzero_status)` in the existing
-status word, without encoding a result or transferring caps. Other errors remain
-local transport failures. One-way handlers cannot return a remote error.
+Plain `-> T` methods have infallible Rust handlers returning `T`. Application
+failures are declared explicitly:
+
+```python
+@method
+def allocate(self, size: U64) -> Result[Cap[MemoryObject, Move], MemoryError]: ...
+```
+
+The handler returns Rust's `Result<Cap<MemoryObjectTag>, MemoryError>`. The
+client returns `Result<Cap<MemoryObjectTag>, CallError<MemoryError>>`, separating
+`CallError::Remote(error)` from `CallError::Rpc(error)`. One-way methods cannot
+return a `Result`.
+
+`Result[T, E]` specializes a tagged enum: `Ok(T)` is tag 0 and `Err(E)` is tag 1.
+Either payload may be `None` (Rust `()`), a record, another result, or a
+capability-bearing value. It uses the same maximum-payload storage and active-only
+cap transfer as other tagged enums. Results can also appear in fields and
+containers. Generated reply codecs preserve schema transfer modes, which Rust's
+`Result` and `Cap<T>` types alone do not encode.
+
+Application outcomes use framework status zero followed by the encoded result.
+The status word remains separate: a nonzero framework status is
+`CallError::Rpc(RpcError::Server(status))`, not a domain error. Unknown result tags
+or closed error-enum values are malformed data (`RpcError::InvalidValue`).
+In C, the function's `horn_status_t` reports RPC failure; on `HORN_OK`, inspect the
+output's `tag` (`HORN_RESULT_OK` / `HORN_RESULT_ERR`) and `value.ok` / `value.err`.
+Each fallible method exposes a `horn_<interface>_<method>_result_t` alias.
+Unit alternatives have no payload member in C.
 
 The generated server path is:
 
@@ -432,8 +489,6 @@ pytest -q tests/boot/test_idl_demo.py -s
 
 - Should fully non-blocking clients use a request ID in the payload, or one
   reply endpoint/notification per in-flight call?
-- Should result status be a `u32` word for every response, or only for
-  fallible methods?
 - Do we want a `strict`/`flexible` distinction per interface, or always fail
   unknown synchronous methods?
 - How should a server reclaim received `Copy` caps it does not retain?

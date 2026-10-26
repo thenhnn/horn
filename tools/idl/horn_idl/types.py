@@ -7,9 +7,10 @@ describe layout only; name resolution and declaration collection live in
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import Enum, Flag, auto
-from typing import Any, Callable, Iterator
+from typing import Any
 
 
 class CapMode(Enum):
@@ -78,7 +79,14 @@ class Type:
         raise NotImplementedError
 
     def c_name(self) -> str:
-        return self.c_type().replace(" ", "_").replace("*", "ptr").replace("[", "_").replace("]", "").replace(";", "")
+        return (
+            self.c_type()
+            .replace(" ", "_")
+            .replace("*", "ptr")
+            .replace("[", "_")
+            .replace("]", "")
+            .replace(";", "")
+        )
 
     def __repr__(self) -> str:
         return getattr(self, "name", type(self).__name__)
@@ -143,6 +151,62 @@ class EnumType(Type):
 
     def c_name(self) -> str:
         return f"horn_{self.name}"
+
+
+@dataclass(frozen=True)
+class TaggedEnumType(Type):
+    name: str
+    base: Scalar
+    variants: tuple[tuple[str, int, Type], ...]
+    size: int = field(init=False)
+    align: int = field(init=False)
+    caps: int = field(init=False)
+    payload_offset: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        align = max(
+            self.base.align, *(payload.align for _, _, payload in self.variants)
+        )
+        offset = round_up(self.base.size, align)
+        object.__setattr__(self, "align", align)
+        object.__setattr__(self, "payload_offset", offset)
+        object.__setattr__(
+            self,
+            "size",
+            round_up(
+                offset + max(payload.size for _, _, payload in self.variants), align
+            ),
+        )
+        object.__setattr__(
+            self, "caps", max(payload.caps for _, _, payload in self.variants)
+        )
+
+    def rust_type(self) -> str:
+        return self.name
+
+    def c_type(self) -> str:
+        return f"struct {self.c_name()}"
+
+    def c_name(self) -> str:
+        return f"horn_{self.name}"
+
+    def walk_caps(self, prefix: str = "") -> Iterator[CapPath]:
+        for name, _, payload in self.variants:
+            yield from payload.walk_caps(f"{prefix}.{name}" if prefix else name)
+
+
+@dataclass(frozen=True)
+class ResultType(TaggedEnumType):
+    @property
+    def ok(self) -> Type:
+        return self.variants[0][2]
+
+    @property
+    def error(self) -> Type:
+        return self.variants[1][2]
+
+    def rust_type(self) -> str:
+        return f"Result<{self.ok.rust_type()}, {self.error.rust_type()}>"
 
 
 @dataclass(frozen=True)
@@ -238,7 +302,9 @@ class CapType(Type):
         )
 
     def target_name(self) -> str:
-        return getattr(self.target, "fqn", getattr(self.target, "name", str(self.target)))
+        return getattr(
+            self.target, "fqn", getattr(self.target, "name", str(self.target))
+        )
 
     def rust_type(self) -> str:
         name = getattr(self.target, "rust_name", None)
@@ -391,7 +457,9 @@ class TupleType(Type):
         return "(" + ", ".join(element.rust_type() for element in self.elements) + ")"
 
     def c_name(self) -> str:
-        return "horn_tuple_" + ("_".join(element.c_name() for element in self.elements) or "unit")
+        return "horn_tuple_" + (
+            "_".join(element.c_name() for element in self.elements) or "unit"
+        )
 
     def c_type(self) -> str:
         return f"struct {self.c_name()}"
@@ -456,6 +524,49 @@ class RegionType(Type):
 
     def c_type(self) -> str:
         return f"struct horn_region_{self.name}"
+
+
+def layout_caps(type_: Type, prefix: str = "") -> list[CapPath]:
+    if isinstance(type_, TaggedEnumType):
+        name, _, payload = max(type_.variants, key=lambda variant: variant[2].caps)
+        return layout_caps(payload, f"{prefix}.{name}" if prefix else name)
+    if isinstance(type_, RecordType):
+        return [
+            cap
+            for field in type_.fields
+            for cap in layout_caps(
+                field.type, f"{prefix}.{field.name}" if prefix else field.name
+            )
+        ]
+    if isinstance(type_, TupleType):
+        return [
+            cap
+            for index, element in enumerate(type_.elements)
+            for cap in layout_caps(element, f"{prefix}[{index}]")
+        ]
+    if isinstance(type_, (ArrayType, ListType)):
+        return [
+            cap
+            for index in range(type_.capacity)
+            for cap in layout_caps(type_.element, f"{prefix}[{index}]")
+        ]
+    if isinstance(type_, (OptionType, ParcelType)):
+        return layout_caps(type_.inner, prefix)
+    return list(type_.walk_caps(prefix))
+
+
+def dynamic_caps(type_: Type) -> bool:
+    if isinstance(type_, (TaggedEnumType, OptionType, ListType)):
+        return type_.caps != 0
+    if isinstance(type_, RecordType):
+        return any(dynamic_caps(field.type) for field in type_.fields)
+    if isinstance(type_, TupleType):
+        return any(dynamic_caps(element) for element in type_.elements)
+    if isinstance(type_, ArrayType):
+        return dynamic_caps(type_.element)
+    if isinstance(type_, ParcelType):
+        return dynamic_caps(type_.inner)
+    return False
 
 
 U8 = Scalar("u8", 1, 1, "u8", "uint8_t")

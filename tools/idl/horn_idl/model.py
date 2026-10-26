@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Iterator
 
 from .declarations import Transport
 from .layout import CapLayout, build_layout
 from .types import (
-    CapSetType,
     CapPath,
+    CapSetType,
     EnumType,
     Field,
     FlagsType,
     RecordType,
     RegionType,
     RingType,
+    TaggedEnumType,
     Type,
+    dynamic_caps,
+    layout_caps,
 )
 
 
@@ -44,10 +47,21 @@ class Method:
         return list(self.result.walk_caps("result"))
 
     def request_layout(self) -> CapLayout:
-        return build_layout(self.request_caps())
+        caps = [
+            cap for param in self.params for cap in layout_caps(param.type, param.name)
+        ]
+        return build_layout(
+            caps, variable=any(dynamic_caps(param.type) for param in self.params)
+        )
 
     def result_layout(self) -> CapLayout:
-        return build_layout(self.result_caps())
+        return (
+            build_layout(
+                layout_caps(self.result, "result"), variable=dynamic_caps(self.result)
+            )
+            if self.result is not None
+            else build_layout([])
+        )
 
 
 @dataclass
@@ -105,7 +119,7 @@ class EnumDecl:
     python_name: str
     base: Type
     variants: list[tuple[str, int]]
-    type: EnumType
+    type: EnumType | TaggedEnumType
     doc: str | None = None
 
 

@@ -13,7 +13,6 @@ from horn_idl import (
     Cap,
     Copy,
     Move,
-    Rights,
     iface,
     method,
     object,

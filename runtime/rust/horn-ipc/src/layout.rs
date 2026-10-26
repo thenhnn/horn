@@ -4,9 +4,7 @@
 //! CNode containing all of them.  Nested CNodes and multi-root trees are not
 //! supported.
 
-use crate::{
-    CapLayout, WireCaps, CapMode, CapNode, CapRef, CapSink, CapSource, Rights, RpcError,
-};
+use crate::{CapLayout, CapMode, CapNode, CapRef, CapSink, CapSource, Rights, RpcError, WireCaps};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlotRef {
@@ -60,13 +58,16 @@ impl<'a, S: CapSpace> CapPacker<'a, S> {
     pub fn finish(mut self) -> Result<WireCaps, RpcError> {
         match self.node {
             None => {
-                if self.caps.len() != self.layout.direct.len() {
+                if !self.layout.variable && self.caps.len() != self.layout.direct.len() {
                     return Err(RpcError::MissingCap);
                 }
             }
             Some(node) => {
-                if self.index != node.slots.len() {
+                if !self.layout.variable && self.index != node.slots.len() {
                     return Err(RpcError::MissingCap);
+                }
+                if self.layout.variable && self.index == 0 {
+                    return Ok(self.caps);
                 }
                 let cnode = self.cnode.ok_or(RpcError::MissingCap)?;
                 self.caps.push(cnode.with_mode(CapMode::MOVE))?;
@@ -86,10 +87,7 @@ impl<S: CapSpace> CapSink for CapPacker<'_, S> {
             return self.caps.push(cap);
         }
         let node = self.node.unwrap();
-        let slot = node
-            .slots
-            .get(self.index)
-            .ok_or(RpcError::TooManyCaps)?;
+        let slot = node.slots.get(self.index).ok_or(RpcError::TooManyCaps)?;
         self.index += 1;
         let cnode = self.ensure_cnode()?;
         let dest = SlotRef {
@@ -135,6 +133,18 @@ impl<'a, S: CapSpace> CapUnpacker<'a, S> {
         }
     }
 
+    pub fn finish(&self) -> Result<(), RpcError> {
+        let expected = if self.layout.cnode.is_some() {
+            usize::from(self.index != 0)
+        } else {
+            self.index
+        };
+        if self.caps.len() != expected {
+            return Err(RpcError::InvalidValue);
+        }
+        Ok(())
+    }
+
     fn maybe_localize(&mut self, cap: CapRef) -> Result<CapRef, RpcError> {
         if self.localize {
             self.space.localize(cap)
@@ -146,25 +156,30 @@ impl<'a, S: CapSpace> CapUnpacker<'a, S> {
 
 impl<S: CapSpace> CapSource for CapUnpacker<'_, S> {
     fn pop(&mut self) -> Result<CapRef, RpcError> {
+        let slots = match self.layout.cnode {
+            Some(node) => node.slots,
+            None => self.layout.direct,
+        };
+        let slot = slots.get(self.index).ok_or(RpcError::MissingCap)?;
+        self.pop_typed(slot.mode, slot.rights)
+    }
+
+    fn pop_typed(&mut self, mode: CapMode, rights: Rights) -> Result<CapRef, RpcError> {
         let node = match self.layout.cnode {
             None => {
-                let slot = self
-                    .layout
+                self.layout
                     .direct
                     .get(self.index)
                     .ok_or(RpcError::MissingCap)?;
                 self.index += 1;
                 let mut cap = self.caps.pop()?;
-                cap.mode = slot.mode;
-                cap.rights = slot.rights;
+                cap.mode = mode;
+                cap.rights = rights;
                 return self.maybe_localize(cap);
             }
             Some(node) => node,
         };
-        let slot = node
-            .slots
-            .get(self.index)
-            .ok_or(RpcError::MissingCap)?;
+        let slot = node.slots.get(self.index).ok_or(RpcError::MissingCap)?;
         self.index += 1;
         let cnode = match self.cnode {
             Some(cnode) => cnode,
@@ -178,8 +193,8 @@ impl<S: CapSpace> CapSource for CapUnpacker<'_, S> {
             cnode,
             slot: slot.slot,
         })?;
-        cap.mode = slot.mode;
-        cap.rights = slot.rights;
+        cap.mode = mode;
+        cap.rights = rights;
         self.maybe_localize(cap)
     }
 }

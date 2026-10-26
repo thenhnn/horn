@@ -1,6 +1,6 @@
 """Initial resident backing protocol. No raw frame or mapping delegation."""
 
-from horn_idl import U32, U64, Cap, Move, enum, iface, method, object, record
+from horn_idl import U32, U64, Cap, Move, Result, enum, iface, method, object, record
 
 
 @enum(base=U32)
@@ -20,13 +20,13 @@ class MemoryInfo:
     page_size: U64
 
 
-@iface("net.nhnn.horn.memory.object", version=(1, 0))
+@iface("net.nhnn.horn.memory.object", version=(2, 0))
 class Memory:
     @method
-    def info(self) -> MemoryInfo: ...
+    def info(self) -> Result[MemoryInfo, MemoryError]: ...
 
     @method
-    def release(self) -> None: ...
+    def release(self) -> Result[None, MemoryError]: ...
 
 
 @object(implements=(Memory,))
@@ -34,10 +34,10 @@ class MemoryObject:
     pass
 
 
-@iface("net.nhnn.horn.memory.allocator", version=(1, 0))
+@iface("net.nhnn.horn.memory.allocator", version=(2, 0))
 class MemoryAllocator:
     @method
-    def allocate(self, size: U64) -> Cap[MemoryObject, Move]: ...
+    def allocate(self, size: U64) -> Result[Cap[MemoryObject, Move], MemoryError]: ...
 
 
 @object(implements=(MemoryAllocator,))

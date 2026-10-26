@@ -28,11 +28,11 @@ from .model import (
     Schema,
 )
 from .types import (
-    BOOL,
     U32,
+    VOID,
     ArrayType,
-    CapSetType,
     CapMode,
+    CapSetType,
     CapType,
     DeferredType,
     EnumType,
@@ -45,9 +45,9 @@ from .types import (
     RegionType,
     RingType,
     Scalar,
+    TaggedEnumType,
     TupleType,
     Type,
-    VOID,
     Void,
 )
 
@@ -57,7 +57,7 @@ MAX_MESSAGE_BYTES = MAX_MESSAGE_WORDS * 8
 
 
 def _contains_record(type_: Type) -> bool:
-    if isinstance(type_, RecordType):
+    if isinstance(type_, (RecordType, TaggedEnumType)):
         return True
     if isinstance(type_, (ArrayType, ListType)):
         return _contains_record(type_.element)
@@ -89,7 +89,9 @@ def hash_label(interface: str, method: str, version: tuple[int, int]) -> int:
     value &= (1 << LABEL_BITS) - 1
     if value == 0:
         material += b"\x00"
-        value = int.from_bytes(hashlib.blake2b(material, digest_size=8).digest(), "little")
+        value = int.from_bytes(
+            hashlib.blake2b(material, digest_size=8).digest(), "little"
+        )
         value &= (1 << LABEL_BITS) - 1
     return value
 
@@ -104,8 +106,10 @@ def _annotations(obj: Any, globalns: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, str):
             try:
                 value = eval(value, globalns)
-            except Exception as error:  # noqa: BLE001 - report the schema expression
-                raise DeclarationError(f"cannot resolve annotation {value!r}: {error}") from error
+            except Exception as error:
+                raise DeclarationError(
+                    f"cannot resolve annotation {value!r}: {error}"
+                ) from error
         resolved[name] = value
     return resolved
 
@@ -130,6 +134,7 @@ class _Resolver:
         self.objects: dict[type, Object] = {}
         self.record_stack: list[type] = []
         self.interface_stack: list[type] = []
+        self.enum_stack: list[type] = []
         self.capset_stack: list[type] = []
 
     # -- declaration collection -------------------------------------------------
@@ -235,6 +240,8 @@ class _Resolver:
             if kind == "record":
                 return self.finalize_record(value)
             if kind == "enum":
+                if value not in self.enums:
+                    self._build_enum(value, flags=False)
                 return self.enums[value].type
             if kind == "flags":
                 return self.flags[value].type
@@ -284,6 +291,11 @@ class _Resolver:
     # -- enums and flags --------------------------------------------------------
 
     def _build_enum(self, cls: type, *, flags: bool) -> None:
+        if not flags and any(
+            hasattr(value, "__horn_enum_value__") for value in vars(cls).values()
+        ):
+            self._build_tagged_enum(cls)
+            return
         base = getattr(cls, "__horn_base__", None) or U32
         base_type = self.resolve(base)
         if not isinstance(base_type, Scalar):
@@ -315,9 +327,79 @@ class _Resolver:
             else EnumType(name, base_type, tuple(variants))
         )
         if flags:
-            self.flags[cls] = FlagsDecl(name, cls.__name__, base_type, variants, type_, inspect.getdoc(cls))
+            self.flags[cls] = FlagsDecl(
+                name, cls.__name__, base_type, variants, type_, inspect.getdoc(cls)
+            )
         else:
-            self.enums[cls] = EnumDecl(name, cls.__name__, base_type, variants, type_, inspect.getdoc(cls))
+            self.enums[cls] = EnumDecl(
+                name, cls.__name__, base_type, variants, type_, inspect.getdoc(cls)
+            )
+
+    def _build_tagged_enum(self, cls: type) -> None:
+        if cls in self.enums:
+            return
+        if cls in self.enum_stack:
+            raise DeclarationError(f"{cls.__name__}: recursive tagged enum")
+        self.enum_stack.append(cls)
+        try:
+            base = self.resolve(getattr(cls, "__horn_base__", None) or U32)
+            if not isinstance(base, Scalar) or base.name not in (
+                "u8",
+                "u16",
+                "u32",
+                "u64",
+            ):
+                raise DeclarationError(
+                    f"{cls.__name__}: tagged enum base must be an unsigned integer"
+                )
+            variants, seen, next_tag = [], set(), 0
+            for name, value in vars(cls).items():
+                if name.startswith("_"):
+                    continue
+                spec = getattr(value, "__horn_enum_value__", None)
+                if spec is None and not isinstance(value, int):
+                    continue
+                if spec is not None and inspect.signature(value).parameters:
+                    raise DeclarationError(
+                        f"{cls.__name__}.{name}: variant functions take no arguments"
+                    )
+                tag = (
+                    (next_tag if spec.tag is None else spec.tag)
+                    if spec is not None
+                    else value
+                )
+                if type(tag) is not int or not 0 <= tag < 1 << (base.size * 8):
+                    raise DeclarationError(f"{cls.__name__}.{name}: tag out of range")
+                if tag in seen:
+                    raise DeclarationError(f"{cls.__name__}: duplicate tag {tag}")
+                seen.add(tag)
+                next_tag = tag + 1
+                annotation = spec.payload if spec is not None else None
+                if isinstance(annotation, str):
+                    try:
+                        annotation = eval(annotation, self.globalns)
+                    except (NameError, SyntaxError) as error:
+                        raise DeclarationError(
+                            f"{cls.__name__}.{name}: invalid payload type"
+                        ) from error
+                payload = self.resolve(annotation)
+                if not isinstance(payload, Void):
+                    self.validate_value_type(payload, f"{cls.__name__}.{name}")
+                variants.append((name, tag, payload))
+            if not variants:
+                raise DeclarationError(f"{cls.__name__}: no variants")
+            name = getattr(cls, "__horn_name__", cls.__name__)
+            type_ = TaggedEnumType(name, base, tuple(variants))
+            self.enums[cls] = EnumDecl(
+                name,
+                cls.__name__,
+                base,
+                [(name, tag) for name, tag, _ in variants],
+                type_,
+                inspect.getdoc(cls),
+            )
+        finally:
+            self.enum_stack.pop()
 
     # -- rings and regions ------------------------------------------------------
 
@@ -328,10 +410,12 @@ class _Resolver:
             raise DeclarationError(f"{name}: capacity must be positive")
         if capacity & (capacity - 1):
             raise DeclarationError(f"{name}: capacity must be a power of two")
-        element = self.resolve(getattr(cls, "__horn_element__"))
+        element = self.resolve(cls.__horn_element__)
         self.validate_value_type(element, f"{name}.element")
         if element.caps:
-            raise DeclarationError(f"{name}: ring/region elements cannot contain capabilities")
+            raise DeclarationError(
+                f"{name}: ring/region elements cannot contain capabilities"
+            )
         if isinstance(element, Void) or element.size == 0:
             raise DeclarationError(f"{name}: element has no wire representation")
         if _contains_record(element):
@@ -345,7 +429,9 @@ class _Resolver:
             else RingType(name, element, capacity)
         )
         if region:
-            self.regions[cls] = RegionDecl(name, cls.__name__, type_, inspect.getdoc(cls))
+            self.regions[cls] = RegionDecl(
+                name, cls.__name__, type_, inspect.getdoc(cls)
+            )
         else:
             self.rings[cls] = RingDecl(name, cls.__name__, type_, inspect.getdoc(cls))
 
@@ -402,17 +488,25 @@ class _Resolver:
             extends: list[Interface] = []
             candidates = list(getattr(cls, "__horn_extends__", ()))
             for base in cls.__bases__:
-                if getattr(base, "__horn_kind__", None) == "interface" and base not in candidates:
+                if (
+                    getattr(base, "__horn_kind__", None) == "interface"
+                    and base not in candidates
+                ):
                     candidates.append(base)
             for base in candidates:
-                if not isinstance(base, type) or getattr(base, "__horn_kind__", None) != "interface":
-                    raise DeclarationError(f"{cls.__name__}: extends {base!r} is not an interface")
+                if (
+                    not isinstance(base, type)
+                    or getattr(base, "__horn_kind__", None) != "interface"
+                ):
+                    raise DeclarationError(
+                        f"{cls.__name__}: extends {base!r} is not an interface"
+                    )
                 extends.append(self.finalize_interface(base))
             interface.extends = extends
 
             methods: list[Method] = []
             seen: set[str] = set()
-            for name, member in cls.__dict__.items():
+            for member in cls.__dict__.values():
                 if not callable(member):
                     continue
                 options: MethodOptions | None = getattr(member, "__horn_method__", None)
@@ -420,7 +514,9 @@ class _Resolver:
                     continue
                 method = self._build_method(interface, member, options)
                 if method.name in seen:
-                    raise DeclarationError(f"{interface.fqn}: duplicate method {method.name}")
+                    raise DeclarationError(
+                        f"{interface.fqn}: duplicate method {method.name}"
+                    )
                 seen.add(method.name)
                 methods.append(method)
             interface.methods = methods
@@ -438,9 +534,13 @@ class _Resolver:
             if name in {"self", "cls"}:
                 continue
             if name not in annotations:
-                raise DeclarationError(f"{interface.fqn}.{func.__name__}: parameter {name} has no type")
+                raise DeclarationError(
+                    f"{interface.fqn}.{func.__name__}: parameter {name} has no type"
+                )
             if parameter.default is not inspect.Parameter.empty:
-                raise DeclarationError(f"{interface.fqn}.{func.__name__}: defaults are not supported")
+                raise DeclarationError(
+                    f"{interface.fqn}.{func.__name__}: defaults are not supported"
+                )
             type_ = self.resolve(annotations[name])
             self.validate_value_type(type_, f"{interface.fqn}.{func.__name__}({name})")
             params.append(Field(name, type_))
@@ -465,9 +565,13 @@ class _Resolver:
             doc=inspect.getdoc(func),
         )
         if method.event and method.result is not None:
-            raise DeclarationError(f"{interface.fqn}.{method.name}: events cannot return a value")
+            raise DeclarationError(
+                f"{interface.fqn}.{method.name}: events cannot return a value"
+            )
         if method.oneway and method.result is not None:
-            raise DeclarationError(f"{interface.fqn}.{method.name}: one-way methods cannot return a value")
+            raise DeclarationError(
+                f"{interface.fqn}.{method.name}: one-way methods cannot return a value"
+            )
         if transport is Transport.ASYNC and (method.oneway or method.event):
             raise DeclarationError(
                 f"{interface.fqn}.{method.name}: async methods cannot be one-way or events"
@@ -481,7 +585,9 @@ class _Resolver:
         implements: list[Interface] = []
         for interface_cls in getattr(cls, "__horn_implements__", ()):
             if getattr(interface_cls, "__horn_kind__", None) != "interface":
-                raise DeclarationError(f"{obj.fqn}: {interface_cls!r} is not an interface")
+                raise DeclarationError(
+                    f"{obj.fqn}: {interface_cls!r} is not an interface"
+                )
             implements.append(self.finalize_interface(interface_cls))
         if not implements:
             raise DeclarationError(f"{obj.fqn}: object implements no interfaces")
@@ -500,9 +606,13 @@ class _Resolver:
 
     def validate_value_type(self, type_: Any, where: str) -> None:
         if isinstance(type_, (Interface, Object)):
-            raise DeclarationError(f"{where}: interfaces and objects are not wire values; use Cap[...]")
+            raise DeclarationError(
+                f"{where}: interfaces and objects are not wire values; use Cap[...]"
+            )
         if isinstance(type_, (CapSetType, RingType, RegionType)):
-            raise DeclarationError(f"{where}: capsets, rings, and regions are not wire values; use Cap[...]")
+            raise DeclarationError(
+                f"{where}: capsets, rings, and regions are not wire values; use Cap[...]"
+            )
         if isinstance(type_, Void):
             raise DeclarationError(f"{where}: void is not a wire value")
         if isinstance(type_, CapType):
@@ -512,7 +622,10 @@ class _Resolver:
 
     def validate_cap(self, cap: CapType, where: str) -> None:
         target = cap.target
-        if not isinstance(target, (CapSetType, Interface, Object, sel4.KernelResource, RingType, RegionType)):
+        if not isinstance(
+            target,
+            (CapSetType, Interface, Object, sel4.KernelResource, RingType, RegionType),
+        ):
             raise DeclarationError(
                 f"{where}: Cap target {cap.target_name()} is not a capability-backed type"
             )
@@ -520,17 +633,21 @@ class _Resolver:
     def validate_method_caps(self, method: Method) -> None:
         request_caps = method.request_caps()
         result_caps = method.result_caps()
-        if len(request_caps) > MAX_LAYOUT_CAPS:
+        request_count = sum(param.type.caps for param in method.params)
+        result_count = method.result.caps if method.result is not None else 0
+        if request_count > MAX_LAYOUT_CAPS:
             raise DeclarationError(
-                f"{method.interface.fqn}.{method.name}: {len(request_caps)} request caps exceed the layout limit"
+                f"{method.interface.fqn}.{method.name}: {request_count} request caps exceed the layout limit"
             )
-        if len(result_caps) > MAX_LAYOUT_CAPS:
+        if result_count > MAX_LAYOUT_CAPS:
             raise DeclarationError(
-                f"{method.interface.fqn}.{method.name}: {len(result_caps)} result caps exceed the layout limit"
+                f"{method.interface.fqn}.{method.name}: {result_count} result caps exceed the layout limit"
             )
         paths = [cap.path for cap in [*request_caps, *result_caps]]
         if len(paths) != len(set(paths)):
-            raise DeclarationError(f"{method.interface.fqn}.{method.name}: duplicate cap path")
+            raise DeclarationError(
+                f"{method.interface.fqn}.{method.name}: duplicate cap path"
+            )
         for cap in request_caps:
             if cap.cap.mode is CapMode.BORROW and (method.oneway or method.event):
                 raise DeclarationError(

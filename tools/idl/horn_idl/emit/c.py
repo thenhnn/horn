@@ -8,13 +8,13 @@ testable on the host and lets the seL4 backend own capability slots.
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from ..layout import CapLayout
 from ..model import Interface, Method, Object, Schema
 from ..types import (
     ArrayType,
-    CapSetType,
     CapMode,
     CapType,
     EnumType,
@@ -24,22 +24,30 @@ from ..types import (
     ParcelType,
     RecordType,
     RegionType,
+    ResultType,
     RingType,
     Scalar,
+    TaggedEnumType,
     TupleType,
     Type,
     Void,
 )
-from .rust import method_args_name, method_label_name, method_variant_name, pascal, snake, upper
+from .rust import (
+    method_args_name,
+    method_label_name,
+    snake,
+    upper,
+)
 
 
 def c_base(type_: Any) -> str:
     if isinstance(type_, Scalar):
         return type_.name
-    if isinstance(type_, (RecordType, EnumType, FlagsType)):
+    if isinstance(type_, (RecordType, EnumType, TaggedEnumType, FlagsType)):
         return type_.name
     if isinstance(type_, CapType):
-        return "cap"
+        target = re.sub(r"[^a-zA-Z0-9_]", "_", type_.target_name())
+        return f"cap_{target}_{type_.mode.value}_{type_.rights.value}"
     if isinstance(type_, ListType):
         return f"list_{type_.capacity}_{c_base(type_.element)}"
     if isinstance(type_, ArrayType):
@@ -49,7 +57,9 @@ def c_base(type_: Any) -> str:
     if isinstance(type_, ParcelType):
         return c_base(type_.inner)
     if isinstance(type_, TupleType):
-        return "tuple_" + ("_".join(c_base(element) for element in type_.elements) or "unit")
+        return "tuple_" + (
+            "_".join(c_base(element) for element in type_.elements) or "unit"
+        )
     if isinstance(type_, RingType):
         return f"ring_{type_.name}"
     if isinstance(type_, RegionType):
@@ -108,9 +118,7 @@ class CTypeCollector:
             name = c_typedef(type_)
             if name in self.types:
                 return
-            if isinstance(type_, ListType):
-                self.add(type_.element)
-            elif isinstance(type_, ArrayType):
+            if isinstance(type_, (ListType, ArrayType)):
                 self.add(type_.element)
             elif isinstance(type_, OptionType):
                 self.add(type_.inner)
@@ -118,12 +126,14 @@ class CTypeCollector:
                 for element in type_.elements:
                     self.add(element)
             self.types[name] = type_
+        elif isinstance(type_, TaggedEnumType):
+            for _, _, payload in type_.variants:
+                self.add(payload)
+            self.types[c_typedef(type_)] = type_
         elif isinstance(type_, RecordType):
             for field in type_.fields:
                 self.add(field.type)
-        elif isinstance(type_, RingType):
-            self.add(type_.element)
-        elif isinstance(type_, RegionType):
+        elif isinstance(type_, (RingType, RegionType)):
             self.add(type_.element)
 
     def ordered(self) -> Iterable[Type]:
@@ -137,6 +147,8 @@ class CEmitter:
         self.args_types: dict[int, RecordType] = {}
         for record in schema.records:
             self.types.add(record.type)
+        for enum in schema.enums:
+            self.types.add(enum.type)
         for ring in schema.rings:
             self.types.add(ring.type)
         for region in schema.regions:
@@ -185,7 +197,8 @@ class CEmitter:
     def _type_declarations(self, *, header: bool) -> list[str]:
         lines: list[str] = []
         for enum in self.schema.enums:
-            lines.append(f"typedef {enum.base.c} horn_{enum.name}_t;")
+            if not isinstance(enum.type, TaggedEnumType):
+                lines.append(f"typedef {enum.base.c} horn_{enum.name}_t;")
             for name, value in enum.variants:
                 lines.append(f"#define HORN_{upper(enum.name)}_{upper(name)} {value}u")
         for flags in self.schema.flags:
@@ -195,9 +208,23 @@ class CEmitter:
         for capset in self.schema.capsets:
             lines.append(f"typedef horn_cap_t horn_{capset.name}_t;")
             for name, slot in capset.type.slots:
-                lines.append(f"#define HORN_{upper(capset.name)}_SLOT_{upper(name)} {slot}u")
+                lines.append(
+                    f"#define HORN_{upper(capset.name)}_SLOT_{upper(name)} {slot}u"
+                )
         for type_ in self._ordered_types():
-            if isinstance(type_, ListType):
+            if isinstance(type_, TaggedEnumType):
+                fields = (
+                    " ".join(
+                        f"{c_typedef(payload)} {snake(name)};"
+                        for name, _, payload in type_.variants
+                        if not isinstance(payload, Void)
+                    )
+                    or "uint8_t _unused;"
+                )
+                lines.append(
+                    f"typedef struct {{ {type_.base.c} tag; union {{ {fields} }} value; }} {c_typedef(type_)};"
+                )
+            elif isinstance(type_, ListType):
                 lines.append(
                     f"typedef struct {{ uint64_t len; {c_typedef(type_.element)} data[{type_.capacity}]; }} {c_typedef(type_)};"
                 )
@@ -210,14 +237,22 @@ class CEmitter:
                     f"typedef struct {{ uint64_t present; {c_typedef(type_.inner)} value; }} {c_typedef(type_)};"
                 )
             elif isinstance(type_, TupleType):
-                fields = " ".join(
-                    f"{c_typedef(element)} f{index};" for index, element in enumerate(type_.elements)
-                ) or "uint8_t _unused;"
+                fields = (
+                    " ".join(
+                        f"{c_typedef(element)} f{index};"
+                        for index, element in enumerate(type_.elements)
+                    )
+                    or "uint8_t _unused;"
+                )
                 lines.append(f"typedef struct {{ {fields} }} {c_typedef(type_)};")
             elif isinstance(type_, RecordType):
-                fields = " ".join(
-                    f"{c_typedef(field.type)} {snake(field.name)};" for field in type_.fields
-                ) or "uint8_t _unused;"
+                fields = (
+                    " ".join(
+                        f"{c_typedef(field.type)} {snake(field.name)};"
+                        for field in type_.fields
+                    )
+                    or "uint8_t _unused;"
+                )
                 lines.append(f"typedef struct {{ {fields} }} {c_typedef(type_)};")
         for ring in self.schema.rings:
             lines.append(
@@ -233,10 +268,28 @@ class CEmitter:
             lines.append(f"#define {c_upper(type_)}_SIZE {type_.size}u")
         lines.append("")
         for type_ in self._all_named_types():
-            if isinstance(type_, (EnumType, FlagsType, RecordType, ListType, ArrayType, OptionType, TupleType)):
-                lines.append(f"horn_status_t {c_func(type_)}_encode(const {c_typedef(type_)} *value, horn_encoder_t *out);")
-                lines.append(f"horn_status_t {c_func(type_)}_decode({c_typedef(type_)} *value, horn_decoder_t *input);")
-                lines.append(f"horn_status_t {c_func(type_)}_caps(const {c_typedef(type_)} *value, horn_cap_sink_t *out);")
+            if isinstance(
+                type_,
+                (
+                    EnumType,
+                    TaggedEnumType,
+                    FlagsType,
+                    RecordType,
+                    ListType,
+                    ArrayType,
+                    OptionType,
+                    TupleType,
+                ),
+            ):
+                lines.append(
+                    f"horn_status_t {c_func(type_)}_encode(const {c_typedef(type_)} *value, horn_encoder_t *out);"
+                )
+                lines.append(
+                    f"horn_status_t {c_func(type_)}_decode({c_typedef(type_)} *value, horn_decoder_t *input);"
+                )
+                lines.append(
+                    f"horn_status_t {c_func(type_)}_caps(const {c_typedef(type_)} *value, horn_cap_sink_t *out);"
+                )
         lines.append("")
         return lines
 
@@ -259,6 +312,8 @@ class CEmitter:
         out: list[Type] = []
 
         def deps(type_: Type) -> list[Type]:
+            if isinstance(type_, TaggedEnumType):
+                return [payload for _, _, payload in type_.variants]
             if isinstance(type_, RecordType):
                 return [field.type for field in type_.fields]
             if isinstance(type_, ListType):
@@ -303,8 +358,12 @@ class CEmitter:
         lines: list[str] = []
         for interface, method in self.schema.methods():
             prefix = f"{upper(interface.python_name)}_{upper(method.name)}"
-            lines.append(f"#define {prefix}_REQ_CAP_COUNT {len(method.request_caps())}u")
-            lines.append(f"#define {prefix}_RESULT_CAP_COUNT {len(method.result_caps())}u")
+            lines.append(
+                f"#define {prefix}_REQ_CAP_COUNT {sum(param.type.caps for param in method.params)}u"
+            )
+            lines.append(
+                f"#define {prefix}_RESULT_CAP_COUNT {method.result.caps if method.result is not None else 0}u"
+            )
             for kind in ("req", "result"):
                 lines.append(
                     f"extern const char *const horn_{snake(interface.python_name)}_{snake(method.name)}_{kind}_caps[];"
@@ -328,12 +387,16 @@ class CEmitter:
         lines: list[str] = []
         for interface, method in self.schema.methods():
             prefix = f"{snake(interface.python_name)}_{snake(method.name)}"
-            for kind, layout in (("req", method.request_layout()), ("result", method.result_layout())):
+            for kind, layout in (
+                ("req", method.request_layout()),
+                ("result", method.result_layout()),
+            ):
                 lines.extend(self._emit_layout(prefix, kind, layout))
         return lines
 
     def _emit_layout(self, prefix: str, kind: str, layout: CapLayout) -> list[str]:
         base = f"{prefix}_{kind}"
+        variable = str(layout.variable).lower()
         lines: list[str] = []
         node_name = f"{base}_node"
         if layout.direct:
@@ -341,13 +404,13 @@ class CEmitter:
             for slot in layout.direct:
                 lines.append(
                     "    { .path = "
-                    f"\"{slot.path}\", .slot = {slot.slot}u, .mode = {c_mode(slot.mode)}, "
+                    f'"{slot.path}", .slot = {slot.slot}u, .mode = {c_mode(slot.mode)}, '
                     f".rights = {c_rights(slot.rights)} }},"
                 )
             lines.append("};")
             lines.append(
                 f"const horn_cap_layout_t horn_{base}_layout = {{ .direct = {base}_direct, "
-                f".direct_count = {len(layout.direct)}u, .cnode = NULL }};"
+                f".direct_count = {len(layout.direct)}u, .cnode = NULL, .variable = {variable} }};"
             )
         elif layout.cnode is not None:
             node = layout.cnode
@@ -355,7 +418,7 @@ class CEmitter:
             for slot in node.slots:
                 lines.append(
                     "    { .path = "
-                    f"\"{slot.path}\", .slot = {slot.slot}u, .mode = {c_mode(slot.mode)}, "
+                    f'"{slot.path}", .slot = {slot.slot}u, .mode = {c_mode(slot.mode)}, '
                     f".rights = {c_rights(slot.rights)} }},"
                 )
             lines.append("};")
@@ -365,12 +428,12 @@ class CEmitter:
             )
             lines.append(
                 f"const horn_cap_layout_t horn_{base}_layout = {{ .direct = NULL, "
-                f".direct_count = 0u, .cnode = &{node_name} }};"
+                f".direct_count = 0u, .cnode = &{node_name}, .variable = {variable} }};"
             )
         else:
             lines.append(
                 f"const horn_cap_layout_t horn_{base}_layout = {{ .direct = NULL, "
-                ".direct_count = 0u, .cnode = NULL };"
+                f".direct_count = 0u, .cnode = NULL, .variable = {variable} }};"
             )
         lines.append("")
         return lines
@@ -379,6 +442,10 @@ class CEmitter:
         lines: list[str] = []
         for interface in self.schema.interfaces:
             for method in interface.all_methods():
+                if isinstance(method.result, ResultType):
+                    lines.append(
+                        f"typedef {c_typedef(method.result)} horn_{snake(interface.python_name)}_{snake(method.name)}_result_t;"
+                    )
                 lines.append(self._client_signature(interface, method) + ";")
         lines.append("")
         return lines
@@ -439,7 +506,9 @@ class CEmitter:
     def _type_functions(self) -> list[str]:
         lines: list[str] = []
         for type_ in self._ordered_types():
-            if isinstance(type_, EnumType):
+            if isinstance(type_, TaggedEnumType):
+                lines.extend(self._tagged_functions(type_))
+            elif isinstance(type_, EnumType):
                 lines.extend(self._enum_functions(type_))
             elif isinstance(type_, FlagsType):
                 lines.extend(self._flags_functions(type_))
@@ -453,6 +522,69 @@ class CEmitter:
                 lines.extend(self._option_functions(type_))
             elif isinstance(type_, TupleType):
                 lines.extend(self._tuple_functions(type_))
+        return lines
+
+    def _tagged_functions(self, type_: TaggedEnumType) -> list[str]:
+        name, ctype = c_func(type_), c_typedef(type_)
+        lines = [
+            f"horn_status_t {name}_encode(const {ctype} *value, horn_encoder_t *out) {{",
+            f"    if (out->pos > out->len || {type_.size}u > out->len - out->pos) return HORN_ERR_TRUNCATED;",
+            "    horn_encoder_t child;",
+            f"    memset(out->data + out->pos, 0, {type_.size});",
+            f"    horn_encoder_init(&child, out->data + out->pos, {type_.size});",
+            f"    horn_encoder_{type_.base.name}(&child, value->tag);",
+            f"    horn_encoder_skip(&child, {type_.payload_offset - type_.base.size});",
+            "    switch (value->tag) {",
+        ]
+        for variant, tag, payload in type_.variants:
+            lines.append(f"    case UINT64_C({tag}): {{")
+            lines.extend(
+                self._encode_stmt(
+                    payload, f"value->value.{snake(variant)}", "(&child)", 2
+                )
+            )
+            lines.append("        break; }")
+        lines += [
+            "    default: return HORN_ERR_INVALID;",
+            "    }",
+            f"    out->pos += {type_.size};",
+            "    return HORN_OK;",
+            "}",
+            f"horn_status_t {name}_decode({ctype} *value, horn_decoder_t *input) {{",
+            f"    if (input->pos > input->len || {type_.size}u > input->len - input->pos) return HORN_ERR_TRUNCATED;",
+            "    horn_decoder_t child;",
+            f"    horn_decoder_init(&child, input->data + input->pos, {type_.size}, input->caps);",
+            "    memset(value, 0, sizeof(*value));",
+            f"    if (horn_decoder_{type_.base.name}(&child, &value->tag) != HORN_OK) return HORN_ERR_TRUNCATED;",
+            f"    while (child.pos < {type_.payload_offset}u) if (child.data[child.pos++] != 0) return HORN_ERR_INVALID;",
+            "    switch (value->tag) {",
+        ]
+        for variant, tag, payload in type_.variants:
+            lines.append(f"    case UINT64_C({tag}): {{")
+            lines.extend(
+                self._decode_stmt(
+                    payload, f"value->value.{snake(variant)}", "(&child)", 2
+                )
+            )
+            lines.append("        break; }")
+        lines += [
+            "    default: return HORN_ERR_INVALID;",
+            "    }",
+            f"    while (child.pos < {type_.size}u) if (child.data[child.pos++] != 0) return HORN_ERR_INVALID;",
+            f"    input->pos += {type_.size};",
+            "    return HORN_OK;",
+            "}",
+            f"horn_status_t {name}_caps(const {ctype} *value, horn_cap_sink_t *out) {{",
+            "    (void)out;",
+            "    switch (value->tag) {",
+        ]
+        for variant, tag, payload in type_.variants:
+            lines.append(f"    case UINT64_C({tag}): {{")
+            lines.extend(
+                self._caps_stmt(payload, f"value->value.{snake(variant)}", "out", 2)
+            )
+            lines.append("        return HORN_OK; }")
+        lines += ["    default: return HORN_ERR_INVALID;", "    }", "}", ""]
         return lines
 
     def _enum_functions(self, type_: EnumType) -> list[str]:
@@ -487,26 +619,39 @@ class CEmitter:
         lines = [
             f"horn_status_t {name}_encode(const {ctype} *value, horn_encoder_t *out) {{",
             "    (void)value; (void)out;",
+            "    size_t start = out->pos;",
         ]
         for field in type_.fields:
-            lines.extend(self._encode_stmt(field.type, f"value->{snake(field.name)}", "out"))
-        lines.extend([
-            "    return HORN_OK;",
-            "}",
-            f"horn_status_t {name}_decode({ctype} *value, horn_decoder_t *input) {{",
-            "    (void)value; (void)input;",
-        ])
+            lines.extend(
+                self._encode_stmt(field.type, f"value->{snake(field.name)}", "out")
+            )
+        lines.extend(
+            [
+                f"    horn_encoder_skip(out, {type_.size}u - (out->pos - start));",
+                "    return HORN_OK;",
+                "}",
+                f"horn_status_t {name}_decode({ctype} *value, horn_decoder_t *input) {{",
+                "    (void)value; (void)input;",
+                "    size_t start = input->pos;",
+            ]
+        )
         for field in type_.fields:
-            lines.extend(self._decode_stmt(field.type, f"value->{snake(field.name)}", "input"))
-        lines.extend([
-            "    return HORN_OK;",
-            "}",
-            f"horn_status_t {name}_caps(const {ctype} *value, horn_cap_sink_t *out) {{",
-            "    (void)value; (void)out;",
-        ])
+            lines.extend(
+                self._decode_stmt(field.type, f"value->{snake(field.name)}", "input")
+            )
+        lines.extend(
+            [
+                f"    return horn_decoder_skip(input, {type_.size}u - (input->pos - start));",
+                "}",
+                f"horn_status_t {name}_caps(const {ctype} *value, horn_cap_sink_t *out) {{",
+                "    (void)value; (void)out;",
+            ]
+        )
         for field in type_.fields:
             if field.type.caps:
-                lines.extend(self._caps_stmt(field.type, f"value->{snake(field.name)}", "out"))
+                lines.extend(
+                    self._caps_stmt(field.type, f"value->{snake(field.name)}", "out")
+                )
         lines.extend(["    return HORN_OK;", "}", ""])
         return lines
 
@@ -524,41 +669,47 @@ class CEmitter:
             "        if (i < value->len) {",
         ]
         lines.extend(self._encode_stmt(elem, "value->data[i]", "out", indent=3))
-        lines.extend([
-            "        } else {",
-            f"            horn_encoder_skip(out, {stride});",
-            "        }",
-            "    }",
-            "    return HORN_OK;",
-            "}",
-            f"horn_status_t {name}_decode({ctype} *value, horn_decoder_t *input) {{",
-            "    (void)value; (void)input;",
-            "    uint64_t len;",
-            "    horn_status_t status = horn_decoder_u64(input, &len);",
-            "    if (status != HORN_OK) return status;",
-            f"    if (len > {type_.capacity}) return HORN_ERR_INVALID;",
-            f"    for (size_t i = 0; i < {type_.capacity}; ++i) {{",
-            f"        status = horn_decoder_align(input, {elem.align});",
-            "        if (status != HORN_OK) return status;",
-            "        if (i < len) {",
-        ])
+        lines.extend(
+            [
+                "        } else {",
+                f"            horn_encoder_skip(out, {stride});",
+                "        }",
+                "    }",
+                "    return HORN_OK;",
+                "}",
+                f"horn_status_t {name}_decode({ctype} *value, horn_decoder_t *input) {{",
+                "    (void)value; (void)input;",
+                "    uint64_t len;",
+                "    horn_status_t status = horn_decoder_u64(input, &len);",
+                "    if (status != HORN_OK) return status;",
+                f"    if (len > {type_.capacity}) return HORN_ERR_INVALID;",
+                f"    for (size_t i = 0; i < {type_.capacity}; ++i) {{",
+                f"        status = horn_decoder_align(input, {elem.align});",
+                "        if (status != HORN_OK) return status;",
+                "        if (i < len) {",
+            ]
+        )
         lines.extend(self._decode_stmt(elem, "value->data[i]", "input", indent=3))
-        lines.extend([
-            "        } else {",
-            f"            status = horn_decoder_skip(input, {stride});",
-            "            if (status != HORN_OK) return status;",
-            "        }",
-            "    }",
-            "    value->len = (uint32_t)len;",
-            "    return HORN_OK;",
-            "}",
-            f"horn_status_t {name}_caps(const {ctype} *value, horn_cap_sink_t *out) {{",
-            "    (void)value; (void)out;",
-        ])
+        lines.extend(
+            [
+                "        } else {",
+                f"            status = horn_decoder_skip(input, {stride});",
+                "            if (status != HORN_OK) return status;",
+                "        }",
+                "    }",
+                "    value->len = (uint32_t)len;",
+                "    return HORN_OK;",
+                "}",
+                f"horn_status_t {name}_caps(const {ctype} *value, horn_cap_sink_t *out) {{",
+                "    (void)value; (void)out;",
+            ]
+        )
         if elem.caps:
-            lines.extend([
-                "    for (uint32_t i = 0; i < value->len; ++i) {",
-            ])
+            lines.extend(
+                [
+                    "    for (uint32_t i = 0; i < value->len; ++i) {",
+                ]
+            )
             lines.extend(self._caps_stmt(elem, "value->data[i]", "out", indent=2))
             lines.extend(["    }"])
         lines.extend(["    return HORN_OK;", "}", ""])
@@ -575,28 +726,34 @@ class CEmitter:
             f"        horn_encoder_align(out, {elem.align});",
         ]
         lines.extend(self._encode_stmt(elem, "(*value)[i]", "out", indent=2))
-        lines.extend([
-            "    }",
-            "    return HORN_OK;",
-            "}",
-            f"horn_status_t {name}_decode({ctype} *value, horn_decoder_t *input) {{",
-            "    (void)value; (void)input;",
-            f"    for (size_t i = 0; i < {type_.capacity}; ++i) {{",
-            f"        horn_status_t status = horn_decoder_align(input, {elem.align});",
-            "        if (status != HORN_OK) return status;",
-        ])
-        lines.extend(self._decode_stmt(elem, "(*value)[i]", "input", indent=2))
-        lines.extend([
-            "    }",
-            "    return HORN_OK;",
-            "}",
-            f"horn_status_t {name}_caps(const {ctype} *value, horn_cap_sink_t *out) {{",
-            "    (void)value; (void)out;",
-        ])
-        if elem.caps:
-            lines.extend([
+        lines.extend(
+            [
+                "    }",
+                "    return HORN_OK;",
+                "}",
+                f"horn_status_t {name}_decode({ctype} *value, horn_decoder_t *input) {{",
+                "    (void)value; (void)input;",
                 f"    for (size_t i = 0; i < {type_.capacity}; ++i) {{",
-            ])
+                f"        horn_status_t status = horn_decoder_align(input, {elem.align});",
+                "        if (status != HORN_OK) return status;",
+            ]
+        )
+        lines.extend(self._decode_stmt(elem, "(*value)[i]", "input", indent=2))
+        lines.extend(
+            [
+                "    }",
+                "    return HORN_OK;",
+                "}",
+                f"horn_status_t {name}_caps(const {ctype} *value, horn_cap_sink_t *out) {{",
+                "    (void)value; (void)out;",
+            ]
+        )
+        if elem.caps:
+            lines.extend(
+                [
+                    f"    for (size_t i = 0; i < {type_.capacity}; ++i) {{",
+                ]
+            )
             lines.extend(self._caps_stmt(elem, "(*value)[i]", "out", indent=2))
             lines.extend(["    }"])
         lines.extend(["    return HORN_OK;", "}", ""])
@@ -613,36 +770,42 @@ class CEmitter:
             "    if (value->present) {",
         ]
         lines.extend(self._encode_stmt(inner, "value->value", "out", indent=2))
-        lines.extend([
-            "    } else {",
-            f"        horn_encoder_skip(out, {inner.size});",
-            "    }",
-            "    return HORN_OK;",
-            "}",
-            f"horn_status_t {name}_decode({ctype} *value, horn_decoder_t *input) {{",
-            "    (void)value; (void)input;",
-            "    uint64_t present;",
-            "    horn_status_t status = horn_decoder_u64(input, &present);",
-            "    if (status != HORN_OK) return status;",
-            "    value->present = present;",
-            "    if (present) {",
-        ])
+        lines.extend(
+            [
+                "    } else {",
+                f"        horn_encoder_skip(out, {inner.size});",
+                "    }",
+                "    return HORN_OK;",
+                "}",
+                f"horn_status_t {name}_decode({ctype} *value, horn_decoder_t *input) {{",
+                "    (void)value; (void)input;",
+                "    uint64_t present;",
+                "    horn_status_t status = horn_decoder_u64(input, &present);",
+                "    if (status != HORN_OK) return status;",
+                "    value->present = present;",
+                "    if (present) {",
+            ]
+        )
         lines.extend(self._decode_stmt(inner, "value->value", "input", indent=2))
-        lines.extend([
-            "    } else {",
-            f"        status = horn_decoder_skip(input, {inner.size});",
-            "        if (status != HORN_OK) return status;",
-            f"        value->value = {c_zero(inner)};",
-            "    }",
-            "    return HORN_OK;",
-            "}",
-            f"horn_status_t {name}_caps(const {ctype} *value, horn_cap_sink_t *out) {{",
-            "    (void)value; (void)out;",
-        ])
+        lines.extend(
+            [
+                "    } else {",
+                f"        status = horn_decoder_skip(input, {inner.size});",
+                "        if (status != HORN_OK) return status;",
+                f"        value->value = {c_zero(inner)};",
+                "    }",
+                "    return HORN_OK;",
+                "}",
+                f"horn_status_t {name}_caps(const {ctype} *value, horn_cap_sink_t *out) {{",
+                "    (void)value; (void)out;",
+            ]
+        )
         if inner.caps:
-            lines.extend([
-                "    if (value->present) {",
-            ])
+            lines.extend(
+                [
+                    "    if (value->present) {",
+                ]
+            )
             lines.extend(self._caps_stmt(inner, "value->value", "out", indent=2))
             lines.extend(["    }"])
         lines.extend(["    return HORN_OK;", "}", ""])
@@ -657,20 +820,24 @@ class CEmitter:
         ]
         for index, element in enumerate(type_.elements):
             lines.extend(self._encode_stmt(element, f"value->f{index}", "out"))
-        lines.extend([
-            "    return HORN_OK;",
-            "}",
-            f"horn_status_t {name}_decode({ctype} *value, horn_decoder_t *input) {{",
-            "    (void)value; (void)input;",
-        ])
+        lines.extend(
+            [
+                "    return HORN_OK;",
+                "}",
+                f"horn_status_t {name}_decode({ctype} *value, horn_decoder_t *input) {{",
+                "    (void)value; (void)input;",
+            ]
+        )
         for index, element in enumerate(type_.elements):
             lines.extend(self._decode_stmt(element, f"value->f{index}", "input"))
-        lines.extend([
-            "    return HORN_OK;",
-            "}",
-            f"horn_status_t {name}_caps(const {ctype} *value, horn_cap_sink_t *out) {{",
-            "    (void)value; (void)out;",
-        ])
+        lines.extend(
+            [
+                "    return HORN_OK;",
+                "}",
+                f"horn_status_t {name}_caps(const {ctype} *value, horn_cap_sink_t *out) {{",
+                "    (void)value; (void)out;",
+            ]
+        )
         for index, element in enumerate(type_.elements):
             if element.caps:
                 lines.extend(self._caps_stmt(element, f"value->f{index}", "out"))
@@ -679,7 +846,16 @@ class CEmitter:
 
     # -- recursive statements ---------------------------------------------------
 
-    def _encode_stmt(self, type_: Type, expr: str, out: str, indent: int = 1) -> list[str]:
+    def _encode_stmt(
+        self, type_: Type, expr: str, out: str, indent: int = 1
+    ) -> list[str]:
+        return [
+            f"{'    ' * indent}horn_encoder_align({out}, {type_.align});"
+        ] + self._encode_unaligned(type_, expr, out, indent)
+
+    def _encode_unaligned(
+        self, type_: Type, expr: str, out: str, indent: int = 1
+    ) -> list[str]:
         pad = "    " * indent
         if isinstance(type_, Scalar):
             return [f"{pad}horn_encoder_{type_.name}({out}, {expr});"]
@@ -689,13 +865,34 @@ class CEmitter:
             return []
         if isinstance(type_, Void):
             return []
-        if isinstance(type_, (RecordType, EnumType, FlagsType, ListType, ArrayType, OptionType, TupleType)):
+        if isinstance(
+            type_,
+            (
+                RecordType,
+                EnumType,
+                TaggedEnumType,
+                FlagsType,
+                ListType,
+                ArrayType,
+                OptionType,
+                TupleType,
+            ),
+        ):
             return [
                 f"{pad}if ({c_func(type_)}_encode(&{expr}, {out}) != HORN_OK) return HORN_ERR_INVALID;"
             ]
         raise TypeError(f"cannot encode C type {type_!r}")
 
-    def _decode_stmt(self, type_: Type, target: str, inp: str, indent: int = 1) -> list[str]:
+    def _decode_stmt(
+        self, type_: Type, target: str, inp: str, indent: int = 1
+    ) -> list[str]:
+        return [
+            f"{'    ' * indent}if (horn_decoder_align({inp}, {type_.align}) != HORN_OK) return HORN_ERR_TRUNCATED;"
+        ] + self._decode_unaligned(type_, target, inp, indent)
+
+    def _decode_unaligned(
+        self, type_: Type, target: str, inp: str, indent: int = 1
+    ) -> list[str]:
         pad = "    " * indent
         if isinstance(type_, Scalar):
             return [
@@ -705,17 +902,32 @@ class CEmitter:
             return self._decode_stmt(type_.inner, target, inp, indent)
         if isinstance(type_, CapType):
             return [
-                f"{pad}if (horn_cap_source_pop({inp}->caps, &{target}) != HORN_OK) return HORN_ERR_MISSING_CAP;"
+                f"{pad}if (horn_cap_source_pop({inp}->caps, &{target}) != HORN_OK) return HORN_ERR_MISSING_CAP;",
+                f"{pad}{target}.mode = {c_mode(type_.mode)}; {target}.rights = {c_rights(type_.rights)};",
             ]
         if isinstance(type_, Void):
             return []
-        if isinstance(type_, (RecordType, EnumType, FlagsType, ListType, ArrayType, OptionType, TupleType)):
+        if isinstance(
+            type_,
+            (
+                RecordType,
+                EnumType,
+                TaggedEnumType,
+                FlagsType,
+                ListType,
+                ArrayType,
+                OptionType,
+                TupleType,
+            ),
+        ):
             return [
                 f"{pad}if ({c_func(type_)}_decode(&{target}, {inp}) != HORN_OK) return HORN_ERR_INVALID;"
             ]
         raise TypeError(f"cannot decode C type {type_!r}")
 
-    def _caps_stmt(self, type_: Type, expr: str, out: str, indent: int = 1) -> list[str]:
+    def _caps_stmt(
+        self, type_: Type, expr: str, out: str, indent: int = 1
+    ) -> list[str]:
         pad = "    " * indent
         if isinstance(type_, CapType):
             return [
@@ -723,7 +935,19 @@ class CEmitter:
             ]
         if isinstance(type_, ParcelType):
             return self._caps_stmt(type_.inner, expr, out, indent)
-        if isinstance(type_, (RecordType, EnumType, FlagsType, ListType, ArrayType, OptionType, TupleType)):
+        if isinstance(
+            type_,
+            (
+                RecordType,
+                EnumType,
+                TaggedEnumType,
+                FlagsType,
+                ListType,
+                ArrayType,
+                OptionType,
+                TupleType,
+            ),
+        ):
             if not type_.caps:
                 return []
             return [
@@ -752,63 +976,85 @@ class CEmitter:
         ]
         for param in method.params:
             lines.append(f"    args.{snake(param.name)} = {snake(param.name)};")
-        lines.extend([
-            f"    uint8_t args_buf[{max(args.size, 1)}];",
-            "    horn_encoder_t enc;",
-            "    horn_encoder_init(&enc, args_buf, sizeof args_buf);",
-            f"    if ({c_func(args)}_encode(&args, &enc) != HORN_OK) return HORN_ERR_INVALID;",
-            "    horn_cap_packer_t packer;",
-            f"    horn_cap_packer_init(&packer, transport->space, &{prefix}_req_layout);",
-            "    horn_cap_sink_t cap_sink = horn_cap_packer_sink(&packer);",
-            f"    if ({c_func(args)}_caps(&args, &cap_sink) != HORN_OK) return HORN_ERR_TOO_MANY_CAPS;",
-            "    horn_cap_list_t caps;",
-            "    if (horn_cap_packer_finish(&packer, &caps) != HORN_OK) return HORN_ERR_TOO_MANY_CAPS;",
-        ])
+        lines.extend(
+            [
+                f"    uint8_t args_buf[{max(args.size, 1)}];",
+                "    horn_encoder_t enc;",
+                "    horn_encoder_init(&enc, args_buf, sizeof args_buf);",
+                f"    if ({c_func(args)}_encode(&args, &enc) != HORN_OK) return HORN_ERR_INVALID;",
+                "    horn_cap_packer_t packer;",
+                f"    horn_cap_packer_init(&packer, transport->space, &{prefix}_req_layout);",
+                "    horn_cap_sink_t cap_sink = horn_cap_packer_sink(&packer);",
+                f"    if ({c_func(args)}_caps(&args, &cap_sink) != HORN_OK) return HORN_ERR_TOO_MANY_CAPS;",
+                "    horn_cap_list_t caps;",
+                "    if (horn_cap_packer_finish(&packer, &caps) != HORN_OK) return HORN_ERR_TOO_MANY_CAPS;",
+            ]
+        )
         label = method_label_name(interface, method)
         if method.oneway:
-            lines.extend([
-                f"    return transport->send(ctx, target, {label}, args_buf, enc.pos, &caps);",
-                "}",
-                "",
-            ])
+            lines.extend(
+                [
+                    f"    return transport->send(ctx, target, {label}, args_buf, enc.pos, &caps);",
+                    "}",
+                    "",
+                ]
+            )
             return lines
         if method.result is None:
-            lines.extend([
-                "    size_t result_len = 0;",
-                "    horn_cap_list_t result_caps = {0};",
-                f"    return transport->call(ctx, target, {label}, args_buf, enc.pos, &caps, NULL, 0, &result_len, &result_caps);",
-                "}",
-                "",
-            ])
+            lines.extend(
+                [
+                    "    size_t result_len = 0;",
+                    "    horn_cap_list_t result_caps = {0};",
+                    f"    return transport->call(ctx, target, {label}, args_buf, enc.pos, &caps, NULL, 0, &result_len, &result_caps);",
+                    "}",
+                    "",
+                ]
+            )
             return lines
         result_type = method.result
-        wire_result = result_type.inner if isinstance(result_type, ParcelType) else result_type
-        lines.extend([
-            f"    uint8_t result_buf[{max(wire_result.size, 1)}];",
-            "    size_t result_len = 0;",
-            "    horn_cap_list_t result_caps = {0};",
-            f"    horn_status_t status = transport->call(ctx, target, {label}, args_buf, enc.pos, &caps, result_buf, sizeof result_buf, &result_len, &result_caps);",
-            "    if (status != HORN_OK) return status;",
-            "    horn_cap_unpacker_t unpacker;",
-            f"    horn_cap_unpacker_init(&unpacker, transport->space, &{prefix}_result_layout, result_caps);",
-        ])
+        wire_result = (
+            result_type.inner if isinstance(result_type, ParcelType) else result_type
+        )
+        lines.extend(
+            [
+                f"    uint8_t result_buf[{max(wire_result.size, 1)}];",
+                "    size_t result_len = 0;",
+                "    horn_cap_list_t result_caps = {0};",
+                f"    horn_status_t status = transport->call(ctx, target, {label}, args_buf, enc.pos, &caps, result_buf, sizeof result_buf, &result_len, &result_caps);",
+                "    if (status != HORN_OK) return status;",
+                "    horn_cap_unpacker_t unpacker;",
+                f"    horn_cap_unpacker_init(&unpacker, transport->space, &{prefix}_result_layout, result_caps);",
+            ]
+        )
         if isinstance(wire_result, CapType):
-            lines.extend([
-                "    return horn_cap_unpacker_pop(&unpacker, result);",
+            lines.extend(
+                [
+                    "    status = horn_cap_unpacker_pop(&unpacker, result);",
+                    f"    result->mode = {c_mode(wire_result.mode)}; result->rights = {c_rights(wire_result.rights)};",
+                    "    return status == HORN_OK ? horn_cap_unpacker_finish(&unpacker) : status;",
+                    "}",
+                    "",
+                ]
+            )
+            return lines
+        lines.extend(
+            [
+                "    horn_cap_source_t result_source = horn_cap_unpacker_source(&unpacker);",
+                "    horn_decoder_t dec;",
+                "    horn_decoder_init(&dec, result_buf, result_len, &result_source);",
+            ]
+        )
+        if isinstance(wire_result, Scalar):
+            lines.append(f"    status = horn_decoder_{wire_result.name}(&dec, result);")
+        else:
+            lines.append(f"    status = {c_func(wire_result)}_decode(result, &dec);")
+        lines.extend(
+            [
+                "    return status == HORN_OK ? horn_cap_unpacker_finish(&unpacker) : status;",
                 "}",
                 "",
-            ])
-            return lines
-        lines.extend([
-            "    horn_cap_source_t result_source = horn_cap_unpacker_source(&unpacker);",
-            "    horn_decoder_t dec;",
-            "    horn_decoder_init(&dec, result_buf, result_len, &result_source);",
-        ])
-        if isinstance(wire_result, Scalar):
-            lines.append(f"    return horn_decoder_{wire_result.name}(&dec, result);")
-        else:
-            lines.append(f"    return {c_func(wire_result)}_decode(result, &dec);")
-        lines.extend(["}", ""])
+            ]
+        )
         return lines
 
     # -- servers ----------------------------------------------------------------
@@ -824,8 +1070,10 @@ class CEmitter:
     def _interface_dispatch(self, interface: Interface) -> list[str]:
         vtable = f"horn_{snake(interface.python_name)}_vtable_t"
         lines = [
-            f"horn_status_t horn_{snake(interface.python_name)}_dispatch(const {vtable} *vtable, void *ctx, "
-            "uint64_t label, horn_decoder_t *input, horn_encoder_t *out, horn_cap_sink_t *out_caps) {",
+            (
+                f"horn_status_t horn_{snake(interface.python_name)}_dispatch(const {vtable} *vtable, void *ctx, "
+                "uint64_t label, horn_decoder_t *input, horn_encoder_t *out, horn_cap_sink_t *out_caps) {"
+            ),
             "    (void)out;",
             "    (void)out_caps;",
             "    switch (label) {",
@@ -835,51 +1083,71 @@ class CEmitter:
             args_type = c_typedef(args)
             lines.append(f"        case {method_label_name(interface, method)}: {{")
             lines.append(f"            {args_type} args;")
-            lines.append(f"            if ({c_func(args)}_decode(&args, input) != HORN_OK) return HORN_ERR_INVALID;")
-            call_args = ["ctx"] + [f"args.{snake(param.name)}" for param in method.params]
+            lines.append(
+                f"            if ({c_func(args)}_decode(&args, input) != HORN_OK) return HORN_ERR_INVALID;"
+            )
+            call_args = ["ctx"] + [
+                f"args.{snake(param.name)}" for param in method.params
+            ]
             if method.result is not None:
                 result_type = c_typedef(method.result)
                 lines.append(f"            {result_type} result;")
                 call_args.append("&result")
-            lines.append(f"            horn_status_t status = vtable->{snake(method.name)}({', '.join(call_args)});")
+            lines.append(
+                f"            horn_status_t status = vtable->{snake(method.name)}({', '.join(call_args)});"
+            )
             lines.append("            if (status != HORN_OK) return status;")
             if method.result is not None:
-                wire_result = method.result.inner if isinstance(method.result, ParcelType) else method.result
+                wire_result = (
+                    method.result.inner
+                    if isinstance(method.result, ParcelType)
+                    else method.result
+                )
                 if isinstance(wire_result, CapType):
                     lines.append(
                         f"            if (horn_cap_sink_push_mode(out_caps, result, {c_mode(wire_result.mode)}) != HORN_OK) return HORN_ERR_TOO_MANY_CAPS;"
                     )
                 elif isinstance(wire_result, Scalar):
-                    lines.append(f"            horn_encoder_{wire_result.name}(out, result);")
+                    lines.append(
+                        f"            horn_encoder_{wire_result.name}(out, result);"
+                    )
                 else:
-                    lines.append(f"            if ({c_func(wire_result)}_encode(&result, out) != HORN_OK) return HORN_ERR_INVALID;")
+                    lines.append(
+                        f"            if ({c_func(wire_result)}_encode(&result, out) != HORN_OK) return HORN_ERR_INVALID;"
+                    )
                     if wire_result.caps:
                         lines.append(
                             f"            if ({c_func(wire_result)}_caps(&result, out_caps) != HORN_OK) return HORN_ERR_TOO_MANY_CAPS;"
                         )
             lines.append("            return HORN_OK;")
             lines.append("        }")
-        lines.extend([
-            "        default:",
-            "            return HORN_ERR_UNKNOWN_METHOD;",
-            "    }",
-            "}",
-            "",
-        ])
+        lines.extend(
+            [
+                "        default:",
+                "            return HORN_ERR_UNKNOWN_METHOD;",
+                "    }",
+                "}",
+                "",
+            ]
+        )
         return lines
 
     def _object_dispatch(self, object_: Object) -> list[str]:
         vtable = f"horn_{snake(object_.python_name)}_vtable_t"
         lines = [
-            f"horn_status_t horn_{snake(object_.python_name)}_dispatch(const {vtable} *vtable, void *ctx, "
-            "uint64_t label, horn_decoder_t *input, horn_encoder_t *out, horn_cap_sink_t *out_caps) {",
+            (
+                f"horn_status_t horn_{snake(object_.python_name)}_dispatch(const {vtable} *vtable, void *ctx, "
+                "uint64_t label, horn_decoder_t *input, horn_encoder_t *out, horn_cap_sink_t *out_caps) {"
+            ),
         ]
         for interface in object_.implements:
             lines.append("    {")
             lines.append(
                 f"        horn_status_t status = horn_{snake(interface.python_name)}_dispatch(&vtable->{snake(interface.python_name)}, ctx, label, input, out, out_caps);"
             )
-            lines.append("        if (status != HORN_ERR_UNKNOWN_METHOD) return status;")
+            lines.append(
+                "        if (status != HORN_ERR_UNKNOWN_METHOD) return status;"
+            )
             lines.append("    }")
         lines.extend(["    return HORN_ERR_UNKNOWN_METHOD;", "}", ""])
         return lines
@@ -889,13 +1157,17 @@ class CEmitter:
     def _cap_path_definitions(self) -> list[str]:
         lines: list[str] = []
         for interface, method in self.schema.methods():
-            prefix = f"{upper(interface.python_name)}_{upper(method.name)}"
-            for kind, caps in (("REQ", method.request_caps()), ("RESULT", method.result_caps())):
+            for kind, caps in (
+                ("REQ", method.request_caps()),
+                ("RESULT", method.result_caps()),
+            ):
                 values = ", ".join(f'"{cap.path}"' for cap in caps) or "NULL"
                 lines.append(
                     f"const char *const horn_{snake(interface.python_name)}_{snake(method.name)}_{kind.lower()}_caps[] = {{ {values} }};"
                 )
-                lines.append(f"const size_t horn_{snake(interface.python_name)}_{snake(method.name)}_{kind.lower()}_cap_count = {len(caps)};")
+                lines.append(
+                    f"const size_t horn_{snake(interface.python_name)}_{snake(method.name)}_{kind.lower()}_cap_count = {len(caps)};"
+                )
         lines.append("")
         return lines
 
@@ -911,7 +1183,6 @@ def method_args_type(interface: Interface, method: Method) -> Type:
         offset += param.type.size
         align = max(align, param.type.align)
         caps += param.type.caps
-    size = (offset + align - 1) // align * align if method.params else 0
     return RecordType(
         method_args_name(interface, method),
         tuple(Field(param.name, param.type) for param in method.params),

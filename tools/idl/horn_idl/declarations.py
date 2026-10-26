@@ -7,11 +7,14 @@ which allows forward references and keeps import-time errors out of the way.
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
 from .types import (
+    U32,
     ArrayType,
     CapMode,
     CapType,
@@ -19,7 +22,9 @@ from .types import (
     ListType,
     OptionType,
     ParcelType,
+    ResultType,
     Rights,
+    Void,
 )
 
 Copy = CapMode.COPY
@@ -94,7 +99,7 @@ def iface(
     return decorate
 
 
-def object(  # noqa: A001 - this is the DSL spelling
+def object(
     *,
     fqn: str | None = None,
     implements: tuple[type, ...],
@@ -123,19 +128,33 @@ def record(
     return decorate(cls) if cls is not None else decorate
 
 
-def enum(
-    cls: type | None = None,
-    *,
-    base: Any = None,
-    name: str | None = None,
-) -> Any:
-    def decorate(klass: type) -> type:
-        klass.__horn_kind__ = "enum"
-        klass.__horn_name__ = name or klass.__name__
-        klass.__horn_base__ = base
-        return klass
+@dataclass(frozen=True)
+class EnumValue:
+    tag: int | None
+    payload: Any
 
-    return decorate(cls) if cls is not None else decorate
+
+class _Enum:
+    def __call__(
+        self, cls: type | None = None, *, base: Any = None, name: str | None = None
+    ) -> Any:
+        def decorate(klass: type) -> type:
+            klass.__horn_kind__ = "enum"
+            klass.__horn_name__ = name or klass.__name__
+            klass.__horn_base__ = base
+            return klass
+
+        return decorate(cls) if cls is not None else decorate
+
+    def value(self, tag: int | None = None, *, type: Any = None) -> Any:
+        def decorate(function: Callable[..., Any]) -> Callable[..., Any]:
+            function.__horn_enum_value__ = EnumValue(tag, type)
+            return function
+
+        return decorate
+
+
+enum = _Enum()
 
 
 def flags(
@@ -268,6 +287,33 @@ class Option:
             return OptionType(resolver.resolve(inner))
 
         return DeferredType(f"option<{inner!r}>", resolve)
+
+
+class Result:
+    def __class_getitem__(cls, args: Any) -> DeferredType:
+        if not isinstance(args, tuple) or len(args) != 2:
+            raise TypeError("Result requires success and error types")
+
+        def resolve(resolver: Any) -> ResultType:
+            ok, error = (resolver.resolve(value) for value in args)
+            for payload in (ok, error):
+                if not isinstance(payload, Void):
+                    resolver.validate_value_type(payload, "Result payload")
+            caps = [
+                (
+                    cap.path,
+                    cap.cap.target_name(),
+                    cap.cap.mode.value,
+                    cap.cap.rights.value,
+                )
+                for payload in (ok, error)
+                for cap in payload.walk_caps()
+            ]
+            key = f"{ok.rust_type()}|{error.rust_type()}|{caps}"
+            name = "Result_" + hashlib.sha256(key.encode()).hexdigest()[:16]
+            return ResultType(name, U32, (("Ok", 0, ok), ("Err", 1, error)))
+
+        return DeferredType(f"result<{args[0]!r},{args[1]!r}>", resolve)
 
 
 class String:

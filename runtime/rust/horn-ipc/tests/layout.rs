@@ -10,6 +10,7 @@ struct MockSpace {
     next: u64,
     slots: HashMap<(u64, u32), CapRef>,
     cnodes: HashMap<u64, u8>,
+    localized: Vec<CapMode>,
 }
 
 impl MockSpace {
@@ -25,7 +26,8 @@ impl CapSpace for MockSpace {
         self.cnodes.insert(id, size_bits);
         let cap = CapRef::new(0, id as u32, 0, size_bits, CapMode::COPY, Rights::ALL);
         if let Some(parent) = parent {
-            self.slots.insert((parent.cnode.slot.into(), parent.slot), cap);
+            self.slots
+                .insert((parent.cnode.slot.into(), parent.slot), cap);
         }
         Ok(cap)
     }
@@ -52,6 +54,7 @@ impl CapSpace for MockSpace {
         Ok(())
     }
     fn localize(&mut self, cap: CapRef) -> Result<CapRef, RpcError> {
+        self.localized.push(cap.mode);
         Ok(cap)
     }
     fn install_self_cnode(&mut self, _cnode: CapRef) -> Result<(), RpcError> {
@@ -95,6 +98,7 @@ static CNODE: CapNode = CapNode {
 static CNODE_LAYOUT: CapLayout = CapLayout {
     direct: &[],
     cnode: Some(&CNODE),
+    variable: false,
 };
 
 static DIRECT_LAYOUT: CapLayout = CapLayout {
@@ -113,7 +117,42 @@ static DIRECT_LAYOUT: CapLayout = CapLayout {
         },
     ],
     cnode: None,
+    variable: false,
 };
+
+static VARIABLE_CNODE: CapLayout = CapLayout {
+    variable: true,
+    ..CNODE_LAYOUT
+};
+
+#[test]
+fn variable_layout_only_transfers_active_caps() {
+    let mut space = MockSpace::default();
+    let caps = CapPacker::new(&mut space, &VARIABLE_CNODE)
+        .finish()
+        .unwrap();
+    assert_eq!(caps.len(), 0);
+    assert!(space.cnodes.is_empty());
+    let mut packer = CapPacker::new(&mut space, &VARIABLE_CNODE);
+    packer.push(MockSpace::cap(42)).unwrap();
+    let caps = packer.finish().unwrap();
+    assert_eq!(caps.len(), 1);
+    let mut unpacker = CapUnpacker::new_localizing(&mut space, &VARIABLE_CNODE, caps);
+    let cap = unpacker.pop_typed(CapMode::MOVE, Rights::WRITE).unwrap();
+    assert_eq!(cap.slot, 42);
+    assert_eq!(cap.rights, Rights::WRITE);
+    unpacker.finish().unwrap();
+    assert_eq!(space.localized, vec![CapMode::MOVE]);
+}
+
+#[test]
+fn inactive_variant_rejects_unexpected_caps() {
+    let mut space = MockSpace::default();
+    let mut caps = horn_ipc::WireCaps::default();
+    caps.push(MockSpace::cap(42)).unwrap();
+    let unpacker = CapUnpacker::new(&mut space, &VARIABLE_CNODE, caps);
+    assert_eq!(unpacker.finish(), Err(RpcError::InvalidValue));
+}
 
 #[test]
 fn packs_and_unpacks_a_cnode() {

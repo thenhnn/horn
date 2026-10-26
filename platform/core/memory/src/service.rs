@@ -7,18 +7,13 @@ use horn_ipc::*;
 
 const ALLOCATOR_BADGE: ::sel4::Word = 1;
 
-fn rpc(error: Error) -> RpcError {
-    let code = match error {
+fn application_error(error: Error) -> MemoryError {
+    match error {
         Error::InvalidSize => MemoryError::InvalidSize,
         Error::Exhausted => MemoryError::Exhausted,
         Error::MetadataExhausted => MemoryError::MetadataExhausted,
         Error::Backend => MemoryError::Backend,
-    };
-    failure(code)
-}
-
-fn failure(error: MemoryError) -> RpcError {
-    RpcError::Server(error as u32)
+    }
 }
 
 fn mint(
@@ -105,27 +100,30 @@ impl Service {
             );
             let sent = protocol::memory_host_reply(reply, &mut server.space, &response);
             let cleanup = match self.outgoing.take() {
-                Some(slot) => self.allocator.release_slot(slot).map_err(rpc),
+                Some(slot) => self
+                    .allocator
+                    .release_slot(slot)
+                    .map_err(|_| RpcError::Transport),
                 None => Ok(()),
             };
             sent.and(cleanup)?;
         }
     }
 
-    fn allocate(&mut self, size: u64) -> Result<Cap<MemoryObjectTag>, RpcError> {
+    fn allocate(&mut self, size: u64) -> Result<Cap<MemoryObjectTag>, MemoryError> {
         if size == 0 || size.checked_add(PAGE_SIZE as u64 - 1).is_none() {
-            return Err(failure(MemoryError::InvalidSize));
+            return Err(MemoryError::InvalidSize);
         }
         if size > (self.pool.capacity() * PAGE_SIZE) as u64
             || self.objects.len() == self.max_objects
         {
-            return Err(failure(MemoryError::Exhausted));
+            return Err(MemoryError::Exhausted);
         }
         let next = self
             .next_badge
             .checked_add(1)
-            .ok_or(failure(MemoryError::Exhausted))?;
-        let backing = MemoryObject::allocate(size, &mut self.pool).map_err(rpc)?;
+            .ok_or(MemoryError::Exhausted)?;
+        let backing = MemoryObject::allocate(size, &mut self.pool).map_err(application_error)?;
         let caps = (|| {
             let authority = mint(&mut self.allocator, self.endpoint, self.next_badge)?;
             let outgoing = match self.allocator.reserve_slot() {
@@ -153,8 +151,8 @@ impl Service {
         let (authority, outgoing) = match caps {
             Ok(caps) => caps,
             Err(error) => {
-                backing.release(&mut self.pool).map_err(rpc)?;
-                return Err(rpc(error));
+                backing.release(&mut self.pool).map_err(application_error)?;
+                return Err(application_error(error));
             }
         };
         self.objects.push(Entry {
@@ -174,20 +172,26 @@ impl Service {
         )))
     }
 
-    fn release(&mut self, badge: ::sel4::Word) -> Result<(), RpcError> {
+    fn release(&mut self, badge: ::sel4::Word) -> Result<(), MemoryError> {
         let index = self
             .objects
             .iter()
             .position(|entry| entry.badge == badge)
-            .ok_or(failure(MemoryError::BadHandle))?;
+            .ok_or(MemoryError::BadHandle)?;
         self.allocator
             .root()
             .absolute_cptr(::sel4::CPtr::from_bits(self.objects[index].authority as _))
             .revoke()
-            .map_err(|_| failure(MemoryError::Backend))?;
+            .map_err(|_| MemoryError::Backend)?;
         let entry = self.objects.swap_remove(index);
-        let backing = entry.backing.release(&mut self.pool).map_err(rpc);
-        let slot = self.allocator.release_slot(entry.authority).map_err(rpc);
+        let backing = entry
+            .backing
+            .release(&mut self.pool)
+            .map_err(application_error);
+        let slot = self
+            .allocator
+            .release_slot(entry.authority)
+            .map_err(application_error);
         backing.and(slot)
     }
 }
@@ -198,34 +202,34 @@ struct Caller<'a> {
 }
 
 impl protocol::MemoryAllocator for Caller<'_> {
-    fn allocate(&mut self, size: u64) -> Result<Cap<MemoryObjectTag>, RpcError> {
+    fn allocate(&mut self, size: u64) -> Result<Cap<MemoryObjectTag>, MemoryError> {
         if self.badge != ALLOCATOR_BADGE {
-            return Err(failure(MemoryError::Denied));
+            return Err(MemoryError::Denied);
         }
         self.service.allocate(size)
     }
 }
 
 impl protocol::Memory for Caller<'_> {
-    fn info(&mut self) -> Result<MemoryInfo, RpcError> {
+    fn info(&mut self) -> Result<MemoryInfo, MemoryError> {
         if self.badge == ALLOCATOR_BADGE {
-            return Err(failure(MemoryError::Denied));
+            return Err(MemoryError::Denied);
         }
         let entry = self
             .service
             .objects
             .iter()
             .find(|entry| entry.badge == self.badge)
-            .ok_or(failure(MemoryError::BadHandle))?;
+            .ok_or(MemoryError::BadHandle)?;
         Ok(MemoryInfo {
             size: entry.backing.size(),
             resident_size: entry.backing.resident_size(),
             page_size: PAGE_SIZE as u64,
         })
     }
-    fn release(&mut self) -> Result<(), RpcError> {
+    fn release(&mut self) -> Result<(), MemoryError> {
         if self.badge == ALLOCATOR_BADGE {
-            return Err(failure(MemoryError::Denied));
+            return Err(MemoryError::Denied);
         }
         self.service.release(self.badge)
     }

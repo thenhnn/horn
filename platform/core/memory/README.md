@@ -1,6 +1,6 @@
 # Resident memory
 
-- `idl/horn_memory.py`: allocation, info, release and named status codes.
+- `idl/horn_memory.py`: allocation, info and release with typed `Result[..., MemoryError]` replies (protocol version 2).
 - `src/lib.rs`: resident backing and rollback.
 - `src/sel4.rs`: retyping/revocation with rust-sel4 `BasicAllocator` bookkeeping.
 - `src/service.rs`: root-hosted service using generated fallible dispatch.

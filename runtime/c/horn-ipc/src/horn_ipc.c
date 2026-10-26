@@ -18,7 +18,8 @@ void horn_decoder_init(horn_decoder_t *dec, const uint8_t *data, size_t len, hor
 
 void horn_encoder_align(horn_encoder_t *enc, size_t align) {
     if (align > 1) {
-        enc->pos = (enc->pos + align - 1) / align * align;
+        size_t end = (enc->pos + align - 1) / align * align;
+        horn_encoder_skip(enc, end - enc->pos);
     }
 }
 
@@ -252,12 +253,13 @@ horn_status_t horn_cap_packer_push(horn_cap_packer_t *packer, horn_cap_t cap) {
 
 horn_status_t horn_cap_packer_finish(horn_cap_packer_t *packer, horn_cap_list_t *caps) {
     if (packer->direct) {
-        if (packer->caps.len != packer->layout->direct_count) {
+        if (!packer->layout->variable && packer->caps.len != packer->layout->direct_count) {
             return HORN_ERR_MISSING_CAP;
         }
     } else {
         const horn_cap_node_t *node = packer->layout->cnode;
-        if (!packer->have_cnode || packer->next_slot != node->slot_count) {
+        if (packer->layout->variable && packer->next_slot == 0) { *caps = packer->caps; return HORN_OK; }
+        if (!packer->have_cnode || (!packer->layout->variable && packer->next_slot != node->slot_count)) {
             return HORN_ERR_MISSING_CAP;
         }
         horn_status_t status = horn_cap_list_push(&packer->caps, (horn_cap_t){
@@ -328,6 +330,10 @@ horn_status_t horn_cap_unpacker_pop(horn_cap_unpacker_t *unpacker, horn_cap_t *c
 
 static horn_status_t horn_cap_unpacker_source_pop(void *ctx, horn_cap_t *cap) {
     return horn_cap_unpacker_pop((horn_cap_unpacker_t *)ctx, cap);
+}
+
+horn_status_t horn_cap_unpacker_finish(const horn_cap_unpacker_t *unpacker) {
+    return unpacker->caps.read == unpacker->caps.len ? HORN_OK : HORN_ERR_INVALID;
 }
 
 horn_cap_source_t horn_cap_unpacker_source(horn_cap_unpacker_t *unpacker) {

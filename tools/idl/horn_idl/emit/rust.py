@@ -20,14 +20,17 @@ from ..types import (
     CapSetType,
     CapType,
     EnumType,
+    Field,
     FlagsType,
     ListType,
     OptionType,
     ParcelType,
     RecordType,
     RegionType,
+    ResultType,
     RingType,
     Scalar,
+    TaggedEnumType,
     TupleType,
     Type,
     Void,
@@ -54,9 +57,13 @@ def pascal(name: str) -> str:
 
 
 def rust_type(type_: Any) -> str:
+    if isinstance(type_, ResultType):
+        return f"Result<{rust_type(type_.ok)}, {rust_type(type_.error)}>"
     if isinstance(type_, Scalar):
         return type_.rust
-    if isinstance(type_, (EnumType, FlagsType, RecordType, RingType, RegionType)):
+    if isinstance(
+        type_, (EnumType, TaggedEnumType, FlagsType, RecordType, RingType, RegionType)
+    ):
         return type_.name
     if isinstance(type_, CapType):
         return type_.rust_type()
@@ -84,6 +91,10 @@ def rust_type(type_: Any) -> str:
 
 
 def rust_default(type_: Any) -> str:
+    if isinstance(type_, ResultType):
+        return f"Ok({rust_default(type_.ok)})"
+    if isinstance(type_, TaggedEnumType):
+        return f"{type_.name}::default()"
     if isinstance(type_, Scalar):
         if type_.name == "bool":
             return "false"
@@ -97,13 +108,13 @@ def rust_default(type_: Any) -> str:
     if isinstance(type_, RecordType):
         return f"{type_.name}::default()"
     if isinstance(type_, ListType):
-        return "List::default()"
+        return f"List {{ len: 0, data: [{rust_default(type_.element)}; {type_.capacity}] }}"
     if isinstance(type_, ArrayType):
-        return f"default_array::<{rust_type(type_.element)}, {type_.capacity}>()"
+        return f"[{rust_default(type_.element)}; {type_.capacity}]"
     if isinstance(type_, OptionType):
         return "None"
     if isinstance(type_, ParcelType):
-        return "Parcel::default()"
+        return f"Parcel::inline({rust_default(type_.inner)})"
     if isinstance(type_, TupleType):
         if not type_.elements:
             return "()"
@@ -122,6 +133,16 @@ def rust_default(type_: Any) -> str:
 
 def method_args_name(interface: Interface, method: Method) -> str:
     return f"{pascal(interface.python_name)}{pascal(method.name)}Args"
+
+
+def method_reply_name(interface: Interface, method: Method) -> str:
+    return f"{pascal(interface.python_name)}{pascal(method.name)}Reply"
+
+
+def reply_value(interface: Interface, method: Method, value: str) -> str:
+    if method.result is None:
+        return value
+    return f"&{method_reply_name(interface, method)} {{ value: *{value} }}"
 
 
 def method_variant_name(interface: Interface, method: Method) -> str:
@@ -145,17 +166,145 @@ def rights_expr(rights: Any) -> str:
     return f"Rights({bits})"
 
 
+def encode_value(type_: Type, expr: str) -> str:
+    if type_.size == 0:
+        return ""
+    if isinstance(type_, ParcelType):
+        return encode_value(type_.inner, f"{expr}.data")
+    body = []
+    if isinstance(type_, ResultType):
+        cases = " ".join(
+            f"{name}(_value) => {{ out.u32({tag}); out.align({type_.align}); {encode_value(payload, '(*_value)')} }}"
+            for name, tag, payload in type_.variants
+        )
+        body = [f"match &{expr} {{ {cases} }}"]
+    elif isinstance(type_, TupleType):
+        for index, element in enumerate(type_.elements):
+            body += [
+                f"out.align({element.align});",
+                encode_value(element, f"{expr}.{index}"),
+            ]
+    elif isinstance(type_, ArrayType):
+        body = [
+            f"for _value in &{expr} {{ out.align({type_.element.align}); {encode_value(type_.element, '(*_value)')} }}"
+        ]
+    elif isinstance(type_, ListType):
+        body = [
+            f"out.u64({expr}.len as u64);",
+            f"assert!({expr}.len as usize <= {type_.capacity});",
+            f"for _value in &{expr}.data[..{expr}.len as usize] {{ out.align({type_.element.align}); {encode_value(type_.element, '(*_value)')} }}",
+        ]
+    elif isinstance(type_, OptionType):
+        body = [
+            f"out.u64(if {expr}.is_some() {{ 1 }} else {{ 0 }});",
+            f"out.align({type_.inner.align});",
+            f"if let Some(_value) = &{expr} {{ {encode_value(type_.inner, '(*_value)')} }}",
+        ]
+    else:
+        return f"out.value(&{expr});"
+    return f"out.scope({type_.size}, |out| {{ {' '.join(body)} }});"
+
+
+def decode_value(type_: Type) -> str:
+    if isinstance(type_, Void):
+        return "input.scope(0, |_| Ok(()))"
+    if isinstance(type_, CapType):
+        marker = type_.rust_type()[4:-1]
+        return f"input.cap::<{marker}>({cap_mode(type_.mode)}, {rights_expr(type_.rights)})"
+    if isinstance(type_, ParcelType):
+        return f"({decode_value(type_.inner)}).map(Parcel::inline)"
+    body = []
+    if isinstance(type_, ResultType):
+        body += [
+            "let tag = input.u32()?;",
+            f"input.zeroes({type_.payload_offset - 4})?;",
+        ]
+        cases = " ".join(
+            f"{tag} => {name}({decode_value(payload)}?),"
+            for name, tag, payload in type_.variants
+        )
+        body += [
+            f"let value = match tag {{ {cases} _ => return Err(RpcError::InvalidValue) }};"
+        ]
+        result = "value"
+    elif isinstance(type_, TupleType):
+        for index, element in enumerate(type_.elements):
+            body += [
+                f"input.align({element.align});",
+                f"let f{index} = {decode_value(element)}?;",
+            ]
+        result = (
+            "("
+            + ",".join(f"f{index}" for index in range(len(type_.elements)))
+            + ("," if type_.elements else "")
+            + ")"
+        )
+    elif isinstance(type_, (ArrayType, ListType)):
+        if isinstance(type_, ListType):
+            body += [
+                "let len = input.u64()?;",
+                f"if len > {type_.capacity} {{ return Err(RpcError::InvalidValue); }}",
+            ]
+        body += [f"let mut data = [{rust_default(type_.element)}; {type_.capacity}];"]
+        count = "len as usize" if isinstance(type_, ListType) else str(type_.capacity)
+        body += [
+            f"for value in &mut data[..{count}] {{ input.align({type_.element.align}); *value = {decode_value(type_.element)}?; }}"
+        ]
+        result = (
+            "List { len: len as u32, data }" if isinstance(type_, ListType) else "data"
+        )
+    elif isinstance(type_, OptionType):
+        body += [
+            "let present = input.u64()?;",
+            f"input.align({type_.inner.align});",
+            f"let value = match present {{ 0 => None, 1 => Some({decode_value(type_.inner)}?), _ => return Err(RpcError::InvalidValue) }};",
+        ]
+        result = "value"
+    else:
+        return f"input.value::<{rust_type(type_)}>()"
+    return f"input.scope({type_.size}, |input| {{ {' '.join(body)} input.finish_zeroed({type_.size})?; Ok({result}) }})"
+
+
+def caps_value(type_: Type, expr: str) -> str:
+    if not type_.caps:
+        return ""
+    if isinstance(type_, CapType):
+        return f"out.push({{ let mut cap = {expr}.as_ref(); cap.mode = {cap_mode(type_.mode)}; cap.rights = {rights_expr(type_.rights)}; cap }})?;"
+    if isinstance(type_, ResultType):
+        cases = " ".join(
+            f"{name}(_value) => {{ {caps_value(payload, '(*_value)')} }}"
+            for name, _, payload in type_.variants
+        )
+        return f"match &{expr} {{ {cases} }}"
+    if isinstance(type_, TupleType):
+        return " ".join(
+            caps_value(element, f"{expr}.{index}")
+            for index, element in enumerate(type_.elements)
+        )
+    if isinstance(type_, ArrayType):
+        return f"for value in &{expr} {{ {caps_value(type_.element, '(*value)')} }}"
+    if isinstance(type_, ListType):
+        return f"if {expr}.len as usize > {type_.capacity} {{ return Err(RpcError::InvalidValue); }} for value in &{expr}.data[..{expr}.len as usize] {{ {caps_value(type_.element, '(*value)')} }}"
+    if isinstance(type_, OptionType):
+        return (
+            f"if let Some(value) = &{expr} {{ {caps_value(type_.inner, '(*value)')} }}"
+        )
+    if isinstance(type_, ParcelType):
+        return caps_value(type_.inner, f"{expr}.data")
+    return f"{expr}.caps(out)?;"
+
+
 def _wire_field_encode(field_type: Type, expr: str) -> list[str]:
     return [
         f"        out.align({field_type.align});",
-        f"        {expr}.encode(out);",
+        f"        {encode_value(field_type, expr)}",
     ]
 
 
 def _wire_field_decode(field_type: Type, name: str) -> list[str]:
     return [
         f"        input.align({field_type.align});",
-        f"        let {name}: {rust_type(field_type)} = Wire::decode(input)?;",
+        f"        let {name}: {rust_type(field_type)} = {decode_value(field_type)}?;",
     ]
 
 
@@ -176,7 +325,10 @@ class RustEmitter:
         for record in self.schema.records:
             self.emit_record(record.type)
         for enum in self.schema.enums:
-            self.emit_enum(enum.type)
+            if isinstance(enum.type, TaggedEnumType):
+                self.emit_tagged_enum(enum.type)
+            else:
+                self.emit_enum(enum.type)
         for flags in self.schema.flags:
             self.emit_flags(flags.type)
         for capset in self.schema.capsets:
@@ -245,10 +397,72 @@ class RustEmitter:
         )
         for field in type_.fields:
             if field.type.caps:
-                self.add(f"        self.{snake(field.name)}.caps(out)?;")
+                self.add(
+                    f"        {caps_value(field.type, 'self.' + snake(field.name))}"
+                )
         self.add("        Ok(())")
         self.add("    }")
         self.add("}")
+
+    def emit_tagged_enum(self, type_: TaggedEnumType) -> None:
+        self.add(
+            "", "#[derive(Debug, Clone, Copy, PartialEq)]", f"pub enum {type_.name} {{"
+        )
+        for name, _, payload in type_.variants:
+            suffix = "" if isinstance(payload, Void) else f"({rust_type(payload)})"
+            self.add(f"    {name}{suffix},")
+        self.add("}", f"impl Default for {type_.name} {{")
+        name, _, payload = type_.variants[0]
+        value = f"Self::{name}" + (
+            "" if isinstance(payload, Void) else f"({rust_default(payload)})"
+        )
+        self.add(f"    fn default() -> Self {{ {value} }}", "}")
+        self.add(
+            f"impl Wire for {type_.name} {{",
+            f"    const SIZE: usize = {type_.size};",
+            f"    const ALIGN: usize = {type_.align};",
+            f"    const CAPS: usize = {type_.caps};",
+        )
+        self.add(
+            "    fn encode(&self, out: &mut Encoder<'_>) {",
+            "        out.scope(Self::SIZE, |out| {",
+            "            match self {",
+        )
+        for name, tag, payload in type_.variants:
+            pattern = "" if isinstance(payload, Void) else "(_value)"
+            self.add(
+                f"                Self::{name}{pattern} => {{ out.{type_.base.name}({tag}); out.align({type_.align}); {encode_value(payload, '(*_value)')} }},"
+            )
+        self.add("            }", "        });", "    }")
+        self.add(
+            "    fn decode(input: &mut Decoder<'_>) -> Result<Self, RpcError> {",
+            "        input.scope(Self::SIZE, |input| {",
+            f"            let tag = input.{type_.base.name}()?;",
+            f"            input.zeroes({type_.payload_offset - type_.base.size})?;",
+            "            let value = match tag {",
+        )
+        for name, tag, payload in type_.variants:
+            suffix = "" if isinstance(payload, Void) else f"({decode_value(payload)}?)"
+            self.add(f"                {tag} => Self::{name}{suffix},")
+        self.add(
+            "                _ => return Err(RpcError::InvalidValue),",
+            "            };",
+            "            input.finish_zeroed(Self::SIZE)?;",
+            "            Ok(value)",
+            "        })",
+            "    }",
+        )
+        out_name = "out" if type_.caps else "_out"
+        self.add(
+            f"    fn caps(&self, {out_name}: &mut dyn CapSink) -> Result<(), RpcError> {{",
+            "        match self {",
+        )
+        for name, _, payload in type_.variants:
+            pattern = "" if isinstance(payload, Void) else "(_value)"
+            self.add(
+                f"            Self::{name}{pattern} => {{ {caps_value(payload, '(*_value)')} }},"
+            )
+        self.add("        }", "        Ok(())", "    }", "}")
 
     def emit_enum(self, type_: EnumType) -> None:
         base = type_.base.rust
@@ -400,6 +614,13 @@ class RustEmitter:
         self.add("}")
         for method in interface.all_methods():
             self.emit_method_types(interface, method)
+            if method.result is not None:
+                self.emit_record(
+                    RecordType(
+                        method_reply_name(interface, method),
+                        (Field("value", method.result),),
+                    )
+                )
         self.add("")
         self.add(f"pub trait {interface.python_name} {{")
         for method in interface.all_methods():
@@ -408,10 +629,7 @@ class RustEmitter:
                 for param in method.params
             )
             result = "()" if method.result is None else rust_type(method.result)
-            handler_result = result if method.oneway else f"Result<{result}, RpcError>"
-            self.add(
-                f"    fn {snake(method.name)}(&mut self, {params}) -> {handler_result};"
-            )
+            self.add(f"    fn {snake(method.name)}(&mut self, {params}) -> {result};")
         self.add("}")
         self.emit_client(interface)
 
@@ -458,7 +676,9 @@ class RustEmitter:
         )
         for param in method.params:
             if param.type.caps:
-                self.add(f"        self.{snake(param.name)}.caps(out)?;")
+                self.add(
+                    f"        {caps_value(param.type, 'self.' + snake(param.name))}"
+                )
         self.add("        Ok(())")
         self.add("    }")
         self.add("}")
@@ -490,6 +710,7 @@ class RustEmitter:
         self.emit_layout(interface, method, "RESULT", method.result_layout())
 
     def emit_layout_const(self, prefix: str, layout: CapLayout) -> None:
+        variable = str(layout.variable).lower()
         if layout.direct:
             self.add(f"pub const {prefix}_LAYOUT: CapLayout = CapLayout {{")
             self.add("    direct: &[")
@@ -501,12 +722,13 @@ class RustEmitter:
                 )
             self.add("    ],")
             self.add("    cnode: None,")
+            self.add(f"    variable: {variable},")
             self.add("};")
             return
         if layout.cnode is None:
             self.add(
                 f"pub const {prefix}_LAYOUT: CapLayout = "
-                "CapLayout { direct: &[], cnode: None };"
+                f"CapLayout {{ direct: &[], cnode: None, variable: {variable} }};"
             )
             return
         node = layout.cnode
@@ -525,6 +747,7 @@ class RustEmitter:
         self.add(f"pub const {prefix}_LAYOUT: CapLayout = CapLayout {{")
         self.add("    direct: &[],")
         self.add(f"    cnode: Some(&{node_name}),")
+        self.add(f"    variable: {variable},")
         self.add("};")
 
     def emit_layout(
@@ -565,14 +788,11 @@ class RustEmitter:
             self.add(f"pub fn {prefix}_reply_async<S: CapSpace, R: AsyncReply>(")
             self.add("    reply: R,")
             self.add("    space: &mut S,")
-            self.add(f"    result: &Result<{result_type}, RpcError>,")
+            self.add(f"    result: &{result_type},")
             self.add(") -> Result<(), RpcError> {")
-            self.add("    match result {")
             self.add(
-                f"        Ok(value) => reply.reply_wire(space, value, &{upper(interface.python_name)}_{upper(method.name)}_RESULT_LAYOUT),"
+                f"    reply.reply_wire(space, {reply_value(interface, method, 'result')}, &{upper(interface.python_name)}_{upper(method.name)}_RESULT_LAYOUT)"
             )
-            self.add("        Err(error) => reply.reply_error(*error),")
-            self.add("    }")
             self.add("}")
 
     def emit_client(self, interface: Interface) -> None:
@@ -606,8 +826,12 @@ class RustEmitter:
                 result = "()"
             else:
                 result = rust_type(method.result)
+            error_type = "RpcError"
+            if isinstance(method.result, ResultType):
+                result = rust_type(method.result.ok)
+                error_type = f"CallError<{rust_type(method.result.error)}>"
             self.add(
-                f"    pub fn {snake(method.name)}(&mut self, {signature}) -> Result<{result}, RpcError> {{"
+                f"    pub fn {snake(method.name)}(&mut self, {signature}) -> Result<{result}, {error_type}> {{"
             )
             self.add(f"        let args = {method_args_name(interface, method)} {{")
             for param in method.params:
@@ -626,11 +850,22 @@ class RustEmitter:
                     f"&{upper(interface.python_name)}_{upper(method.name)}_REQ_LAYOUT)"
                 )
             else:
-                self.add(
-                    f"        self.transport.call(self.target.as_ref(), {label}, &args, "
+                call = (
+                    f"self.transport.call(self.target.as_ref(), {label}, &args, "
                     f"&{upper(interface.python_name)}_{upper(method.name)}_REQ_LAYOUT, "
                     f"&{upper(interface.python_name)}_{upper(method.name)}_RESULT_LAYOUT)"
                 )
+                if method.result is None:
+                    self.add(f"        {call}")
+                else:
+                    self.add(
+                        f"        let reply: {method_reply_name(interface, method)} = {call}?;"
+                    )
+                    self.add(
+                        "        reply.value.map_err(CallError::Remote)"
+                        if isinstance(method.result, ResultType)
+                        else "        Ok(reply.value)"
+                    )
             self.add("    }")
         self.add("}")
 
@@ -676,7 +911,12 @@ class RustEmitter:
         self.add("        match self {")
         for interface, method in self._object_methods(object_):
             variant = method_variant_name(interface, method)
-            self.add(f"            Self::{variant}(value) => value.encode(out),")
+            body = (
+                encode_value(method.result, "(*_value)")
+                if method.result is not None
+                else ""
+            )
+            self.add(f"            Self::{variant}(_value) => {{ {body} }},")
         self.add("        }")
         self.add("    }")
         self.add(
@@ -685,7 +925,12 @@ class RustEmitter:
         self.add("        match self {")
         for interface, method in self._object_methods(object_):
             variant = method_variant_name(interface, method)
-            self.add(f"            Self::{variant}(value) => value.caps(out),")
+            body = (
+                caps_value(method.result, "(*_value)")
+                if method.result is not None
+                else ""
+            )
+            self.add(f"            Self::{variant}(_value) => {{ {body} Ok(()) }},")
         self.add("        }")
         self.add("    }")
         self.add("}")
@@ -721,12 +966,8 @@ class RustEmitter:
         self.add(f"pub fn {prefix}_reply<S: CapSpace, R: AsyncReply>(")
         self.add("    reply: R,")
         self.add("    space: &mut S,")
-        self.add(f"    response: &Result<{object_.python_name}Response, RpcError>,")
+        self.add(f"    response: &{object_.python_name}Response,")
         self.add(") -> Result<(), RpcError> {")
-        self.add("    let response = match response {")
-        self.add("        Ok(value) => value,")
-        self.add("        Err(error) => return reply.reply_error(*error),")
-        self.add("    };")
         self.add("    match response {")
         for interface, method in self._object_methods(object_):
             variant = method_variant_name(interface, method)
@@ -737,14 +978,14 @@ class RustEmitter:
             else:
                 self.add(
                     f"        {object_.python_name}Response::{variant}(value) => "
-                    f"reply.reply_wire(space, value, &{upper(interface.python_name)}_{upper(method.name)}_RESULT_LAYOUT),"
+                    f"reply.reply_wire(space, {reply_value(interface, method, 'value')}, &{upper(interface.python_name)}_{upper(method.name)}_RESULT_LAYOUT),"
                 )
         self.add("    }")
         self.add("}")
         self.add("")
         bounds = " + ".join(interface.python_name for interface in object_.implements)
         self.add(
-            f"pub fn {prefix}_dispatch<T: {bounds}>(request: {object_.python_name}Request, handler: &mut T) -> Result<{object_.python_name}Response, RpcError> {{"
+            f"pub fn {prefix}_dispatch<T: {bounds}>(request: {object_.python_name}Request, handler: &mut T) -> {object_.python_name}Response {{"
         )
         self.add("    match request {")
         for interface, method in self._object_methods(object_):
@@ -755,10 +996,8 @@ class RustEmitter:
             if args:
                 call += ", " + ", ".join(args)
             call += ")"
-            if not method.oneway:
-                call += "?"
             self.add(
-                f"        {object_.python_name}Request::{variant}({pattern}) => Ok({object_.python_name}Response::{variant}({call})),"
+                f"        {object_.python_name}Request::{variant}({pattern}) => {object_.python_name}Response::{variant}({call}),"
             )
         self.add("    }")
         self.add("}")

@@ -12,6 +12,7 @@ from horn_idl import (
     Copy,
     Move,
     capset,
+    enum,
     iface,
     method,
     object,
@@ -32,6 +33,7 @@ __all__ = [
     "ChildCaps",
     "Counter",
     "CounterService",
+    "CounterState",
     "CounterValue",
     "Memory",
     "MemoryAllocator",
@@ -43,10 +45,20 @@ __all__ = [
 ]
 
 
+@enum
+class CounterState:
+    @enum.value(0)
+    def Empty(): ...
+
+    @enum.value(1, type=Cap[sel4.Notification, Copy])
+    def Ready(): ...
+
+
 @record
 class CounterValue:
     value: U64
     generation: U32
+    state: CounterState
 
 
 @iface("net.nhnn.horn.demo.counter", version=(1, 0))

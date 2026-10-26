@@ -149,7 +149,17 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
     let transport = Sel4Transport::new(root_cnode, recv_slot, client_space);
     let mut client = CounterClient::new(transport, target);
 
+    assert!(matches!(client.add(0).unwrap().state, CounterState::Empty));
     let value = client.add(41).unwrap();
+    let CounterState::Ready(signal) = value.state else {
+        panic!("missing notification")
+    };
+    client
+        .transport
+        .space
+        .cap::<::sel4::cap_type::Notification>(signal.as_ref())
+        .unwrap()
+        .signal();
     wake.wait();
     ::sel4::debug_println!("IDL_DEMO_PASS value={}", value.value);
 

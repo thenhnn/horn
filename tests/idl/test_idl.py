@@ -244,8 +244,8 @@ def test_cnode_layout_uses_one_flat_cnode():
         cap = CapType(sel4.Endpoint, CapMode.COPY, Rights.ALL)
         return [CapPath(f"cap[{index}]", cap) for index in range(count)]
 
-    direct = build_layout(caps(3))
-    assert len(direct.direct) == 3
+    direct = build_layout(caps(1))
+    assert len(direct.direct) == 1
     assert direct.cnode is None
 
     one = build_layout(caps(MAX_LAYOUT_CAPS))
@@ -281,14 +281,14 @@ class AsyncObject:
     assert "pub fn async_work_recv_async<S: AsyncServer>" in rust
     assert "pub fn async_work_reply_async<S: CapSpace, R: AsyncReply>" in rust
     assert "let (_label, args, reply) = server.recv_request" in rust
-    assert "reply.reply_wire(space, value" in rust
-    assert "result: &Result<u32, RpcError>" in rust
-    assert "Err(error) => reply.reply_error(*error)" in rust
+    assert "reply.reply_wire(space, &AsyncWorkReply { value: *result }" in rust
+    assert "result: &u32" in rust
+    assert "reply.reply_error" not in rust
     assert "pub fn async_object_recv<S: AsyncServer>" in rust
     assert "pub fn async_object_reply<S: CapSpace, R: AsyncReply>" in rust
-    assert "fn work(&mut self, value: u32) -> Result<u32, RpcError>" in rust
-    assert "Result<AsyncObjectResponse, RpcError>" in rust
-    assert "Async::work(handler, args.value)?" in rust
+    assert "fn work(&mut self, value: u32) -> u32" in rust
+    assert "-> AsyncObjectResponse" in rust
+    assert "Async::work(handler, args.value))" in rust
 
 
 def test_object_reply_skips_oneway_methods(tmp_path):
@@ -385,6 +385,116 @@ class ParcelService:
     assert "horn_ring" not in source
 
 
+def test_result_is_a_tagged_specialization():
+    from horn_idl.types import ResultType, TaggedEnumType
+
+    schema = compile_path(ROOT / "examples/idl/tagged.py")
+    method = schema.interfaces[0].methods[1]
+    assert isinstance(method.result, ResultType)
+    assert isinstance(method.result, TaggedEnumType)
+    assert [(name, tag) for name, tag, _ in method.result.variants] == [
+        ("Ok", 0),
+        ("Err", 1),
+    ]
+    assert method.result.caps == 4
+    assert method.result_layout().variable
+    assert method.result_layout().cnode.slot_count == 4
+    rust = emit_rust(schema)
+    assert "-> Result<Event, Event>;" in rust
+    assert "-> Result<Event, CallError<Event>>" in rust
+    assert "reply.value.map_err(CallError::Remote)" in rust
+    header, _ = emit_c(schema)
+    assert "horn_probe_try_echo_result_t;" in header
+
+
+@pytest.mark.parametrize("annotation", ["Result[U32, U32]", "Result[None, U32]"])
+def test_oneway_cannot_return_result(tmp_path, annotation):
+    with pytest.raises(DeclarationError, match="one-way methods cannot return"):
+        load_source(
+            tmp_path,
+            "oneway_result",
+            f"""
+from horn_idl import U32, Result, iface, method
+@iface("test.oneway_result")
+class Test:
+    @method(oneway=True)
+    def run(self) -> {annotation}: ...
+""",
+        )
+
+
+def test_tagged_enum_payloads_and_maximum_cap_budget():
+    schema = compile_path(ROOT / "examples/idl/tagged.py")
+    event = next(item.type for item in schema.enums if item.name == "Event")
+    assert event.caps == 4
+    assert event.payload_offset == 8
+    assert event.size == 64
+    assert [(name, tag) for name, tag, _ in event.variants][:3] == [
+        ("Empty", 0),
+        ("Number", 1),
+        ("Data", 2),
+    ]
+    method = schema.interfaces[0].methods[0]
+    layout = method.result_layout()
+    assert layout.variable
+    assert layout.cnode is not None
+    assert layout.cnode.slot_count == 4
+    rust = emit_rust(schema)
+    assert "pub enum Event" in rust
+    assert "Data(Payload)" in rust
+    assert "finish_zeroed(Self::SIZE)" in rust
+    header, source = emit_c(schema)
+    assert "union {" in header
+    assert "switch (value->tag)" in source
+    assert "RESULT_CAP_COUNT 4u" in header
+
+
+@pytest.mark.parametrize(
+    "variant, message",
+    [
+        (
+            "@enum.value(1)\\n    def A(): ...\\n    @enum.value(1)\\n    def B(): ...",
+            "duplicate tag",
+        ),
+        ("@enum.value(-1)\\n    def A(): ...", "out of range"),
+        ("@enum.value(1 << 32)\\n    def A(): ...", "out of range"),
+        ("@enum.value(type='Event')\\n    def A(): ...", "recursive tagged enum"),
+        ("@enum.value()\\n    def A(value): ...", "take no arguments"),
+    ],
+)
+def test_invalid_tagged_enum(tmp_path, variant, message):
+    with pytest.raises(DeclarationError, match=message):
+        source = (
+            "from horn_idl import enum\n@enum\nclass Event:\n    "
+            + variant.replace("\\n", "\n")
+            + "\n"
+        )
+        load_source(tmp_path, "bad_tagged", source)
+
+
+def test_tagged_enum_implicit_tags_and_forward_payload(tmp_path):
+    schema = load_source(
+        tmp_path,
+        "tagged_forward",
+        """
+from horn_idl import U32, enum, record
+@enum
+class Event:
+    @enum.value(type="Payload")
+    def Data(): ...
+    @enum.value()
+    def Empty(): ...
+@record
+class Payload:
+    value: U32
+""",
+    )
+    assert [(name, tag) for name, tag, _ in schema.enums[0].type.variants] == [
+        ("Data", 0),
+        ("Empty", 1),
+    ]
+
+
 def test_opaque_cnode_bulk_transfer(tmp_path):
     schema = load_source(
         tmp_path,
@@ -409,7 +519,7 @@ class Spawn:
         ("bootstrap.image", Copy),
     ]
     layout = method.request_layout()
-    assert len(layout.direct) == 2
-    assert layout.root_count == 0
+    assert len(layout.direct) == 0
+    assert layout.root_count == 1
     rust = emit_rust(schema)
     assert "Cap<CNode>" in rust

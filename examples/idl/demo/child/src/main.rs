@@ -14,15 +14,21 @@ use protocol::*;
 
 struct CounterHandler {
     value: u64,
+    wake: Cap<Notification>,
 }
 
 impl Counter for CounterHandler {
-    fn add(&mut self, amount: u64) -> Result<CounterValue, RpcError> {
+    fn add(&mut self, amount: u64) -> CounterValue {
         self.value = self.value.wrapping_add(amount);
-        Ok(CounterValue {
+        CounterValue {
             value: self.value,
             generation: 0,
-        })
+            state: if amount == 0 {
+                CounterState::Empty
+            } else {
+                CounterState::Ready(self.wake)
+            },
+        }
     }
 }
 
@@ -40,10 +46,15 @@ fn main() -> ! {
     let tcb = ::sel4::cap::Tcb::from_bits(CHILD_CAPS_TCB_SLOT as _);
     let recv_slot = root.absolute_cptr(::sel4::CPtr::from_bits(CHILD_CAPS_FIRST_FREE_SLOT as _));
     let mut server = Sel4Server::new(root, service, recv_slot, local_space(root));
-    let mut handler = CounterHandler { value: 0 };
-    let (request, reply) = counter_service_recv(&mut server, reply_cap).unwrap();
-    let response = counter_service_dispatch(request, &mut handler);
-    counter_service_reply(reply, &mut server.space, &response).unwrap();
+    let mut handler = CounterHandler {
+        value: 0,
+        wake: Cap::from_ref(server.space.register(wake).unwrap()),
+    };
+    for _ in 0..2 {
+        let (request, reply) = counter_service_recv(&mut server, reply_cap).unwrap();
+        let response = counter_service_dispatch(request, &mut handler);
+        counter_service_reply(reply, &mut server.space, &response).unwrap();
+    }
     wake.signal();
     memory_probe::run(root, recv_slot, server.space);
     tcb.tcb_suspend().unwrap();

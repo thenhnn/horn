@@ -7,7 +7,7 @@ corresponding ``seL4_CPtr`` plus object type in C.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .types import Rights
 
@@ -25,7 +25,9 @@ class KernelResource:
         return self.fqn.rsplit(".", 1)[-1]
 
 
-def _resource(name: str, kernel_type: str | None = None, *, rights: Rights = Rights.ALL) -> KernelResource:
+def _resource(
+    name: str, kernel_type: str | None = None, *, rights: Rights = Rights.ALL
+) -> KernelResource:
     return KernelResource(
         fqn=f"sel4.{name}",
         rust_name=name,
@@ -68,11 +70,17 @@ riscv = Arch("sel4.riscv", "riscv", "riscv")
 # Architecture-specific object types are represented as resources too, but
 # their Rust path is nested under the architecture module.
 X86Page = KernelResource("sel4.x86.Page", "Page", "Page", "Page")
-X86LargePage = KernelResource("sel4.x86.LargePage", "LargePage", "LargePage", "LargePage")
+X86LargePage = KernelResource(
+    "sel4.x86.LargePage", "LargePage", "LargePage", "LargePage"
+)
 X86PML4 = KernelResource("sel4.x86.PML4", "PML4", "PML4", "PML4")
 X86PDPT = KernelResource("sel4.x86.PDPT", "PDPT", "PDPT", "PDPT")
-X86PageDirectory = KernelResource("sel4.x86.PageDirectory", "PageDirectory", "PageDirectory", "PageDirectory")
-X86PageTable = KernelResource("sel4.x86.PageTable", "PageTable", "PageTable", "PageTable")
+X86PageDirectory = KernelResource(
+    "sel4.x86.PageDirectory", "PageDirectory", "PageDirectory", "PageDirectory"
+)
+X86PageTable = KernelResource(
+    "sel4.x86.PageTable", "PageTable", "PageTable", "PageTable"
+)
 X86IOPort = KernelResource("sel4.x86.IOPort", "IOPort", "IOPort", "IOPort")
 ARM_Page = KernelResource("sel4.arm.Page", "Page", "Page", "Page")
 
@@ -116,10 +124,13 @@ ALL = (
 
 __all__ = [
     "ALL",
-    "AnyCap",
+    "TCB",
+    "X86PDPT",
+    "X86PML4",
+    "ARM_Page",
     "ASIDControl",
     "ASIDPool",
-    "ARM_Page",
+    "AnyCap",
     "CNode",
     "DomainSet",
     "Endpoint",
@@ -132,16 +143,13 @@ __all__ = [
     "PageTable",
     "Reply",
     "Signal",
-    "TCB",
     "Untyped",
     "VSpace",
     "X86IOPort",
     "X86LargePage",
-    "X86PDPT",
     "X86Page",
     "X86PageDirectory",
     "X86PageTable",
-    "X86PML4",
     "arm",
     "riscv",
     "x86",

@@ -14,6 +14,9 @@ typedef enum horn_cap_mode {
     HORN_CAP_BORROW = 2,
 } horn_cap_mode_t;
 
+#define HORN_RESULT_OK 0u
+#define HORN_RESULT_ERR 1u
+
 typedef struct horn_cap {
     uint64_t slot;
     horn_cap_mode_t mode;
@@ -43,6 +46,7 @@ typedef struct horn_cap_layout {
     const horn_cap_slot_t *direct;
     size_t direct_count;
     const horn_cap_node_t *cnode;
+    bool variable;
 } horn_cap_layout_t;
 
 typedef enum horn_status {
@@ -162,6 +166,7 @@ typedef struct horn_cap_unpacker {
 
 void horn_cap_unpacker_init(horn_cap_unpacker_t *unpacker, horn_cap_space_t *space, const horn_cap_layout_t *layout, horn_cap_list_t caps);
 horn_status_t horn_cap_unpacker_pop(horn_cap_unpacker_t *unpacker, horn_cap_t *cap);
+horn_status_t horn_cap_unpacker_finish(const horn_cap_unpacker_t *unpacker);
 horn_cap_source_t horn_cap_unpacker_source(horn_cap_unpacker_t *unpacker);
 
 typedef struct horn_transport {
