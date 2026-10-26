@@ -8,6 +8,15 @@ use alloc::vec::Vec;
 #[cfg(feature = "sel4")]
 pub mod sel4;
 
+#[cfg(feature = "rpc")]
+pub mod service;
+
+#[cfg(feature = "rpc")]
+#[allow(dead_code, unused_imports, non_camel_case_types)]
+pub mod protocol {
+    include!(concat!(env!("OUT_DIR"), "/protocol.rs"));
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     InvalidSize,
@@ -16,8 +25,7 @@ pub enum Error {
     Backend,
 }
 
-/// A trusted backing provider. A failed release must quarantine the frame:
-/// it must never return possibly-live backing to the free pool.
+/// Failed release must quarantine backing rather than reuse it.
 pub trait Frames {
     type Frame;
     fn page_size(&self) -> usize;
@@ -25,11 +33,7 @@ pub trait Frames {
     fn release(&mut self, frame: Self::Frame) -> Result<(), Error>;
 }
 
-/// Owns backing tokens, not virtual addresses or external mappings.
-///
-/// Explicit release is required. Dropping this value leaks its backing rather
-/// than making potentially-live frames available for reuse. Mapping/handle
-/// references and automatic process-death cleanup are not implemented yet.
+/// Resident backing. Must be explicitly released; drop leaks rather than reuses it.
 #[must_use = "backing must be explicitly released through its provider"]
 pub struct MemoryObject<F> {
     size: u64,
@@ -46,7 +50,9 @@ impl<F> MemoryObject<F> {
         let resident_size = size.checked_add(page - 1).ok_or(Error::InvalidSize)? & !(page - 1);
         let count = usize::try_from(resident_size / page).map_err(|_| Error::InvalidSize)?;
         let mut frames = Vec::new();
-        frames.try_reserve_exact(count).map_err(|_| Error::MetadataExhausted)?;
+        frames
+            .try_reserve_exact(count)
+            .map_err(|_| Error::MetadataExhausted)?;
         for _ in 0..count {
             match provider.allocate_zeroed() {
                 Ok(frame) => frames.push(frame),
@@ -55,18 +61,34 @@ impl<F> MemoryObject<F> {
                     for frame in frames {
                         cleanup_failed |= provider.release(frame).is_err();
                     }
-                    return Err(if cleanup_failed { Error::Backend } else { error });
+                    return Err(if cleanup_failed {
+                        Error::Backend
+                    } else {
+                        error
+                    });
                 }
             }
         }
-        Ok(Self { size, resident_size, frames })
+        Ok(Self {
+            size,
+            resident_size,
+            frames,
+        })
     }
 
-    pub fn size(&self) -> u64 { self.size }
-    pub fn resident_size(&self) -> u64 { self.resident_size }
-    pub fn page_count(&self) -> usize { self.frames.len() }
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+    pub fn resident_size(&self) -> u64 {
+        self.resident_size
+    }
+    pub fn page_count(&self) -> usize {
+        self.frames.len()
+    }
     /// Trusted provider tokens; these do not expose raw frame capabilities.
-    pub fn frames(&self) -> &[F] { &self.frames }
+    pub fn frames(&self) -> &[F] {
+        &self.frames
+    }
 
     pub fn release<B: Frames<Frame = F>>(self, provider: &mut B) -> Result<(), Error> {
         let mut failed = false;

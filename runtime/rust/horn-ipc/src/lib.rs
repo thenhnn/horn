@@ -666,6 +666,10 @@ pub use layout::{CapPacker, CapSpace, CapUnpacker, SlotRef};
 
 /// A deferred reply that can be completed after the request handler returns.
 pub trait AsyncReply {
+    fn reply_error(self, error: RpcError) -> Result<(), RpcError> where Self: Sized {
+        Err(error)
+    }
+
     fn reply_wire<S: CapSpace, W: Wire>(
         self,
         space: &mut S,

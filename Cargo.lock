@@ -125,7 +125,9 @@ dependencies = [
 name = "horn-memory"
 version = "0.1.0"
 dependencies = [
+ "horn-ipc",
  "sel4",
+ "sel4-abstract-allocator",
 ]
 
 [[package]]
@@ -421,6 +423,13 @@ dependencies = [
  "cfg-if",
  "sel4-config",
  "sel4-sys",
+]
+
+[[package]]
+name = "sel4-abstract-allocator"
+version = "0.1.0"
+dependencies = [
+ "log",
 ]
 
 [[package]]

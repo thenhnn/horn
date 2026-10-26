@@ -1,4 +1,9 @@
-{config, lib, pkgs, ...}: let
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
   schema = "${./schema.py}";
   idl = "${../../../tools/idl}";
 
@@ -20,11 +25,17 @@
   rootWorkspace = config.rust.workspace.override {
     target = "sel4-roottask";
     crateOverrides = {
-      idl-demo-root = old: (demoOverride old) // {
-        CHILD_ELF = "${child}/bin/task.elf";
+      horn-memory = old: {
+        HORN_IDL = idl;
+        nativeBuildInputs = (old.nativeBuildInputs or []) ++ [pkgs.python3];
       };
+      idl-demo-root = old:
+        (demoOverride old)
+        // {
+          CHILD_ELF = "${child}/bin/task.elf";
+        };
       memchr = old: {
-        features = [ "alloc" ];
+        features = ["alloc"];
       };
     };
   };

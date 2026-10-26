@@ -39,7 +39,7 @@ class Connection:
     service: Cap[sel4.Endpoint, Copy]
     wake: Cap[sel4.Notification, Borrow]
 
-@iface("gpos.counter", version=(1, 0))
+@iface("net.nhnn.horn.counter", version=(1, 0))
 class Counter:
     @method
     def add(self, amount: U64) -> CounterValue: ...
@@ -188,6 +188,11 @@ operation.  The server side generates a request enum, a response enum, a
 `dispatch` function that calls the handler traits, and object-level helpers
 that hide layout selection and reply encoding.
 
+Two-way Rust handlers return `Result<T, RpcError>`. Generated dispatch propagates
+errors; the reply helper sends `RpcError::Server(nonzero_status)` in the existing
+status word, without encoding a result or transferring caps. Other errors remain
+local transport failures. One-way handlers cannot return a remote error.
+
 The generated server path is:
 
 ```rust
@@ -314,7 +319,7 @@ A typical boot path is:
 The IDL describes steps 4 and 5, not steps 1–3.  For example:
 
 ```python
-@iface("gpos.registry", version=(1, 0))
+@iface("net.nhnn.horn.registry", version=(1, 0))
 class Registry:
     @method
     def lookup(self, name: U32) -> Cap[CounterService, Move]: ...
@@ -359,6 +364,9 @@ constants and `pack`/`unpack` helpers when the layout is fixed.  A capset is
 one flat CNode with at most 255 fields.  Both forms put one CNode cap on the
 wire.
 
+Rust capsets emit per-field `*_SLOT` constants, `*_SELF_SLOT`, `*_FIRST_FREE_SLOT`
+and `*_SIZE_BITS`. Bootstrap code should use these rather than repeat indices.
+
 Capset slot 0 is reserved for a capability to the capset CNode itself.  The
 generated `pack` helper populates it by copying the CNode cap to a temporary
 root slot and moving that copy into slot 0; seL4 rejects copying a CNode into
@@ -381,7 +389,7 @@ struct HornTag {
 Generated Rust protocols emit the tag through the runtime macro:
 
 ```rust
-horn_ipc::horn_tag!("gpos.demo.counter", 0);
+horn_ipc::horn_tag!("net.nhnn.horn.demo.counter", 0);
 ```
 
 The macro defines `HornTag` and the `.horn`-section `HORN_TAG` static, padding

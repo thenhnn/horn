@@ -16,8 +16,8 @@ from ..layout import CapLayout, build_capset_layout
 from ..model import Interface, Method, Object, Schema
 from ..types import (
     ArrayType,
-    CapSetType,
     CapMode,
+    CapSetType,
     CapType,
     EnumType,
     FlagsType,
@@ -48,7 +48,9 @@ def upper(name: str) -> str:
 
 
 def pascal(name: str) -> str:
-    return "".join(part.capitalize() for part in re.split(r"[^A-Za-z0-9]+", name) if part)
+    return "".join(
+        part.capitalize() for part in re.split(r"[^A-Za-z0-9]+", name) if part
+    )
 
 
 def rust_type(type_: Any) -> str:
@@ -204,7 +206,7 @@ class RustEmitter:
         self.lines.extend(lines)
 
     def emit_record(self, type_: RecordType) -> None:
-        self.add("", f"#[derive(Debug, Clone, Copy, PartialEq)]")
+        self.add("", "#[derive(Debug, Clone, Copy, PartialEq)]")
         self.add(f"pub struct {type_.name} {{")
         for field in type_.fields:
             self.add(f"    pub {snake(field.name)}: {rust_type(field.type)},")
@@ -226,19 +228,21 @@ class RustEmitter:
         self.add("    fn encode(&self, out: &mut Encoder<'_>) {")
         for field in type_.fields:
             self.add(*_wire_field_encode(field.type, f"self.{snake(field.name)}"))
-        self.add(f"        out.finish(Self::SIZE);")
+        self.add("        out.finish(Self::SIZE);")
         self.add("    }")
         self.add("    fn decode(input: &mut Decoder<'_>) -> Result<Self, RpcError> {")
         for field in type_.fields:
             self.add(*_wire_field_decode(field.type, snake(field.name)))
-        self.add(f"        input.finish(Self::SIZE)?;")
+        self.add("        input.finish(Self::SIZE)?;")
         self.add("        Ok(Self {")
         for field in type_.fields:
             self.add(f"            {snake(field.name)},")
         self.add("        })")
         self.add("    }")
         out_name = "out" if type_.caps else "_out"
-        self.add(f"    fn caps(&self, {out_name}: &mut dyn CapSink) -> Result<(), RpcError> {{")
+        self.add(
+            f"    fn caps(&self, {out_name}: &mut dyn CapSink) -> Result<(), RpcError> {{"
+        )
         for field in type_.fields:
             if field.type.caps:
                 self.add(f"        self.{snake(field.name)}.caps(out)?;")
@@ -274,7 +278,9 @@ class RustEmitter:
         self.add("            _ => Err(RpcError::InvalidValue),")
         self.add("        }")
         self.add("    }")
-        self.add("    fn caps(&self, _out: &mut WireCaps) -> Result<(), RpcError> { Ok(()) }")
+        self.add(
+            "    fn caps(&self, _out: &mut dyn CapSink) -> Result<(), RpcError> { Ok(()) }"
+        )
         self.add("}")
 
     def emit_flags(self, type_: FlagsType) -> None:
@@ -297,7 +303,9 @@ class RustEmitter:
         self.add("    fn decode(input: &mut Decoder<'_>) -> Result<Self, RpcError> {")
         self.add(f"        Ok(Self(input.{base}()?))")
         self.add("    }")
-        self.add("    fn caps(&self, _out: &mut WireCaps) -> Result<(), RpcError> { Ok(()) }")
+        self.add(
+            "    fn caps(&self, _out: &mut dyn CapSink) -> Result<(), RpcError> { Ok(()) }"
+        )
         self.add("}")
 
     def emit_capset(self, type_: CapSetType) -> None:
@@ -305,12 +313,18 @@ class RustEmitter:
         self.add("", f"pub struct {marker};")
         self.add(f"impl CapType for {marker} {{")
         self.add(f"    const NAME: &'static str = {rust_str(type_.name)};")
-        self.add("    const KERNEL: &'static str = \"CNode\";")
+        self.add('    const KERNEL: &\'static str = "CNode";')
         self.add("}")
         self.add(
             f"pub const {upper(type_.name)}_SLOTS: &[(&str, u32)] = &["
             + ", ".join(f"({rust_str(name)}, {slot})" for name, slot in type_.slots)
             + "];"
+        )
+        for name, slot in type_.slots:
+            self.add(f"pub const {upper(type_.name)}_{upper(name)}_SLOT: u32 = {slot};")
+        self.add(f"pub const {upper(type_.name)}_SELF_SLOT: u32 = 0;")
+        self.add(
+            f"pub const {upper(type_.name)}_FIRST_FREE_SLOT: u32 = {len(type_.slots) + 1};"
         )
         layout = build_capset_layout(type_.fields)
         self.emit_layout_const(f"{upper(type_.name)}_CAPSET", layout)
@@ -326,19 +340,29 @@ class RustEmitter:
         self.add("}")
         self.add("")
         self.add(f"impl {type_.name} {{")
-        self.add(f"    pub fn pack<S: CapSpace>(&self, space: &mut S) -> Result<Cap<{marker}>, RpcError> {{")
-        self.add(f"        let mut packer = CapPacker::new(space, &{upper(type_.name)}_CAPSET_LAYOUT);")
+        self.add(
+            f"    pub fn pack<S: CapSpace>(&self, space: &mut S) -> Result<Cap<{marker}>, RpcError> {{"
+        )
+        self.add(
+            f"        let mut packer = CapPacker::new(space, &{upper(type_.name)}_CAPSET_LAYOUT);"
+        )
         for field in type_.fields:
             self.add(f"        self.{snake(field.name)}.caps(&mut packer)?;")
         self.add("        let caps = packer.finish()?;")
-        self.add("        let cnode = caps.as_slice().first().and_then(|cap| *cap).ok_or(RpcError::MissingCap)?;")
+        self.add(
+            "        let cnode = caps.as_slice().first().and_then(|cap| *cap).ok_or(RpcError::MissingCap)?;"
+        )
         self.add("        space.install_self_cnode(cnode)?;")
         self.add("        Ok(Cap::from_ref(cnode))")
         self.add("    }")
-        self.add(f"    pub fn unpack<S: CapSpace>(cnode: Cap<{marker}>, space: &mut S) -> Result<Self, RpcError> {{")
+        self.add(
+            f"    pub fn unpack<S: CapSpace>(cnode: Cap<{marker}>, space: &mut S) -> Result<Self, RpcError> {{"
+        )
         self.add("        let mut caps = WireCaps::default();")
         self.add("        caps.push(cnode.as_ref())?;")
-        self.add(f"        let mut unpacker = CapUnpacker::new_localizing(space, &{upper(type_.name)}_CAPSET_LAYOUT, caps);")
+        self.add(
+            f"        let mut unpacker = CapUnpacker::new_localizing(space, &{upper(type_.name)}_CAPSET_LAYOUT, caps);"
+        )
         self.add("        let mut dec = Decoder::new(&[], &mut unpacker);")
         self.add("        Ok(Self {")
         for field in type_.fields:
@@ -351,24 +375,28 @@ class RustEmitter:
         self.add("", f"pub struct {type_.name};")
         self.add(f"impl CapType for {type_.name} {{")
         self.add(f"    const NAME: &'static str = {rust_str(type_.name)};")
-        self.add("    const KERNEL: &'static str = \"Frame\";")
+        self.add('    const KERNEL: &\'static str = "Frame";')
         self.add("}")
-        self.add(f"pub type {type_.name}Ring = Ring<{rust_type(type_.element)}, {type_.capacity}>;")
+        self.add(
+            f"pub type {type_.name}Ring = Ring<{rust_type(type_.element)}, {type_.capacity}>;"
+        )
 
     def emit_region(self, type_: RegionType) -> None:
         self.add("", f"pub struct {type_.name};")
         self.add(f"impl CapType for {type_.name} {{")
         self.add(f"    const NAME: &'static str = {rust_str(type_.name)};")
-        self.add("    const KERNEL: &'static str = \"Frame\";")
+        self.add('    const KERNEL: &\'static str = "Frame";')
         self.add("}")
-        self.add(f"pub type {type_.name}Region = Region<{rust_type(type_.element)}, {type_.capacity}>;")
+        self.add(
+            f"pub type {type_.name}Region = Region<{rust_type(type_.element)}, {type_.capacity}>;"
+        )
 
     def emit_interface(self, interface: Interface) -> None:
         marker = f"{interface.python_name}Tag"
         self.add("", f"pub struct {marker};")
         self.add(f"impl CapType for {marker} {{")
         self.add(f"    const NAME: &'static str = {rust_str(interface.fqn)};")
-        self.add("    const KERNEL: &'static str = \"Endpoint\";")
+        self.add('    const KERNEL: &\'static str = "Endpoint";')
         self.add("}")
         for method in interface.all_methods():
             self.emit_method_types(interface, method)
@@ -376,10 +404,14 @@ class RustEmitter:
         self.add(f"pub trait {interface.python_name} {{")
         for method in interface.all_methods():
             params = ", ".join(
-                f"{snake(param.name)}: {rust_type(param.type)}" for param in method.params
+                f"{snake(param.name)}: {rust_type(param.type)}"
+                for param in method.params
             )
             result = "()" if method.result is None else rust_type(method.result)
-            self.add(f"    fn {snake(method.name)}(&mut self, {params}) -> {result};")
+            handler_result = result if method.oneway else f"Result<{result}, RpcError>"
+            self.add(
+                f"    fn {snake(method.name)}(&mut self, {params}) -> {handler_result};"
+            )
         self.add("}")
         self.emit_client(interface)
 
@@ -396,7 +428,9 @@ class RustEmitter:
         align = 1
         caps = 0
         for param in method.params:
-            offset = (offset + param.type.align - 1) // param.type.align * param.type.align
+            offset = (
+                (offset + param.type.align - 1) // param.type.align * param.type.align
+            )
             offset += param.type.size
             align = max(align, param.type.align)
             caps += param.type.caps
@@ -407,19 +441,21 @@ class RustEmitter:
         self.add("    fn encode(&self, out: &mut Encoder<'_>) {")
         for param in method.params:
             self.add(*_wire_field_encode(param.type, f"self.{snake(param.name)}"))
-        self.add(f"        out.finish(Self::SIZE);")
+        self.add("        out.finish(Self::SIZE);")
         self.add("    }")
         self.add("    fn decode(input: &mut Decoder<'_>) -> Result<Self, RpcError> {")
         for param in method.params:
             self.add(*_wire_field_decode(param.type, snake(param.name)))
-        self.add(f"        input.finish(Self::SIZE)?;")
+        self.add("        input.finish(Self::SIZE)?;")
         self.add("        Ok(Self {")
         for param in method.params:
             self.add(f"            {snake(param.name)},")
         self.add("        })")
         self.add("    }")
         out_name = "out" if caps else "_out"
-        self.add(f"    fn caps(&self, {out_name}: &mut dyn CapSink) -> Result<(), RpcError> {{")
+        self.add(
+            f"    fn caps(&self, {out_name}: &mut dyn CapSink) -> Result<(), RpcError> {{"
+        )
         for param in method.params:
             if param.type.caps:
                 self.add(f"        self.{snake(param.name)}.caps(out)?;")
@@ -450,12 +486,8 @@ class RustEmitter:
             )
             + "];"
         )
-        self.emit_layout(
-            interface, method, "REQ", method.request_layout()
-        )
-        self.emit_layout(
-            interface, method, "RESULT", method.result_layout()
-        )
+        self.emit_layout(interface, method, "REQ", method.request_layout())
+        self.emit_layout(interface, method, "RESULT", method.result_layout())
 
     def emit_layout_const(self, prefix: str, layout: CapLayout) -> None:
         if layout.direct:
@@ -519,7 +551,9 @@ class RustEmitter:
             self.add("    server: &mut S,")
             self.add("    authority: S::Authority,")
             self.add(f") -> Result<({args_type}, S::Reply), RpcError> {{")
-            self.add(f"    let (_label, args, reply) = server.recv_request(&{upper(interface.python_name)}_{upper(method.name)}_REQ_LAYOUT, authority, |label, input| {{")
+            self.add(
+                f"    let (_label, args, reply) = server.recv_request(&{upper(interface.python_name)}_{upper(method.name)}_REQ_LAYOUT, authority, |label, input| {{"
+            )
             self.add(f"        if label != {method_label_name(interface, method)} {{")
             self.add("            return Err(RpcError::UnknownMethod);")
             self.add("        }")
@@ -531,9 +565,14 @@ class RustEmitter:
             self.add(f"pub fn {prefix}_reply_async<S: CapSpace, R: AsyncReply>(")
             self.add("    reply: R,")
             self.add("    space: &mut S,")
-            self.add(f"    result: &{result_type},")
+            self.add(f"    result: &Result<{result_type}, RpcError>,")
             self.add(") -> Result<(), RpcError> {")
-            self.add(f"    reply.reply_wire(space, result, &{upper(interface.python_name)}_{upper(method.name)}_RESULT_LAYOUT)")
+            self.add("    match result {")
+            self.add(
+                f"        Ok(value) => reply.reply_wire(space, value, &{upper(interface.python_name)}_{upper(method.name)}_RESULT_LAYOUT),"
+            )
+            self.add("        Err(error) => reply.reply_error(*error),")
+            self.add("    }")
             self.add("}")
 
     def emit_client(self, interface: Interface) -> None:
@@ -545,20 +584,25 @@ class RustEmitter:
         self.add("}")
         self.add("")
         self.add(f"impl<T: Transport> {name}<T> {{")
-        self.add("    pub fn new(transport: T, target: Cap<" + interface.python_name + "Tag>) -> Self {")
+        self.add(
+            "    pub fn new(transport: T, target: Cap<"
+            + interface.python_name
+            + "Tag>) -> Self {"
+        )
         self.add("        Self { transport, target }")
         self.add("    }")
         for method in interface.all_methods():
             params = []
             for param in method.params:
-                if isinstance(param.type, CapType) and param.type.mode in (CapMode.COPY, CapMode.BORROW):
+                if isinstance(param.type, CapType) and param.type.mode in (
+                    CapMode.COPY,
+                    CapMode.BORROW,
+                ):
                     params.append(f"{snake(param.name)}: &{rust_type(param.type)}")
                 else:
                     params.append(f"{snake(param.name)}: {rust_type(param.type)}")
             signature = ", ".join(params)
-            if method.oneway:
-                result = "()"
-            elif method.result is None:
+            if method.oneway or method.result is None:
                 result = "()"
             else:
                 result = rust_type(method.result)
@@ -595,18 +639,21 @@ class RustEmitter:
         self.add("", f"pub struct {marker};")
         self.add(f"impl CapType for {marker} {{")
         self.add(f"    const NAME: &'static str = {rust_str(object_.fqn)};")
-        self.add("    const KERNEL: &'static str = \"Endpoint\";")
+        self.add('    const KERNEL: &\'static str = "Endpoint";')
         self.add("}")
-        methods = list(object_.methods())
         self.add("")
         self.add("#[derive(Debug)]")
         self.add(f"pub enum {object_.python_name}Request {{")
         for interface, method in self._object_methods(object_):
-            self.add(f"    {method_variant_name(interface, method)}({method_args_name(interface, method)}),")
+            self.add(
+                f"    {method_variant_name(interface, method)}({method_args_name(interface, method)}),"
+            )
         self.add("}")
         self.add("")
         self.add(f"impl {object_.python_name}Request {{")
-        self.add("    pub fn decode(label: u64, input: &mut Decoder<'_>) -> Result<Self, RpcError> {")
+        self.add(
+            "    pub fn decode(label: u64, input: &mut Decoder<'_>) -> Result<Self, RpcError> {"
+        )
         self.add("        match label {")
         for interface, method in self._object_methods(object_):
             self.add(
@@ -632,7 +679,9 @@ class RustEmitter:
             self.add(f"            Self::{variant}(value) => value.encode(out),")
         self.add("        }")
         self.add("    }")
-        self.add("    pub fn caps(&self, out: &mut dyn CapSink) -> Result<(), RpcError> {")
+        self.add(
+            "    pub fn caps(&self, out: &mut dyn CapSink) -> Result<(), RpcError> {"
+        )
         self.add("        match self {")
         for interface, method in self._object_methods(object_):
             variant = method_variant_name(interface, method)
@@ -642,7 +691,9 @@ class RustEmitter:
         self.add("}")
         self.add("")
         prefix = snake(object_.python_name)
-        self.add(f"pub fn {prefix}_request_layout(label: u64) -> Result<&'static CapLayout, RpcError> {{")
+        self.add(
+            f"pub fn {prefix}_request_layout(label: u64) -> Result<&'static CapLayout, RpcError> {{"
+        )
         self.add("    match label {")
         for interface, method in self._object_methods(object_):
             self.add(
@@ -660,7 +711,9 @@ class RustEmitter:
         self.add("    let (_label, request, reply) = server.recv_request_dynamic(")
         self.add(f"        {prefix}_request_layout,")
         self.add("        authority,")
-        self.add(f"        |label, input| {object_.python_name}Request::decode(label, input),")
+        self.add(
+            f"        |label, input| {object_.python_name}Request::decode(label, input),"
+        )
         self.add("    )?;")
         self.add("    Ok((request, reply))")
         self.add("}")
@@ -668,13 +721,19 @@ class RustEmitter:
         self.add(f"pub fn {prefix}_reply<S: CapSpace, R: AsyncReply>(")
         self.add("    reply: R,")
         self.add("    space: &mut S,")
-        self.add(f"    response: &{object_.python_name}Response,")
+        self.add(f"    response: &Result<{object_.python_name}Response, RpcError>,")
         self.add(") -> Result<(), RpcError> {")
+        self.add("    let response = match response {")
+        self.add("        Ok(value) => value,")
+        self.add("        Err(error) => return reply.reply_error(*error),")
+        self.add("    };")
         self.add("    match response {")
         for interface, method in self._object_methods(object_):
             variant = method_variant_name(interface, method)
             if method.oneway:
-                self.add(f"        {object_.python_name}Response::{variant}(_value) => Ok(()),")
+                self.add(
+                    f"        {object_.python_name}Response::{variant}(_value) => Ok(()),"
+                )
             else:
                 self.add(
                     f"        {object_.python_name}Response::{variant}(value) => "
@@ -684,7 +743,9 @@ class RustEmitter:
         self.add("}")
         self.add("")
         bounds = " + ".join(interface.python_name for interface in object_.implements)
-        self.add(f"pub fn {prefix}_dispatch<T: {bounds}>(request: {object_.python_name}Request, handler: &mut T) -> {object_.python_name}Response {{")
+        self.add(
+            f"pub fn {prefix}_dispatch<T: {bounds}>(request: {object_.python_name}Request, handler: &mut T) -> Result<{object_.python_name}Response, RpcError> {{"
+        )
         self.add("    match request {")
         for interface, method in self._object_methods(object_):
             variant = method_variant_name(interface, method)
@@ -694,7 +755,11 @@ class RustEmitter:
             if args:
                 call += ", " + ", ".join(args)
             call += ")"
-            self.add(f"        {object_.python_name}Request::{variant}({pattern}) => {object_.python_name}Response::{variant}({call}),")
+            if not method.oneway:
+                call += "?"
+            self.add(
+                f"        {object_.python_name}Request::{variant}({pattern}) => Ok({object_.python_name}Response::{variant}({call})),"
+            )
         self.add("    }")
         self.add("}")
 

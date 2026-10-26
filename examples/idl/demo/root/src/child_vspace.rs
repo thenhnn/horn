@@ -7,8 +7,8 @@
 use alloc::vec::Vec;
 use core::ops::Range;
 
-use crate::child_image::{ChildImage, ChildSegment};
 use crate::ObjectAllocator;
+use crate::child_image::{ChildImage, ChildSegment};
 
 const PF_R: u32 = 4;
 const PF_W: u32 = 2;
@@ -23,7 +23,9 @@ pub(crate) fn create_child_vspace(
     free_page_addr: usize,
     asid_pool: sel4::cap::AsidPool,
 ) -> (sel4::cap::VSpace, usize, sel4::cap::Granule) {
-    let child_vspace = allocator.allocate_fixed_sized::<sel4::cap_type::VSpace>();
+    let child_vspace = allocator
+        .allocate_fixed_sized::<sel4::cap_type::VSpace>()
+        .unwrap();
     asid_pool.asid_pool_assign(child_vspace).unwrap();
 
     let image_footprint = footprint(image);
@@ -44,7 +46,9 @@ pub(crate) fn create_child_vspace(
     );
 
     let ipc_buffer_addr = image_footprint.end;
-    let ipc_buffer_cap = allocator.allocate_fixed_sized::<sel4::cap_type::Granule>();
+    let ipc_buffer_cap = allocator
+        .allocate_fixed_sized::<sel4::cap_type::Granule>()
+        .unwrap();
     ipc_buffer_cap
         .frame_map(
             child_vspace,
@@ -81,6 +85,7 @@ fn map_intermediate_translation_tables(
             let addr = footprint_at_level.start + i * span_bytes;
             allocator
                 .allocate(ty.blueprint())
+                .unwrap()
                 .cast::<sel4::cap_type::UnspecifiedIntermediateTranslationTable>()
                 .generic_intermediate_translation_table_map(
                     ty,
@@ -105,7 +110,9 @@ fn map_image(
     let mut pages = (0..num_pages)
         .map(|_| {
             (
-                allocator.allocate_fixed_sized::<sel4::cap_type::Granule>(),
+                allocator
+                    .allocate_fixed_sized::<sel4::cap_type::Granule>()
+                    .unwrap(),
                 sel4::CapRightsBuilder::none(),
             )
         })

@@ -497,15 +497,27 @@ rec {
         libName = "horn_memory";
         dependencies = [
           {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            optional = true;
+            features = [ "sel4" ];
+          }
+          {
             name = "sel4";
             packageId = "sel4";
             optional = true;
           }
+          {
+            name = "sel4-abstract-allocator";
+            packageId = "sel4-abstract-allocator";
+            optional = true;
+          }
         ];
         features = {
-          "sel4" = [ "dep:sel4" ];
+          "rpc" = [ "sel4" "dep:horn-ipc" ];
+          "sel4" = [ "dep:sel4" "dep:sel4-abstract-allocator" ];
         };
-        resolvedDefaultFeatures = [ "sel4" ];
+        resolvedDefaultFeatures = [ "rpc" "sel4" ];
       };
       "idl-demo-child" = rec {
         crateName = "idl-demo-child";
@@ -579,7 +591,7 @@ rec {
           {
             name = "horn-memory";
             packageId = "horn-memory";
-            features = [ "sel4" ];
+            features = [ "rpc" ];
           }
           {
             name = "sel4";
@@ -1445,6 +1457,26 @@ rec {
           "default" = [ "state" ];
         };
         resolvedDefaultFeatures = [ "default" "state" ];
+      };
+      "sel4-abstract-allocator" = rec {
+        crateName = "sel4-abstract-allocator";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./vendor/rust-sel4/src/crates/experimental/sel4-abstract-allocator; };
+        libName = "sel4_abstract_allocator";
+        authors = [
+          "Nick Spinale <nick.spinale@coliasgroup.com>"
+        ];
+        dependencies = [
+          {
+            name = "log";
+            packageId = "log";
+          }
+        ];
+        features = {
+          "default" = [ "alloc" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" "default" ];
       };
       "sel4-alloca" = rec {
         crateName = "sel4-alloca";

@@ -14,8 +14,7 @@ mod child_image {
     include!(concat!(env!("OUT_DIR"), "/child_image.rs"));
 }
 mod child_vspace;
-mod object_allocator;
-mod memory;
+mod memory_probe;
 
 #[allow(dead_code, unused_imports, non_camel_case_types)]
 mod protocol {
@@ -25,7 +24,8 @@ mod protocol {
 use child_image::CHILD_IMAGE;
 use child_vspace::create_child_vspace;
 use horn_ipc::*;
-use object_allocator::{find_largest_kernel_untyped, ObjectAllocator};
+use horn_memory::sel4::KernelAllocator as ObjectAllocator;
+use horn_memory::service::{self, Service as MemoryService};
 use protocol::*;
 
 const GRANULE_SIZE: usize = ::sel4::FrameObjectType::GRANULE.bytes();
@@ -37,11 +37,10 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
     ::sel4::debug_println!("idl demo root: child tag verified at build time");
 
     let empty = bootinfo.empty().range();
-    let split = empty.start + (empty.len() / 2).max(128);
-    let mut allocator = ObjectAllocator::new(bootinfo, empty.start..split);
+    let split = empty.start + empty.len() / 2;
     let untyped = find_largest_kernel_untyped(bootinfo);
-
     let root_cnode = ::sel4::init_thread::slot::CNODE.cap();
+    let mut allocator = ObjectAllocator::new(root_cnode, untyped, empty.start..split);
     let mut client_space = Sel4CapSpace::new(
         root_cnode,
         untyped,
@@ -49,18 +48,33 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
         empty.end as ::sel4::Word,
     );
 
-    let service = allocator.allocate_fixed_sized::<::sel4::cap_type::Endpoint>();
-    let memory_endpoint = allocator.allocate_fixed_sized::<::sel4::cap_type::Endpoint>();
-    let memory_reply: ::sel4::cap::Reply = allocator.allocate(::sel4::ObjectBlueprint::Reply).cast();
-    let memory_authority = memory::mint(&mut client_space, memory_endpoint, memory::ALLOCATOR_BADGE).unwrap();
-    let memory_cap = ::sel4::cap::Endpoint::from_bits(memory_authority.path().bits());
+    let service = allocator
+        .allocate_fixed_sized::<::sel4::cap_type::Endpoint>()
+        .unwrap();
+    let memory_endpoint = allocator
+        .allocate_fixed_sized::<::sel4::cap_type::Endpoint>()
+        .unwrap();
+    let memory_reply: ::sel4::cap::Reply = allocator
+        .allocate(::sel4::ObjectBlueprint::Reply)
+        .unwrap()
+        .cast();
+    let memory_cap = service::allocator_cap(&mut allocator, memory_endpoint).unwrap();
     let memory_handle = client_space.register(memory_cap).unwrap();
-    let wake = allocator.allocate_fixed_sized::<::sel4::cap_type::Notification>();
-    let reply: ::sel4::cap::Reply = allocator.allocate(::sel4::ObjectBlueprint::Reply).cast();
-    let child_tcb = allocator.allocate_fixed_sized::<::sel4::cap_type::Tcb>();
-    let child_sc = allocator.allocate_variable_sized::<::sel4::cap_type::SchedContext>(
-        7,
-    );
+    let wake = allocator
+        .allocate_fixed_sized::<::sel4::cap_type::Notification>()
+        .unwrap();
+    let reply: ::sel4::cap::Reply = allocator
+        .allocate(::sel4::ObjectBlueprint::Reply)
+        .unwrap()
+        .cast();
+    let child_tcb = allocator
+        .allocate_fixed_sized::<::sel4::cap_type::Tcb>()
+        .unwrap();
+    let child_sc = allocator
+        .allocate_variable_sized::<::sel4::cap_type::SchedContext>(
+            ::sel4::sys::seL4_MinSchedContextBits as usize,
+        )
+        .unwrap();
     bootinfo
         .sched_control()
         .index(0)
@@ -81,8 +95,9 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
         memory: Cap::from_ref(memory_handle.with_mode(CapMode::COPY)),
     };
     let child_cnode_cap = child_caps.pack(&mut client_space).unwrap();
-    let child_cnode =
-        client_space.cap::<::sel4::cap_type::CNode>(child_cnode_cap.as_ref()).unwrap();
+    let child_cnode = client_space
+        .cap::<::sel4::cap_type::CNode>(child_cnode_cap.as_ref())
+        .unwrap();
 
     let free_page_addr = init_free_page_addr(bootinfo);
     let (child_vspace, ipc_buffer_addr, ipc_buffer_cap) = create_child_vspace(
@@ -114,13 +129,16 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
         )
         .unwrap();
 
-    // The loader has finished using this reserved scratch page.
-    let pool = unsafe {
-        horn_memory::sel4::FramePool::new(
-            &mut allocator.0, root_cnode, ::sel4::init_thread::slot::VSPACE.cap(),
-            free_page_addr, 4,
-        ).unwrap()
-    };
+    let mut pool =
+        horn_memory::sel4::FramePool::new(&mut allocator, memory_probe::PAGE_BUDGET).unwrap();
+    memory_probe::check_backing(&mut pool, free_page_addr);
+    let memory = MemoryService::new(
+        allocator,
+        pool,
+        memory_endpoint,
+        memory_probe::OBJECT_BUDGET,
+    )
+    .unwrap();
 
     let mut ctx = ::sel4::UserContext::default();
     *ctx.pc_mut() = CHILD_IMAGE.entry as ::sel4::Word;
@@ -137,11 +155,19 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
 
     let transport = client.transport;
     let server = Sel4Server::new(root_cnode, memory_endpoint, recv_slot, transport.space);
-    memory::serve(server, memory_reply, pool);
-    wake.wait();
-    ::sel4::init_thread::suspend_self()
+    match memory.run(server, memory_reply).unwrap() {}
 }
 
+fn find_largest_kernel_untyped(bootinfo: &::sel4::BootInfo) -> ::sel4::cap::Untyped {
+    let (index, _) = bootinfo
+        .untyped_list()
+        .iter()
+        .enumerate()
+        .filter(|(_, desc)| !desc.is_device())
+        .max_by_key(|(_, desc)| desc.size_bits())
+        .unwrap();
+    bootinfo.untyped().index(index).cap()
+}
 
 #[repr(C, align(4096))]
 struct FreePagePlaceholder(#[allow(dead_code)] [u8; GRANULE_SIZE]);

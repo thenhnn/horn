@@ -5,8 +5,6 @@ ELF, and calls the generated Counter client.  The child serves one request
 and signals the wake notification.
 """
 
-from horn_memory import Memory, MemoryAllocator, MemoryAllocatorService, MemoryInfo, MemoryObject
-
 from horn_idl import (
     U32,
     U64,
@@ -20,6 +18,29 @@ from horn_idl import (
     record,
     sel4,
 )
+from horn_memory import (
+    Memory,
+    MemoryAllocator,
+    MemoryAllocatorService,
+    MemoryError,
+    MemoryHost,
+    MemoryInfo,
+    MemoryObject,
+)
+
+__all__ = [
+    "ChildCaps",
+    "Counter",
+    "CounterService",
+    "CounterValue",
+    "Memory",
+    "MemoryAllocator",
+    "MemoryAllocatorService",
+    "MemoryError",
+    "MemoryHost",
+    "MemoryInfo",
+    "MemoryObject",
+]
 
 
 @record
@@ -37,11 +58,6 @@ class Counter:
 @object(implements=(Counter,))
 class CounterService:
     pass
-
-
-@object(implements=(MemoryAllocator, Memory))
-class MemoryHost:
-    """Internal server dispatch; badges restrict allocation versus object access."""
 
 
 @capset

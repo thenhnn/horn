@@ -19,8 +19,11 @@ fn generate_protocol() {
 
 fn run_python(schema: &Path, idl: &Path, output: &Path) {
     let python = env::var_os("PYTHON").unwrap_or_else(|| "python3".into());
-    let memory_idl = env::var_os("HORN_MEMORY_IDL").map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../platform/core/memory/idl"));
+    let memory_idl = env::var_os("HORN_MEMORY_IDL")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../platform/core/memory/idl")
+        });
     println!("cargo:rerun-if-env-changed=HORN_MEMORY_IDL");
     println!("cargo:rerun-if-changed={}", memory_idl.display());
     let status = Command::new(python)
@@ -29,11 +32,18 @@ fn run_python(schema: &Path, idl: &Path, output: &Path) {
         .arg(schema)
         .arg("--rust")
         .arg(output)
-        .env("PYTHONPATH", format!("{}:{}", idl.display(), memory_idl.display()))
+        .env(
+            "PYTHONPATH",
+            format!("{}:{}", idl.display(), memory_idl.display()),
+        )
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .status()
         .expect("run Python IDL generator");
-    assert!(status.success(), "IDL generation failed for {}", schema.display());
+    assert!(
+        status.success(),
+        "IDL generation failed for {}",
+        schema.display()
+    );
 }
 
 fn main() {

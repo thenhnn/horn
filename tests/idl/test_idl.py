@@ -1,22 +1,12 @@
 from pathlib import Path
 
 import pytest
-
 from horn_idl import (
     Borrow,
-    Cap,
     Copy,
     DeclarationError,
     Move,
-    U8,
-    U32,
-    U64,
     compile_path,
-    iface,
-    method,
-    object,
-    record,
-    ring,
     sel4,
 )
 from horn_idl.emit.c import emit as emit_c
@@ -34,8 +24,8 @@ def load_source(tmp_path, name, source):
 def test_example_schema_has_stable_shape():
     schema = compile_path(ROOT / "examples/idl/schema.py")
     assert [interface.fqn for interface in schema.interfaces] == [
-        "gpos.counter",
-        "gpos.control",
+        "net.nhnn.horn.counter",
+        "net.nhnn.horn.control",
     ]
     counter = schema.interfaces[0]
     assert [method.name for method in counter.methods] == ["add", "exchange"]
@@ -74,7 +64,7 @@ def test_rust_and_c_glue_reference_runtime():
     assert "pub fn counter_service_reply<S: CapSpace, R: AsyncReply>" in rust
     assert "pub fn counter_service_serve_one" not in rust
     assert "recv_request_dynamic" in rust
-    assert 'horn_ipc::horn_tag!("gpos.counter", 0);' in rust
+    assert 'horn_ipc::horn_tag!("net.nhnn.horn.counter", 0);' in rust
     header, source = emit_c(schema)
     assert "#include <horn_ipc.h>" in header
     assert "horn_counter_add" in header
@@ -246,7 +236,7 @@ def test_generated_rust_compiles_against_runtime(tmp_path):
 
 
 def test_cnode_layout_uses_one_flat_cnode():
-    from horn_idl import CapType, CapMode, Rights
+    from horn_idl import CapMode, CapType, Rights
     from horn_idl.layout import MAX_LAYOUT_CAPS, build_layout
     from horn_idl.types import CapPath
 
@@ -269,7 +259,6 @@ def test_cnode_layout_uses_one_flat_cnode():
 
 
 def test_async_methods_generate_deferred_server_helpers(tmp_path):
-    from horn_idl.declarations import Transport
 
     schema = load_source(
         tmp_path,
@@ -292,9 +281,14 @@ class AsyncObject:
     assert "pub fn async_work_recv_async<S: AsyncServer>" in rust
     assert "pub fn async_work_reply_async<S: CapSpace, R: AsyncReply>" in rust
     assert "let (_label, args, reply) = server.recv_request" in rust
-    assert "reply.reply_wire(space, result" in rust
+    assert "reply.reply_wire(space, value" in rust
+    assert "result: &Result<u32, RpcError>" in rust
+    assert "Err(error) => reply.reply_error(*error)" in rust
     assert "pub fn async_object_recv<S: AsyncServer>" in rust
     assert "pub fn async_object_reply<S: CapSpace, R: AsyncReply>" in rust
+    assert "fn work(&mut self, value: u32) -> Result<u32, RpcError>" in rust
+    assert "Result<AsyncObjectResponse, RpcError>" in rust
+    assert "Async::work(handler, args.value)?" in rust
 
 
 def test_object_reply_skips_oneway_methods(tmp_path):
@@ -316,11 +310,11 @@ class NotifyService:
     )
     rust = emit_rust(schema)
     assert "NotifyServiceResponse::NotifyPing(_value) => Ok(())" in rust
+    assert "fn ping(&mut self, value: u32) -> ();" in rust
     assert "pub fn notify_service_serve_one" not in rust
 
 
 def test_typed_capset_generates_slot_layout(tmp_path):
-    from horn_idl import capset
 
     schema = load_source(
         tmp_path,
@@ -348,6 +342,10 @@ class ServiceCaps:
     rust = emit_rust(schema)
     assert "pub struct ServiceCapsTag;" in rust
     assert "SERVICE_CAPS_SLOTS" in rust
+    assert "SERVICE_CAPS_SERVICE_SLOT: u32 = 1" in rust
+    assert "SERVICE_CAPS_WAKE_SLOT: u32 = 2" in rust
+    assert "SERVICE_CAPS_SELF_SLOT: u32 = 0" in rust
+    assert "SERVICE_CAPS_FIRST_FREE_SLOT: u32 = 3" in rust
     assert "install_self_cnode" in rust
     header, _ = emit_c(schema)
     assert "HORN_SERVICE_CAPS_SLOT_SERVICE 1u" in header

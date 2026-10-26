@@ -80,7 +80,6 @@ impl<S: CapSpace> Transport for Sel4Transport<S> {
         let target_cptr = self.space.cptr(target)?;
         let reply = Cap::<Endpoint>::from_bits(target_cptr as Word)
             .call(MessageInfo::new(label, 0, wire_caps.len(), words));
-        sel4::debug_println!("rpc call reply extra={} unwrapped={}", reply.extra_caps(), reply.caps_unwrapped());
         let mut bytes = [0u8; MAX_MESSAGE_BYTES];
         let length = reply.length() * 8;
         if length < 4 || length > bytes.len() { return Err(RpcError::Truncated); }
@@ -283,6 +282,13 @@ pub struct Sel4Reply {
 }
 
 impl crate::AsyncReply for Sel4Reply {
+    fn reply_error(self, error: RpcError) -> Result<(), RpcError> {
+        match error {
+            RpcError::Server(status) if status != 0 => self.reply_status(status),
+            _ => Err(error),
+        }
+    }
+
     fn reply_wire<S: CapSpace, W: Wire>(
         self,
         space: &mut S,
@@ -339,7 +345,6 @@ impl Sel4Reply {
                 ipc.caps_or_badges_mut()[index] = cap.slot as Word;
             }
         });
-        sel4::debug_println!("rpc reply sending caps={}", wire_caps.len());
         self.reply
             .send_reply(MessageInfo::new(self.label, 0, wire_caps.len(), words));
         for index in 0..wire_caps.len() {

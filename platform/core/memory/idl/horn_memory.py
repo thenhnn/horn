@@ -1,6 +1,16 @@
 """Initial resident backing protocol. No raw frame or mapping delegation."""
 
-from horn_idl import U64, Cap, Move, iface, method, object, record
+from horn_idl import U32, U64, Cap, Move, enum, iface, method, object, record
+
+
+@enum(base=U32)
+class MemoryError:
+    InvalidSize = 1
+    Exhausted = 2
+    MetadataExhausted = 3
+    Backend = 4
+    Denied = 5
+    BadHandle = 6
 
 
 @record
@@ -32,4 +42,9 @@ class MemoryAllocator:
 
 @object(implements=(MemoryAllocator,))
 class MemoryAllocatorService:
+    pass
+
+
+@object(implements=(MemoryAllocator, Memory))
+class MemoryHost:
     pass

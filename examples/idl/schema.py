@@ -35,7 +35,7 @@ class Connection:
     wake: Cap[sel4.Notification, Borrow]
 
 
-@iface("gpos.counter", version=(1, 0))
+@iface("net.nhnn.horn.counter", version=(1, 0))
 class Counter:
     @method
     def add(self, amount: U64) -> CounterValue: ...
@@ -44,7 +44,7 @@ class Counter:
     def exchange(self, connection: Connection) -> Cap[sel4.Notification, Move]: ...
 
 
-@iface("gpos.control", version=(1, 0))
+@iface("net.nhnn.horn.control", version=(1, 0))
 class Control:
     @method
     def version(self) -> U32: ...
