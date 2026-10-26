@@ -203,10 +203,29 @@ impl<S: CapSpace> Sel4Server<S> {
     where
         F: for<'a> FnOnce(u64, &mut Decoder<'a>) -> Result<A, RpcError>,
     {
+        self.recv_request_dynamic(|_| Ok(request_layout), reply, decode)
+    }
+
+    /// Receive a request and choose its capability layout from the label.
+    ///
+    /// The label is only known after `recv`, so this is the multi-method
+    /// counterpart to [`recv_request`](Self::recv_request).
+    pub fn recv_request_dynamic<A, L, F>(
+        &mut self,
+        layout_for: L,
+        reply: sel4::ReplyAuthority,
+        decode: F,
+    ) -> Result<(u64, A, Sel4Reply), RpcError>
+    where
+        L: FnOnce(u64) -> Result<&'static CapLayout, RpcError>,
+        F: for<'a> FnOnce(u64, &mut Decoder<'a>) -> Result<A, RpcError>,
+    {
         let endpoint = self.endpoint;
         let recv_slot = self.recv_slot;
         sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&recv_slot));
         let (info, _badge) = endpoint.recv(reply);
+        let label = info.label();
+        let request_layout = layout_for(label)?;
         let space = &mut self.space;
         let args = sel4::with_ipc_buffer_mut(|ipc| {
             let mut received = WireCaps::default();
@@ -223,15 +242,12 @@ impl<S: CapSpace> Sel4Server<S> {
             let bytes = &ipc.msg_bytes()[..info.length() * 8];
             let mut unpacker = CapUnpacker::new(space, request_layout, received);
             let mut dec = Decoder::new(bytes, &mut unpacker);
-            decode(info.label(), &mut dec)
+            decode(label, &mut dec)
         })?;
         Ok((
-            info.label(),
+            label,
             args,
-            Sel4Reply {
-                reply,
-                label: info.label(),
-            },
+            Sel4Reply { reply, label },
         ))
     }
 
@@ -249,16 +265,17 @@ impl<S: CapSpace> crate::AsyncServer for Sel4Server<S> {
     type Authority = sel4::ReplyAuthority;
     type Reply = Sel4Reply;
 
-    fn recv_request<A, F>(
+    fn recv_request_dynamic<A, L, F>(
         &mut self,
-        request_layout: &'static CapLayout,
+        layout_for: L,
         reply: Self::Authority,
         decode: F,
     ) -> Result<(u64, A, Self::Reply), RpcError>
     where
+        L: FnOnce(u64) -> Result<&'static CapLayout, RpcError>,
         F: for<'a> FnOnce(u64, &mut Decoder<'a>) -> Result<A, RpcError>,
     {
-        Sel4Server::recv_request(self, request_layout, reply, decode)
+        Sel4Server::recv_request_dynamic(self, layout_for, reply, decode)
     }
 }
 

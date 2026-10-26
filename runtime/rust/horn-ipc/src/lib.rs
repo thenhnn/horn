@@ -679,6 +679,19 @@ pub trait AsyncServer {
     type Authority;
     type Reply: AsyncReply;
 
+    /// Receive a request, select the request capability layout from its label,
+    /// then decode it.  Generated object servers use this to support multiple
+    /// methods with different capability layouts on one endpoint.
+    fn recv_request_dynamic<A, L, F>(
+        &mut self,
+        layout_for: L,
+        reply: Self::Authority,
+        decode: F,
+    ) -> Result<(u64, A, Self::Reply), RpcError>
+    where
+        L: FnOnce(u64) -> Result<&'static CapLayout, RpcError>,
+        F: for<'a> FnOnce(u64, &mut Decoder<'a>) -> Result<A, RpcError>;
+
     fn recv_request<A, F>(
         &mut self,
         request_layout: &'static CapLayout,
@@ -686,7 +699,10 @@ pub trait AsyncServer {
         decode: F,
     ) -> Result<(u64, A, Self::Reply), RpcError>
     where
-        F: for<'a> FnOnce(u64, &mut Decoder<'a>) -> Result<A, RpcError>;
+        F: for<'a> FnOnce(u64, &mut Decoder<'a>) -> Result<A, RpcError>,
+    {
+        self.recv_request_dynamic(|_| Ok(request_layout), reply, decode)
+    }
 }
 
 #[cfg(feature = "sel4")]

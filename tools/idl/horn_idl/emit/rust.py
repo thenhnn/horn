@@ -641,8 +641,50 @@ class RustEmitter:
         self.add("    }")
         self.add("}")
         self.add("")
+        prefix = snake(object_.python_name)
+        self.add(f"pub fn {prefix}_request_layout(label: u64) -> Result<&'static CapLayout, RpcError> {{")
+        self.add("    match label {")
+        for interface, method in self._object_methods(object_):
+            self.add(
+                f"        {method_label_name(interface, method)} => "
+                f"Ok(&{upper(interface.python_name)}_{upper(method.name)}_REQ_LAYOUT),"
+            )
+        self.add("        _ => Err(RpcError::UnknownMethod),")
+        self.add("    }")
+        self.add("}")
+        self.add("")
+        self.add(f"pub fn {prefix}_recv<S: AsyncServer>(")
+        self.add("    server: &mut S,")
+        self.add("    authority: S::Authority,")
+        self.add(f") -> Result<({object_.python_name}Request, S::Reply), RpcError> {{")
+        self.add("    let (_label, request, reply) = server.recv_request_dynamic(")
+        self.add(f"        {prefix}_request_layout,")
+        self.add("        authority,")
+        self.add(f"        |label, input| {object_.python_name}Request::decode(label, input),")
+        self.add("    )?;")
+        self.add("    Ok((request, reply))")
+        self.add("}")
+        self.add("")
+        self.add(f"pub fn {prefix}_reply<S: CapSpace, R: AsyncReply>(")
+        self.add("    reply: R,")
+        self.add("    space: &mut S,")
+        self.add(f"    response: &{object_.python_name}Response,")
+        self.add(") -> Result<(), RpcError> {")
+        self.add("    match response {")
+        for interface, method in self._object_methods(object_):
+            variant = method_variant_name(interface, method)
+            if method.oneway:
+                self.add(f"        {object_.python_name}Response::{variant}(_value) => Ok(()),")
+            else:
+                self.add(
+                    f"        {object_.python_name}Response::{variant}(value) => "
+                    f"reply.reply_wire(space, value, &{upper(interface.python_name)}_{upper(method.name)}_RESULT_LAYOUT),"
+                )
+        self.add("    }")
+        self.add("}")
+        self.add("")
         bounds = " + ".join(interface.python_name for interface in object_.implements)
-        self.add(f"pub fn {snake(object_.python_name)}_dispatch<T: {bounds}>(request: {object_.python_name}Request, handler: &mut T) -> {object_.python_name}Response {{")
+        self.add(f"pub fn {prefix}_dispatch<T: {bounds}>(request: {object_.python_name}Request, handler: &mut T) -> {object_.python_name}Response {{")
         self.add("    match request {")
         for interface, method in self._object_methods(object_):
             variant = method_variant_name(interface, method)

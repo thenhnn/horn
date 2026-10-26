@@ -184,8 +184,22 @@ stronger guarantee.
 
 One endpoint represents one object.  All interfaces implemented by the object
 are multiplexed through that endpoint, and the method label selects the
-operation.  The server side generates a request enum, a response enum, and a
-`dispatch` function that calls the handler traits.
+operation.  The server side generates a request enum, a response enum, a
+`dispatch` function that calls the handler traits, and object-level helpers
+that hide layout selection and reply encoding.
+
+The generated server path is:
+
+```rust
+let (request, reply) = counter_service_recv(&mut server, reply_authority)?;
+let response = counter_service_dispatch(request, &mut handler);
+counter_service_reply(reply, &mut server.space, &response)?;
+```
+
+`*_recv` selects the request capability layout from the method label via
+`AsyncServer::recv_request_dynamic`; `*_reply` selects the result layout from
+the response variant.  Receiving is blocking; the receive/reply split only
+allows the reply to be deferred.
 
 This keeps dynamic systems cheap: the process manager hands out one endpoint
 cap per object, and a component can be given a narrower `Cap[SomeInterface]`

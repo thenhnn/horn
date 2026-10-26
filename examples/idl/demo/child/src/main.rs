@@ -41,20 +41,9 @@ fn main() -> ! {
     let mut server = Sel4Server::new(root_cnode, service, recv_slot, space);
     let mut handler = CounterHandler { value: 0 };
 
-    let (_label, request, reply) = server
-        .recv_request(&COUNTER_ADD_REQ_LAYOUT, reply_cap, |label, input| {
-            CounterServiceRequest::decode(label, input)
-        })
-        .unwrap();
+    let (request, reply) = counter_service_recv(&mut server, reply_cap).unwrap();
     let response = counter_service_dispatch(request, &mut handler);
-    reply
-        .reply_with(
-            &mut server.space,
-            &COUNTER_ADD_RESULT_LAYOUT,
-            |out| response.encode(out),
-            |caps| response.caps(caps),
-        )
-        .unwrap();
+    counter_service_reply(reply, &mut server.space, &response).unwrap();
 
     ::sel4::debug_println!("idl demo child: replied value={}", handler.value);
     wake.signal();

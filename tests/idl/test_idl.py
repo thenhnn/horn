@@ -69,6 +69,11 @@ def test_rust_and_c_glue_reference_runtime():
     assert "pub struct CounterTag;" in rust
     assert "pub struct CounterServiceTag;" in rust
     assert "pub fn counter_service_dispatch" in rust
+    assert "pub fn counter_service_request_layout" in rust
+    assert "pub fn counter_service_recv<S: AsyncServer>" in rust
+    assert "pub fn counter_service_reply<S: CapSpace, R: AsyncReply>" in rust
+    assert "pub fn counter_service_serve_one" not in rust
+    assert "recv_request_dynamic" in rust
     assert 'horn_ipc::horn_tag!("gpos.counter", 0);' in rust
     header, source = emit_c(schema)
     assert "#include <horn_ipc.h>" in header
@@ -288,6 +293,30 @@ class AsyncObject:
     assert "pub fn async_work_reply_async<S: CapSpace, R: AsyncReply>" in rust
     assert "let (_label, args, reply) = server.recv_request" in rust
     assert "reply.reply_wire(space, result" in rust
+    assert "pub fn async_object_recv<S: AsyncServer>" in rust
+    assert "pub fn async_object_reply<S: CapSpace, R: AsyncReply>" in rust
+
+
+def test_object_reply_skips_oneway_methods(tmp_path):
+    schema = load_source(
+        tmp_path,
+        "oneway_object",
+        """
+from horn_idl import U32, iface, method, object
+
+@iface("test.notify", version=(1, 0))
+class Notify:
+    @method(oneway=True)
+    def ping(self, value: U32) -> None: ...
+
+@object(implements=(Notify,))
+class NotifyService:
+    pass
+""",
+    )
+    rust = emit_rust(schema)
+    assert "NotifyServiceResponse::NotifyPing(_value) => Ok(())" in rust
+    assert "pub fn notify_service_serve_one" not in rust
 
 
 def test_typed_capset_generates_slot_layout(tmp_path):
