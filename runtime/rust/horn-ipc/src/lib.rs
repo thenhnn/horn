@@ -124,13 +124,41 @@ pub struct CapLayout {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapRef {
-    pub slot: u64,
+    /// CPtr bits of the CNode that contains this slot.
+    pub cnode: u64,
+    /// Slot index within `cnode`.
+    pub slot: u32,
+    /// Number of bits used to resolve `slot` in `cnode`.
+    pub depth: u8,
+    /// For a CNode capability, the size bits of the CNode object.
+    pub cnode_bits: u8,
     pub mode: CapMode,
     pub rights: Rights,
 }
 
+impl CapRef {
+    pub const fn new(
+        cnode: u64,
+        slot: u32,
+        depth: u8,
+        cnode_bits: u8,
+        mode: CapMode,
+        rights: Rights,
+    ) -> Self {
+        Self { cnode, slot, depth, cnode_bits, mode, rights }
+    }
+
+    pub const fn with_mode(mut self, mode: CapMode) -> Self {
+        self.mode = mode;
+        self
+    }
+}
+
 pub struct Cap<T: CapType> {
-    pub slot: u64,
+    pub cnode: u64,
+    pub slot: u32,
+    pub depth: u8,
+    pub cnode_bits: u8,
     pub mode: CapMode,
     pub rights: Rights,
     _marker: PhantomData<T>,
@@ -142,14 +170,22 @@ impl<T: CapType> Clone for Cap<T> {
 impl<T: CapType> Copy for Cap<T> {}
 impl<T: CapType> PartialEq for Cap<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.slot == other.slot && self.mode == other.mode && self.rights == other.rights
+        self.cnode == other.cnode
+            && self.slot == other.slot
+            && self.depth == other.depth
+            && self.cnode_bits == other.cnode_bits
+            && self.mode == other.mode
+            && self.rights == other.rights
     }
 }
 impl<T: CapType> Eq for Cap<T> {}
 impl<T: CapType> core::fmt::Debug for Cap<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Cap")
+            .field("cnode", &self.cnode)
             .field("slot", &self.slot)
+            .field("depth", &self.depth)
+            .field("cnode_bits", &self.cnode_bits)
             .field("mode", &self.mode)
             .field("rights", &self.rights)
             .finish()
@@ -157,21 +193,31 @@ impl<T: CapType> core::fmt::Debug for Cap<T> {
 }
 
 impl<T: CapType> Cap<T> {
-    pub const fn new(slot: u64, mode: CapMode, rights: Rights) -> Self {
-        Self { slot, mode, rights, _marker: PhantomData }
+    pub const fn new(
+        cnode: u64,
+        slot: u32,
+        depth: u8,
+        cnode_bits: u8,
+        mode: CapMode,
+        rights: Rights,
+    ) -> Self {
+        Self { cnode, slot, depth, cnode_bits, mode, rights, _marker: PhantomData }
+    }
+    pub const fn from_ref(cap: CapRef) -> Self {
+        Self::new(cap.cnode, cap.slot, cap.depth, cap.cnode_bits, cap.mode, cap.rights)
     }
     pub const fn as_ref(&self) -> CapRef {
-        CapRef { slot: self.slot, mode: self.mode, rights: self.rights }
+        CapRef::new(self.cnode, self.slot, self.depth, self.cnode_bits, self.mode, self.rights)
     }
     pub fn localize<S: crate::layout::CapSpace>(&self, space: &mut S) -> Result<Self, RpcError> {
         let cap = space.localize(self.as_ref())?;
-        Ok(Self::new(cap.slot, cap.mode, cap.rights))
+        Ok(Self::from_ref(cap))
     }
 }
 
 impl<T: CapType> Default for Cap<T> {
     fn default() -> Self {
-        Self::new(0, CapMode::COPY, Rights::NONE)
+        Self::new(0, 0, 0, 0, CapMode::COPY, Rights::NONE)
     }
 }
 
@@ -521,7 +567,7 @@ impl<T: CapType> Wire for Cap<T> {
     fn encode(&self, _out: &mut Encoder<'_>) {}
     fn decode(input: &mut Decoder<'_>) -> Result<Self, RpcError> {
         let cap = input.caps.pop()?;
-        Ok(Self::new(cap.slot, cap.mode, cap.rights))
+        Ok(Self::from_ref(cap))
     }
     fn caps(&self, out: &mut dyn CapSink) -> Result<(), RpcError> {
         out.push(self.as_ref())

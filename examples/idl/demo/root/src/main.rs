@@ -64,26 +64,10 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
     let reply_handle = client_space.register(reply).unwrap();
     let tcb_handle = client_space.register(child_tcb).unwrap();
     let child_caps = ChildCaps {
-        service: Cap::<CounterServiceTag>::new(
-            service_handle.slot,
-            CapMode::COPY,
-            Rights::ALL,
-        ),
-        wake: Cap::<Notification>::new(
-            wake_handle.slot,
-            CapMode::COPY,
-            Rights::ALL,
-        ),
-        reply: Cap::<Reply>::new(
-            reply_handle.slot,
-            CapMode::MOVE,
-            Rights::ALL,
-        ),
-        tcb: Cap::<TCB>::new(
-            tcb_handle.slot,
-            CapMode::COPY,
-            Rights::ALL,
-        ),
+        service: Cap::from_ref(service_handle.with_mode(CapMode::COPY)),
+        wake: Cap::from_ref(wake_handle.with_mode(CapMode::COPY)),
+        reply: Cap::from_ref(reply_handle.with_mode(CapMode::MOVE)),
+        tcb: Cap::from_ref(tcb_handle.with_mode(CapMode::COPY)),
     };
     let child_cnode_cap = child_caps.pack(&mut client_space).unwrap();
     let child_cnode =
@@ -123,11 +107,7 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
     *ctx.pc_mut() = CHILD_IMAGE.entry as ::sel4::Word;
     child_tcb.tcb_write_all_registers(true, &mut ctx).unwrap();
 
-    let target = Cap::<CounterTag>::new(
-        service_handle.slot,
-        CapMode::COPY,
-        Rights::ALL,
-    );
+    let target = Cap::<CounterTag>::from_ref(service_handle.with_mode(CapMode::COPY));
     let recv_slot = client_space.reserve_slot().unwrap();
     let transport = Sel4Transport::new(root_cnode, recv_slot, client_space);
     let mut client = CounterClient::new(transport, target);

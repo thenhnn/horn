@@ -88,11 +88,7 @@ impl<'a, S: CapSpace> CapPacker<'a, S> {
                 let finished = self.stack[self.depth - 1].take().unwrap();
                 self.depth -= 1;
                 if self.depth == 0 {
-                    self.roots.push(CapRef {
-                        slot: finished.cnode.slot,
-                        mode: CapMode::MOVE,
-                        rights: Rights::ALL,
-                    })?;
+                    self.roots.push(finished.cnode.with_mode(CapMode::MOVE))?;
                 }
                 continue;
             }

@@ -1,32 +1,24 @@
 //! A small seL4 CSpace implementation of [`CapSpace`].
 //!
-//! This is intentionally conservative:
-//! - CNodes are retyped from one Untyped into a caller-provided free slot
-//!   range of the root CNode.
-//! - Capability handles are indices into a fixed table of `AbsoluteCPtr`s.
-//! - Slots and handles are bump-allocated; there is no reclamation yet.
+//! `CapRef` directly names a CNode slot:
+//! `(cnode, slot, depth)`.  There is no handle table.  CNodes are retyped from
+//! one Untyped into a caller-provided root-CNode slot range.
 //!
-//! That is enough for bootstrap and control-plane work, and the layout code
-//! can be swapped to a real allocator later.
+//! The current implementation supports flat layouts: root CNodes and one
+//! level of child CNodes.  Deeper trees are rejected rather than guessed at.
 
-use sel4::cap_type::{CNode, Untyped};
+use sel4::cap_type::CNode;
 use sel4::{AbsoluteCPtr, CPtr, Cap, CapRights, ObjectBlueprint, Word};
 
 use crate::layout::{CapSpace, SlotRef};
-use crate::{CapRef, CapMode, Rights, RpcError};
-
-pub const MAX_CAP_HANDLES: usize = 256;
-const ROOT_HANDLE: u64 = u64::MAX;
+use crate::{CapMode, CapRef, Rights, RpcError};
 
 pub struct Sel4CapSpace {
     pub root: sel4::cap::CNode,
     pub untyped: Option<sel4::cap::Untyped>,
     next_slot: Word,
     end_slot: Word,
-    next_handle: usize,
-    handles: [Option<AbsoluteCPtr>; MAX_CAP_HANDLES],
-    cnode_sizes: [u8; MAX_CAP_HANDLES],
-    root_handle: CapRef,
+    root_ref: CapRef,
 }
 
 impl Sel4CapSpace {
@@ -36,104 +28,43 @@ impl Sel4CapSpace {
         first_slot: Word,
         end_slot: Word,
     ) -> Self {
-        Self {
-            root,
-            untyped: Some(untyped),
-            next_slot: first_slot,
-            end_slot,
-            next_handle: 0,
-            handles: [None; MAX_CAP_HANDLES],
-            cnode_sizes: [0; MAX_CAP_HANDLES],
-            root_handle: CapRef {
-                slot: ROOT_HANDLE,
-                mode: CapMode::COPY,
-                rights: Rights::ALL,
-            },
-        }
+        Self::with_untyped(root, Some(untyped), first_slot, end_slot)
     }
 
     /// A CSpace with no Untyped: it can receive/localize caps into existing
     /// root slots, but cannot allocate new CNodes.
     pub fn new_local(root: sel4::cap::CNode, first_slot: Word, end_slot: Word) -> Self {
+        Self::with_untyped(root, None, first_slot, end_slot)
+    }
+
+    fn with_untyped(
+        root: sel4::cap::CNode,
+        untyped: Option<sel4::cap::Untyped>,
+        first_slot: Word,
+        end_slot: Word,
+    ) -> Self {
         Self {
             root,
-            untyped: None,
+            untyped,
             next_slot: first_slot,
             end_slot,
-            next_handle: 0,
-            handles: [None; MAX_CAP_HANDLES],
-            cnode_sizes: [0; MAX_CAP_HANDLES],
-            root_handle: CapRef {
-                slot: ROOT_HANDLE,
-                mode: CapMode::COPY,
-                rights: Rights::ALL,
-            },
+            root_ref: CapRef::new(
+                root.cptr().bits() as u64,
+                0,
+                0,
+                0,
+                CapMode::COPY,
+                Rights::ALL,
+            ),
         }
     }
 
-    pub fn register<T: sel4::CapType>(&mut self, cap: Cap<T>) -> Result<CapRef, RpcError> {
-        let abs = self
-            .root
-            .absolute_cptr(CPtr::from_bits(cap.cptr().bits() as Word));
-        self.insert(abs)
+    fn root_cptr(&self) -> u64 {
+        self.root.cptr().bits() as u64
     }
 
-    pub fn reserve_slot(&mut self) -> Result<AbsoluteCPtr, RpcError> {
-        let slot = self.alloc_root_slot()?;
-        Ok(self.root.absolute_cptr(CPtr::from_bits(slot)))
-    }
-
-    pub fn cap<T: sel4::CapType>(&self, cap: CapRef) -> Result<Cap<T>, RpcError> {
-        let slot = self.cptr(cap)?;
-        Ok(Cap::<T>::from_bits(slot as Word))
-    }
-
-    fn insert(&mut self, abs: AbsoluteCPtr) -> Result<CapRef, RpcError> {
-        while self.next_handle < MAX_CAP_HANDLES {
-            let index = self.next_handle;
-            self.next_handle += 1;
-            if self.handles[index].is_none() {
-                self.handles[index] = Some(abs);
-                return Ok(CapRef {
-                    slot: index as u64,
-                    mode: CapMode::COPY,
-                    rights: Rights::ALL,
-                });
-            }
-        }
-        Err(RpcError::TooManyCaps)
-    }
-
-    fn get(&self, cap: CapRef) -> Result<AbsoluteCPtr, RpcError> {
-        if cap.slot == ROOT_HANDLE {
-            return Ok(self.root.absolute_cptr_for_self());
-        }
-        self.handles
-            .get(cap.slot as usize)
-            .and_then(|slot| *slot)
-            .ok_or(RpcError::MissingCap)
-    }
-
-    fn cnode_cap(&self, cap: CapRef) -> Result<sel4::cap::CNode, RpcError> {
-        if cap.slot == ROOT_HANDLE {
-            return Ok(self.root);
-        }
-        let abs = self.get(cap)?;
-        Ok(Cap::<CNode>::from_bits(abs.path().bits() as Word))
-    }
-
-    fn slot_abs(&self, cnode: CapRef, slot: u32) -> Result<AbsoluteCPtr, RpcError> {
-        let dest_cnode = self.cnode_cap(cnode)?;
-        let size_bits = if cnode.slot == ROOT_HANDLE {
-            0
-        } else {
-            self.cnode_sizes.get(cnode.slot as usize).copied().unwrap_or(0) as usize
-        };
-        if size_bits == 0 {
-            Ok(dest_cnode.absolute_cptr(CPtr::from_bits(slot as Word)))
-        } else {
-            Ok(dest_cnode.absolute_cptr_from_bits_with_depth(slot as Word, size_bits))
-        }
+    fn is_root_ref(&self, cap: CapRef) -> bool {
+        cap.depth == 0 && cap.cnode == self.root_cptr()
     }
 
     fn alloc_root_slot(&mut self) -> Result<Word, RpcError> {
@@ -143,6 +74,64 @@ impl Sel4CapSpace {
         let slot = self.next_slot;
         self.next_slot += 1;
         Ok(slot)
+    }
+
+    fn cnode_cptr_of(&self, cnode: CapRef) -> Result<u64, RpcError> {
+        if self.is_root_ref(cnode) {
+            return Ok(self.root_cptr());
+        }
+        if cnode.cnode == self.root_cptr() {
+            return Ok(cnode.slot as u64);
+        }
+        Err(RpcError::Transport)
+    }
+
+    fn cnode_cap_for_slot(&self, cnode: CapRef) -> Result<sel4::cap::CNode, RpcError> {
+        if self.is_root_ref(cnode) {
+            return Ok(self.root);
+        }
+        let cptr = self.cnode_cptr_of(cnode)?;
+        Ok(Cap::<CNode>::from_bits(cptr as Word))
+    }
+
+    fn slot_abs(&self, cnode: CapRef, slot: u32) -> Result<AbsoluteCPtr, RpcError> {
+        if self.is_root_ref(cnode) {
+            return Ok(self.root.absolute_cptr(CPtr::from_bits(slot as Word)));
+        }
+        let cnode_cap = self.cnode_cap_for_slot(cnode)?;
+        Ok(cnode_cap.absolute_cptr_from_bits_with_depth(
+            slot as Word,
+            cnode.cnode_bits as usize,
+        ))
+    }
+
+    fn cap_abs(&self, cap: CapRef) -> Result<AbsoluteCPtr, RpcError> {
+        let cnode_cap = Cap::<CNode>::from_bits(cap.cnode as Word);
+        Ok(cnode_cap.absolute_cptr_from_bits_with_depth(
+            cap.slot as Word,
+            cap.depth as usize,
+        ))
+    }
+
+    pub fn register<T: sel4::CapType>(&mut self, cap: Cap<T>) -> Result<CapRef, RpcError> {
+        Ok(CapRef::new(
+            self.root_cptr(),
+            cap.cptr().bits() as u32,
+            sel4::WORD_SIZE as u8,
+            0,
+            CapMode::COPY,
+            Rights::ALL,
+        ))
+    }
+
+    pub fn reserve_slot(&mut self) -> Result<AbsoluteCPtr, RpcError> {
+        let slot = self.alloc_root_slot()?;
+        Ok(self.root.absolute_cptr(CPtr::from_bits(slot)))
+    }
+
+    pub fn cap<T: sel4::CapType>(&self, cap: CapRef) -> Result<Cap<T>, RpcError> {
+        let cptr = self.cptr(cap)?;
+        Ok(Cap::<T>::from_bits(cptr as Word))
     }
 }
 
@@ -157,21 +146,31 @@ fn cap_rights(rights: Rights) -> CapRights {
 
 impl CapSpace for Sel4CapSpace {
     fn alloc_cnode(&mut self, parent: Option<SlotRef>, size_bits: u8) -> Result<CapRef, RpcError> {
-        let (dst, dst_offset, abs) = match parent {
+        let (dst, dst_offset, cnode, slot, depth) = match parent {
             None => {
                 let slot = self.alloc_root_slot()?;
                 (
                     self.root.absolute_cptr_for_self(),
                     slot as usize,
-                    self.root.absolute_cptr(CPtr::from_bits(slot)),
+                    self.root_cptr(),
+                    slot as u32,
+                    sel4::WORD_SIZE as u8,
                 )
             }
             Some(parent) => {
-                let cnode = self.cnode_cap(parent.cnode)?;
+                let parent_cnode = self.cnode_cap_for_slot(parent.cnode)?;
+                let parent_cptr = self.cnode_cptr_of(parent.cnode)?;
+                let depth = if self.is_root_ref(parent.cnode) {
+                    sel4::WORD_SIZE as u8
+                } else {
+                    parent.cnode.cnode_bits
+                };
                 (
-                    cnode.absolute_cptr_for_self(),
+                    parent_cnode.absolute_cptr_for_self(),
                     parent.slot as usize,
-                    cnode.absolute_cptr(CPtr::from_bits(parent.slot as Word)),
+                    parent_cptr,
+                    parent.slot,
+                    depth,
                 )
             }
         };
@@ -186,28 +185,23 @@ impl CapSpace for Sel4CapSpace {
                 1,
             )
             .map_err(|_| RpcError::Transport)?;
-        let cap = self.insert(abs)?;
-        if cap.slot != ROOT_HANDLE {
-            self.cnode_sizes[cap.slot as usize] = size_bits;
-        }
-        Ok(cap)
+        Ok(CapRef::new(
+            cnode,
+            slot,
+            depth,
+            size_bits,
+            CapMode::COPY,
+            Rights::ALL,
+        ))
     }
 
     fn free_cnode(&mut self, cnode: CapRef) -> Result<(), RpcError> {
-        if cnode.slot == ROOT_HANDLE {
-            return Err(RpcError::InvalidValue);
-        }
-        let abs = self.get(cnode)?;
-        abs.delete().map_err(|_| RpcError::Transport)?;
-        if let Some(slot) = self.handles.get_mut(cnode.slot as usize) {
-            *slot = None;
-        }
-        Ok(())
+        self.delete(cnode)
     }
 
     fn copy_into(&mut self, dest: SlotRef, src: CapRef, rights: Rights) -> Result<(), RpcError> {
         let dest_abs = self.slot_abs(dest.cnode, dest.slot)?;
-        let src_abs = self.get(src)?;
+        let src_abs = self.cap_abs(src)?;
         dest_abs
             .copy(&src_abs, cap_rights(rights))
             .map_err(|_| RpcError::Transport)
@@ -215,47 +209,45 @@ impl CapSpace for Sel4CapSpace {
 
     fn move_into(&mut self, dest: SlotRef, src: CapRef) -> Result<(), RpcError> {
         let dest_abs = self.slot_abs(dest.cnode, dest.slot)?;
-        let src_abs = self.get(src)?;
-        dest_abs
-            .move_(&src_abs)
-            .map_err(|_| RpcError::Transport)?;
-        if let Some(slot) = self.handles.get_mut(src.slot as usize) {
-            *slot = None;
-        }
-        Ok(())
+        let src_abs = self.cap_abs(src)?;
+        dest_abs.move_(&src_abs).map_err(|_| RpcError::Transport)
     }
 
     fn cap_at(&mut self, slot: SlotRef) -> Result<CapRef, RpcError> {
-        let abs = self.slot_abs(slot.cnode, slot.slot)?;
-        self.insert(abs)
+        if self.is_root_ref(slot.cnode) {
+            Ok(CapRef::new(
+                self.root_cptr(),
+                slot.slot,
+                sel4::WORD_SIZE as u8,
+                0,
+                CapMode::COPY,
+                Rights::ALL,
+            ))
+        } else {
+            let cnode_cptr = self.cnode_cptr_of(slot.cnode)?;
+            Ok(CapRef::new(
+                cnode_cptr,
+                slot.slot,
+                slot.cnode.cnode_bits,
+                0,
+                CapMode::COPY,
+                Rights::ALL,
+            ))
+        }
     }
 
     fn delete(&mut self, cap: CapRef) -> Result<(), RpcError> {
-        if cap.slot == ROOT_HANDLE {
-            return Err(RpcError::InvalidValue);
-        }
-        let abs = self.get(cap)?;
-        abs.delete().map_err(|_| RpcError::Transport)?;
-        if let Some(slot) = self.handles.get_mut(cap.slot as usize) {
-            *slot = None;
-        }
-        Ok(())
+        let abs = self.cap_abs(cap)?;
+        abs.delete().map_err(|_| RpcError::Transport)
     }
 
     fn localize(&mut self, cap: CapRef) -> Result<CapRef, RpcError> {
-        if cap.slot == ROOT_HANDLE {
-            return Ok(cap);
-        }
-        let abs = self.get(cap)?;
-        if abs.root().cptr().bits() == self.root.cptr().bits() {
+        if cap.cnode == self.root_cptr() && cap.depth == sel4::WORD_SIZE as u8 {
             return Ok(cap);
         }
         let slot = self.alloc_root_slot()?;
-        if slot > u32::MAX as Word {
-            return Err(RpcError::TooManyCaps);
-        }
         let dest = SlotRef {
-            cnode: self.root_handle,
+            cnode: self.root_ref,
             slot: slot as u32,
         };
         if cap.mode == CapMode::MOVE {
@@ -263,41 +255,44 @@ impl CapSpace for Sel4CapSpace {
         } else {
             self.copy_into(dest, cap, cap.rights)?;
         }
-        let mut localized = self.insert(self.root.absolute_cptr(CPtr::from_bits(slot)))?;
-        localized.mode = cap.mode;
-        localized.rights = cap.rights;
-        Ok(localized)
+        Ok(CapRef::new(
+            self.root_cptr(),
+            slot as u32,
+            sel4::WORD_SIZE as u8,
+            0,
+            cap.mode,
+            cap.rights,
+        ))
     }
 
     fn install_self_cnode(&mut self, cnode: CapRef) -> Result<(), RpcError> {
-        // Copy the CNode cap to a temporary slot in the root CNode, then move
-        // that copy into slot 0 of the new CNode.  A direct CNode_Copy into
-        // itself is rejected by the kernel.
+        // Copy the CNode cap to a temporary root slot, then move that copy
+        // into slot 0 of the new CNode.  A direct copy into itself is rejected
+        // by the kernel.
         let temp_slot = self.alloc_root_slot()?;
-        if temp_slot > u32::MAX as Word {
-            return Err(RpcError::TooManyCaps);
-        }
-        let temp_abs = self.root.absolute_cptr(CPtr::from_bits(temp_slot));
-        let temp_cap = self.insert(temp_abs)?;
+        let temp = CapRef::new(
+            self.root_cptr(),
+            temp_slot as u32,
+            sel4::WORD_SIZE as u8,
+            0,
+            CapMode::COPY,
+            Rights::ALL,
+        );
         self.copy_into(
             SlotRef {
-                cnode: self.root_handle,
+                cnode: self.root_ref,
                 slot: temp_slot as u32,
             },
             cnode,
             Rights::ALL,
         )?;
-        self.move_into(SlotRef { cnode, slot: 0 }, temp_cap)
+        self.move_into(SlotRef { cnode, slot: 0 }, temp)
     }
 
     fn cptr(&self, cap: CapRef) -> Result<u64, RpcError> {
-        if cap.slot == ROOT_HANDLE {
-            return Ok(self.root.cptr().bits() as u64);
+        if cap.cnode == self.root_cptr() {
+            return Ok(cap.slot as u64);
         }
-        let abs = self.get(cap)?;
-        if abs.root().cptr().bits() != self.root.cptr().bits() {
-            return Err(RpcError::NotLocal);
-        }
-        Ok(abs.path().bits() as u64)
+        Err(RpcError::NotLocal)
     }
 }

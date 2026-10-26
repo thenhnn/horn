@@ -54,7 +54,7 @@ impl<S: CapSpace> Sel4Transport<S> {
         for index in 0..caps.len() {
             let cap = caps.as_slice()[index].unwrap();
             if cap.mode == CapMode::MOVE {
-                self.delete(cap.slot);
+                self.delete(cap.slot.into());
             }
         }
     }
@@ -94,11 +94,14 @@ impl<S: CapSpace> Transport for Sel4Transport<S> {
             }
             let mut received = CapList::default();
             for index in 0..extra {
-                received.push(CapRef {
-                    slot: ipc.caps_or_badges()[index] as u64,
-                    mode: CapMode::MOVE,
-                    rights: Rights::ALL,
-                })?;
+                received.push(CapRef::new(
+                    self.cnode.cptr().bits() as u64,
+                    ipc.caps_or_badges()[index] as u32,
+                    sel4::WORD_SIZE as u8,
+                    0,
+                    CapMode::MOVE,
+                    Rights::ALL,
+                ))?;
             }
             let mut unpacker = CapUnpacker::new_localizing(&mut self.space, result_layout, received);
             let mut dec = Decoder::new(&bytes[4..], &mut unpacker);
@@ -208,11 +211,14 @@ impl<S: CapSpace> Sel4Server<S> {
         let args = sel4::with_ipc_buffer_mut(|ipc| {
             let mut received = CapList::default();
             for index in 0..info.extra_caps() {
-                received.push(CapRef {
-                    slot: ipc.caps_or_badges()[index] as u64,
-                    mode: CapMode::MOVE,
-                    rights: Rights::ALL,
-                })?;
+                received.push(CapRef::new(
+                    self.cnode.cptr().bits() as u64,
+                    ipc.caps_or_badges()[index] as u32,
+                    sel4::WORD_SIZE as u8,
+                    0,
+                    CapMode::MOVE,
+                    Rights::ALL,
+                ))?;
             }
             let bytes = &ipc.msg_bytes()[..info.length() * 8];
             let mut unpacker = CapUnpacker::new(space, request_layout, received);

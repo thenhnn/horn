@@ -86,7 +86,7 @@ impl ChildCaps {
         let roots = packer.finish()?;
         let root = roots.as_slice().first().and_then(|cap| *cap).ok_or(RpcError::MissingCap)?;
         space.install_self_cnode(root)?;
-        Ok(Cap::new(root.slot, root.mode, root.rights))
+        Ok(Cap::from_ref(root))
     }
     pub fn unpack<S: CapSpace>(cnode: Cap<ChildCapsTag>, space: &mut S) -> Result<Self, RpcError> {
         let mut roots = CapList::default();

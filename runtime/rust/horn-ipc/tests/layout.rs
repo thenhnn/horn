@@ -14,11 +14,7 @@ struct MockSpace {
 
 impl MockSpace {
     fn cap(slot: u64) -> CapRef {
-        CapRef {
-            slot,
-            mode: CapMode::COPY,
-            rights: Rights::ALL,
-        }
+        CapRef::new(0, slot as u32, 0, 0, CapMode::COPY, Rights::ALL)
     }
 }
 
@@ -27,27 +23,27 @@ impl CapSpace for MockSpace {
         self.next += 1;
         let id = self.next;
         self.cnodes.insert(id, size_bits);
-        let cap = Self::cap(id);
+        let cap = CapRef::new(0, id as u32, 0, size_bits, CapMode::COPY, Rights::ALL);
         if let Some(parent) = parent {
-            self.slots.insert((parent.cnode.slot, parent.slot), cap);
+            self.slots.insert((parent.cnode.slot.into(), parent.slot), cap);
         }
         Ok(cap)
     }
     fn free_cnode(&mut self, cnode: CapRef) -> Result<(), RpcError> {
-        self.cnodes.remove(&cnode.slot);
+        self.cnodes.remove(&(cnode.slot as u64));
         Ok(())
     }
     fn copy_into(&mut self, dest: SlotRef, src: CapRef, _rights: Rights) -> Result<(), RpcError> {
-        self.slots.insert((dest.cnode.slot, dest.slot), src);
+        self.slots.insert((dest.cnode.slot.into(), dest.slot), src);
         Ok(())
     }
     fn move_into(&mut self, dest: SlotRef, src: CapRef) -> Result<(), RpcError> {
-        self.slots.insert((dest.cnode.slot, dest.slot), src);
+        self.slots.insert((dest.cnode.slot.into(), dest.slot), src);
         Ok(())
     }
     fn cap_at(&mut self, slot: SlotRef) -> Result<CapRef, RpcError> {
         self.slots
-            .get(&(slot.cnode.slot, slot.slot))
+            .get(&(slot.cnode.slot as u64, slot.slot))
             .copied()
             .ok_or(RpcError::MissingCap)
     }
@@ -62,7 +58,7 @@ impl CapSpace for MockSpace {
         Ok(())
     }
     fn cptr(&self, cap: CapRef) -> Result<u64, RpcError> {
-        Ok(cap.slot)
+        Ok(cap.slot as u64)
     }
 }
 

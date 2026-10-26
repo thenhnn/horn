@@ -322,7 +322,7 @@ class RustEmitter:
         self.add("        let roots = packer.finish()?;")
         self.add("        let root = roots.as_slice().first().and_then(|cap| *cap).ok_or(RpcError::MissingCap)?;")
         self.add("        space.install_self_cnode(root)?;")
-        self.add("        Ok(Cap::new(root.slot, root.mode, root.rights))")
+        self.add("        Ok(Cap::from_ref(root))")
         self.add("    }")
         self.add(f"    pub fn unpack<S: CapSpace>(cnode: Cap<{marker}>, space: &mut S) -> Result<Self, RpcError> {{")
         self.add("        let mut roots = CapList::default();")
@@ -539,7 +539,7 @@ class RustEmitter:
                 field = snake(param.name)
                 if isinstance(param.type, CapType):
                     self.add(
-                        f"            {field}: Cap::new({field}.slot, {cap_mode(param.type.mode)}, {field}.rights),"
+                        f"            {field}: Cap::from_ref({field}.as_ref().with_mode({cap_mode(param.type.mode)})),"
                     )
                 else:
                     self.add(f"            {field},")

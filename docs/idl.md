@@ -188,31 +188,37 @@ graph.  The layout is static and both sides know it, so the wire only carries
 the root CNode capabilities.
 
 The runtime owns `CapPacker`/`CapUnpacker`, which build and walk the CNode
-tree using a `CapSpace` implementation.  The Rust and C runtimes both have
+layout using a `CapSpace` implementation.  The Rust and C runtimes both have
 packers/unpackers.  `Sel4CapSpace` retypes CNodes from an Untyped into a
-caller-provided root-CNode slot range and stores opaque capability handles in
-a fixed table; a production allocator can replace it without changing
-generated glue.
+caller-provided root-CNode slot range.
+
+`CapRef` directly names a CNode slot:
+
+```rust
+CapRef { cnode, slot, depth, cnode_bits, mode, rights }
+```
+
+There is no fixed handle table.  `cnode` is the CNode capability, `slot` is
+the slot index, `depth` is the number of bits needed to resolve that slot,
+and `cnode_bits` is the size of the CNode object when the ref itself names a
+CNode.
 
 A capability unpacked from a received CNode tree is *reachable* immediately,
 but it is not necessarily a CPtr in the receiver's current CSpace.  The
 runtime therefore distinguishes:
 
-- `cap_at`: obtain a handle to a cap inside a CNode;
+- `cap_at`: return the direct `CapRef` for a slot;
 - `localize`: copy or move that cap into a slot in the caller's root CNode,
-  producing a handle that `cptr` can safely pass to seL4;
-- `cptr`: returns `NotLocal` for handles that are not in the root CNode.
+  producing a ref that `cptr` can safely pass to seL4;
+- `cptr`: returns `NotLocal` for refs that are not in the root CNode.
 
 If the received CNode is installed as the receiver's CSpace root (or a known
 sub-CNode), its slots are directly addressable and no `localize` copy is
-needed.  For runtime results, `localize` is the general safe path.  `cptr`
-returns `NotLocal` rather than a misleading slot number for caps that are not
-in the caller's root CNode.
+needed.  For runtime results, `localize` is the general safe path.
 
-The current `Sel4CapSpace` assumes CNode capabilities are addressable from
-the root CNode.  One-level layouts (up to three root CNodes) work directly;
-deeper child-CNode trees need either installation as a sub-CNode or a
-recursive localize step.
+The current `Sel4CapSpace` supports root CNodes and one level of child
+CNodes.  Deeper trees are rejected rather than guessed at; use an opaque CNode
+or install the subtree as a CSpace root if you need more depth.
 
 `Parcel[T]` is currently an inline parcel: it is wire-compatible with `T` and
 exists to make the transport boundary explicit.  Shared-memory payloads are
