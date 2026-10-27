@@ -1,8 +1,5 @@
-use horn_memory::sel4::{FramePool, PAGE_SIZE};
-use horn_memory::{Error, MemoryObject};
-
-pub const PAGE_BUDGET: usize = 4;
-pub const OBJECT_BUDGET: usize = PAGE_BUDGET;
+use horn_vm::sel4::{FramePool, PAGE_SIZE};
+use horn_vm::{Error, MemoryObject};
 
 pub fn check_backing(pool: &mut FramePool, scratch: usize) {
     for dirty in [true, false] {

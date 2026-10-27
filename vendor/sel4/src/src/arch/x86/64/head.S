@@ -231,11 +231,21 @@ BEGIN_FUNC(enable_x64_mode)
     movl %cr4, %eax
     orl $0x20, %eax
     movl %eax, %cr4
-    /* Set LME (bit 8) in the extended feature MSR. */
+    /* Set LME (bit 8) in the extended feature MSR, and NXE (bit 11) if
+     * the CPU has execute-disable (CPUID 0x80000001 EDX bit 20), for
+     * seL4_X86_ExecuteNever mappings. */
+    pushl %ebx
+    movl $0x80000001, %eax
+    cpuid
+    andl $0x100000, %edx
+    shrl $9, %edx
+    movl %edx, %ebx
     movl $IA32_EFER_MSR, %ecx
     rdmsr
     orl $0x100, %eax
+    orl %ebx, %eax
     wrmsr
+    popl %ebx
     /* Set PG (bit 31) of cr0 to enable paging. */
     movl %cr0, %eax
     orl $0x80000000, %eax

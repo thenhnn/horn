@@ -265,7 +265,8 @@ block VMFault {
 -- VM attributes
 
 block vm_attributes {
-    padding         61
+    padding         60
+    field x86XDBit  1
     field x86PATBit 1
     field x86PCDBit 1
     field x86PWTBit 1

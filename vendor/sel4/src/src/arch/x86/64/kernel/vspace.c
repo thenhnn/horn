@@ -843,6 +843,12 @@ static pml4e_t CONST makeUserPML4E(paddr_t paddr, vm_attributes_t vm_attr)
            );
 }
 
+/* Whether boot code enabled execute-disable (EFER.NXE): the CPU has it. */
+bool_t x86_64_nxEnabled(void)
+{
+    return !!(x86_rdmsr(IA32_EFER_MSR) & BIT(11));
+}
+
 static pml4e_t CONST makeUserPML4EInvalid(void)
 {
     return pml4e_new(
@@ -860,7 +866,7 @@ static pml4e_t CONST makeUserPML4EInvalid(void)
 static pdpte_t CONST makeUserPDPTEHugePage(paddr_t paddr, vm_attributes_t vm_attr, vm_rights_t vm_rights)
 {
     return pdpte_pdpte_1g_new(
-               0,          /* xd               */
+               vm_attributes_get_x86XDBit(vm_attr), /* xd       */
                paddr,      /* physical address */
                0,          /* PAT              */
                0,          /* global           */
@@ -905,7 +911,7 @@ static pdpte_t CONST makeUserPDPTEInvalid(void)
 pde_t CONST makeUserPDELargePage(paddr_t paddr, vm_attributes_t vm_attr, vm_rights_t vm_rights)
 {
     return pde_pde_large_new(
-               0,                                              /* xd                   */
+               vm_attributes_get_x86XDBit(vm_attr),           /* xd                   */
                paddr,                                          /* page_base_address    */
                vm_attributes_get_x86PATBit(vm_attr),          /* pat                  */
                0,                                              /* global               */
@@ -954,7 +960,7 @@ pde_t CONST makeUserPDEInvalid(void)
 pte_t CONST makeUserPTE(paddr_t paddr, vm_attributes_t vm_attr, vm_rights_t vm_rights)
 {
     return pte_new(
-               0,                                              /* xd                   */
+               vm_attributes_get_x86XDBit(vm_attr),           /* xd                   */
                paddr,                                          /* page_base_address    */
                0,                                              /* global               */
                vm_attributes_get_x86PATBit(vm_attr),          /* pat                  */

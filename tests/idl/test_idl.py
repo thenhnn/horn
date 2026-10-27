@@ -525,6 +525,43 @@ class Spawn:
     assert "Cap<CNode>" in rust
 
 
+def test_capset_can_reserve_import_capacity(tmp_path):
+    schema = load_source(
+        tmp_path,
+        "reserved_slots",
+        """
+from horn_idl import Cap, Copy, Move, capset, sel4, iface, method
+@capset(capacity=256)
+class Handles:
+    wake: Cap[sel4.Notification, Copy]
+@iface("test.bootstrap", version=(1, 0))
+class Bootstrap:
+    @method
+    def install(self, handles: Cap[Handles, Move]) -> None: ...
+""",
+    )
+    rust = emit_rust(schema)
+    header, _ = emit_c(schema)
+    assert "HANDLES_SIZE_BITS: u8 = 8" in rust
+    assert "HANDLES_FIRST_FREE_SLOT: u32 = 2" in rust
+    assert "HORN_HANDLES_SIZE_BITS 8u" in header
+
+
+@pytest.mark.parametrize("capacity", [0, 1, 3, 512])
+def test_capset_rejects_invalid_capacity(tmp_path, capacity):
+    with pytest.raises(DeclarationError):
+        load_source(
+            tmp_path,
+            "invalid_slots",
+            f"""
+from horn_idl import Cap, Copy, capset, sel4
+@capset(capacity={capacity})
+class Handles:
+    wake: Cap[sel4.Notification, Copy]
+""",
+        )
+
+
 def test_vm_schema_has_bounded_batches_and_scoped_faults():
     schema = compile_path(ROOT / "platform/core/vm/idl/horn_vm.py")
     interfaces = {interface.python_name: interface for interface in schema.interfaces}
@@ -544,13 +581,13 @@ def test_vm_schema_has_bounded_batches_and_scoped_faults():
     }
     for key in [("VmRegion", "apply"), ("VmPager", "resolve")]:
         method = methods[key]
-        parcel = method.params[0].type
+        parcel = method.params[1].type
         assert parcel.inner.capacity == 16
         assert parcel.size <= 960
         layout = method.request_layout()
         assert layout.variable
-        assert layout.cnode.size_bits == 4
-        assert len(layout.cnode.slots) == 16
+        assert layout.cnode is None
+        assert len(layout.direct) == 1
         assert all(slot.cap.mode is Borrow for slot in method.request_caps())
         assert method.result.error.name == "VmBatchError"
     drain = methods["VmPager", "drain"]

@@ -10,6 +10,7 @@ from horn_idl import (
     Copy,
     List,
     Move,
+    Option,
     Parcel,
     Result,
     Rights,
@@ -112,7 +113,6 @@ class VmRange:
 class VmMap:
     offset: U64
     length: U64
-    memory: Cap[VmMemoryObject, Borrow]
     memory_offset: U64
     protection: VmProtection
 
@@ -163,7 +163,6 @@ class VmFaultReason:
 @record
 class VmFaultMap:
     id: U64
-    memory: Cap[VmMemoryObject, Borrow]
     memory_offset: U64
     protection: VmProtection
 
@@ -228,7 +227,9 @@ class VmRegion:
 
     @method
     def apply(
-        self, updates: Parcel[List[VmUpdate, BATCH_LIMIT]]
+        self,
+        memory: Option[Cap[VmMemoryObject, Borrow]],
+        updates: Parcel[List[VmUpdate, BATCH_LIMIT]],
     ) -> Result[None, VmBatchError]: ...
 
     @method
@@ -252,7 +253,9 @@ class VmPager:
 
     @method
     def resolve(
-        self, replies: Parcel[List[VmFaultReply, BATCH_LIMIT]]
+        self,
+        memory: Option[Cap[VmMemoryObject, Borrow]],
+        replies: Parcel[List[VmFaultReply, BATCH_LIMIT]],
     ) -> Result[None, VmBatchError]: ...
 
     @method

@@ -1,0 +1,266 @@
+use crate::protocol::{CHILD_CAPS_ADDRESS_SPACE_SLOT, CHILD_CAPS_VM_SLOT};
+use alloc::vec::Vec;
+use core::{
+    alloc::{Allocator, Layout},
+    ptr::NonNull,
+};
+use horn_ipc::*;
+use horn_mimalloc::{Mimalloc, VmHeap};
+use horn_vm::protocol::*;
+
+fn target<T: CapType>(root: ::sel4::cap::CNode, slot: u32) -> Cap<T> {
+    Cap::new(
+        root.bits() as u64,
+        slot,
+        ::sel4::WORD_SIZE as u8,
+        0,
+        CapMode::COPY,
+        Rights::ALL,
+    )
+}
+fn batch(values: &[VmUpdate]) -> Parcel<List<VmUpdate, 16>> {
+    let mut list = List::default();
+    list.len = values.len() as u32;
+    list.data[..values.len()].copy_from_slice(values);
+    Parcel::inline(list)
+}
+fn reserve(
+    transport: &mut Sel4Transport<Sel4CapSpace>,
+    space: Cap<VmAddressSpaceTag>,
+    size: u64,
+) -> Cap<VmRegionObjectTag> {
+    VmAddressSpaceClient::new(transport, space)
+        .reserve(VmRegionRequest {
+            address: 0,
+            length: size,
+            alignment: 4096,
+            placement: VmPlacement::Anywhere,
+            ceiling: VmProtection(VmProtection::READ.0 | VmProtection::WRITE.0),
+        })
+        .unwrap()
+}
+fn destroy(transport: &mut Sel4Transport<Sel4CapSpace>, region: Cap<VmRegionObjectTag>) {
+    VmRegionClient::new(&mut *transport, Cap::from_ref(region.as_ref()))
+        .destroy()
+        .unwrap();
+    transport.space.delete(region.as_ref()).unwrap();
+}
+
+pub fn run(root: ::sel4::cap::CNode, recv: ::sel4::AbsoluteCPtr, space: Sel4CapSpace) {
+    let mut transport = Sel4Transport::new(root, recv, space);
+    let factory = target::<VmFactoryTag>(root, CHILD_CAPS_VM_SLOT);
+    let address_space = target::<VmAddressSpaceTag>(root, CHILD_CAPS_ADDRESS_SPACE_SLOT);
+    let rw = VmProtection(VmProtection::READ.0 | VmProtection::WRITE.0);
+    let range = VmRange {
+        offset: 0,
+        length: 8192,
+    };
+    assert_eq!(
+        VmFactoryClient::new(&mut transport, factory).allocate(0, VmBacking::Resident, rw),
+        Err(CallError::Remote(VmError::Invalid))
+    );
+    assert_eq!(
+        VmFactoryClient::new(&mut transport, factory).allocate(4096, VmBacking::DemandZero, rw),
+        Err(CallError::Remote(VmError::Unsupported))
+    );
+    assert_eq!(
+        VmFactoryClient::new(&mut transport, factory).create_address_space(),
+        Err(CallError::Remote(VmError::Unsupported))
+    );
+    assert_eq!(
+        VmFactoryClient::new(&mut transport, Cap::from_ref(address_space.as_ref())).info(),
+        Err(CallError::Remote(VmError::Denied))
+    );
+    let memory = VmFactoryClient::new(&mut transport, factory)
+        .allocate(8192, VmBacking::Resident, rw)
+        .unwrap();
+    let first = reserve(&mut transport, address_space, 8192);
+    let alias = reserve(&mut transport, address_space, 8192);
+    let first_info = VmRegionClient::new(&mut transport, Cap::from_ref(first.as_ref()))
+        .info()
+        .unwrap();
+    let alias_info = VmRegionClient::new(&mut transport, Cap::from_ref(alias.as_ref()))
+        .info()
+        .unwrap();
+    let update = VmUpdate::Map(VmMap {
+        offset: 0,
+        length: 8192,
+        memory_offset: 0,
+        protection: rw,
+    });
+    for region in [first, alias] {
+        VmRegionClient::new(&mut transport, Cap::from_ref(region.as_ref()))
+            .apply(Some(memory), batch(&[VmUpdate::Prepare(range), update]))
+            .unwrap();
+    }
+    unsafe {
+        let bytes = core::slice::from_raw_parts_mut(first_info.address as *mut u8, 8192);
+        assert!(bytes.iter().all(|byte| *byte == 0));
+        bytes.fill(0xa5);
+        let alias = core::slice::from_raw_parts(alias_info.address as *const u8, 8192);
+        assert!(alias.iter().all(|byte| *byte == 0xa5));
+    }
+    // A non-service capability must not be interpreted as a memory identity.
+    let fake = target::<VmMemoryObjectTag>(root, crate::protocol::CHILD_CAPS_WAKE_SLOT);
+    assert_eq!(
+        VmRegionClient::new(&mut transport, Cap::from_ref(alias.as_ref()))
+            .apply(Some(fake), batch(&[])),
+        Err(CallError::Remote(VmBatchError {
+            completed: 0,
+            error: VmError::Denied
+        }))
+    );
+    assert_eq!(
+        VmRegionClient::new(&mut transport, Cap::from_ref(first.as_ref())).apply(
+            None,
+            batch(&[
+                VmUpdate::Prepare(range),
+                VmUpdate::Unmap(VmRange {
+                    offset: u64::MAX - 4095,
+                    length: 8192
+                }),
+            ])
+        ),
+        Err(CallError::Remote(VmBatchError {
+            completed: 1,
+            error: VmError::Invalid
+        }))
+    );
+    VmMemoryClient::new(&mut transport, Cap::from_ref(memory.as_ref()))
+        .close()
+        .unwrap();
+    transport.space.delete(memory.as_ref()).unwrap();
+    destroy(&mut transport, first);
+    assert_eq!(
+        VmFactoryClient::new(&mut transport, factory)
+            .info()
+            .unwrap()
+            .charged_bytes,
+        8192
+    );
+    VmRegionClient::new(&mut transport, Cap::from_ref(alias.as_ref()))
+        .apply(
+            None,
+            batch(&[VmUpdate::Protect(VmProtect {
+                offset: 0,
+                length: 8192,
+                protection: VmProtection::READ,
+            })]),
+        )
+        .unwrap();
+    unsafe {
+        assert_eq!(
+            core::ptr::read_volatile(alias_info.address as *const u8),
+            0xa5
+        );
+    }
+    assert_eq!(
+        VmRegionClient::new(&mut transport, Cap::from_ref(alias.as_ref())).apply(
+            None,
+            batch(&[VmUpdate::Protect(VmProtect {
+                offset: 0,
+                length: 8192,
+                protection: VmProtection(7)
+            }),])
+        ),
+        Err(CallError::Remote(VmBatchError {
+            completed: 0,
+            error: VmError::Denied
+        }))
+    );
+    destroy(&mut transport, alias);
+    assert_eq!(
+        VmFactoryClient::new(&mut transport, factory)
+            .info()
+            .unwrap()
+            .charged_bytes,
+        0
+    );
+    let revoked = VmFactoryClient::new(&mut transport, factory)
+        .allocate(4096, VmBacking::Resident, rw)
+        .unwrap();
+    let region = reserve(&mut transport, address_space, 4096);
+    VmRegionClient::new(&mut transport, Cap::from_ref(region.as_ref()))
+        .apply(
+            Some(revoked),
+            batch(&[
+                VmUpdate::Prepare(VmRange {
+                    offset: 0,
+                    length: 4096,
+                }),
+                VmUpdate::Map(VmMap {
+                    offset: 0,
+                    length: 4096,
+                    memory_offset: 0,
+                    protection: rw,
+                }),
+            ]),
+        )
+        .unwrap();
+    VmMemoryClient::new(&mut transport, Cap::from_ref(revoked.as_ref()))
+        .revoke()
+        .unwrap();
+    transport.space.delete(revoked.as_ref()).unwrap();
+    destroy(&mut transport, region);
+    assert_eq!(
+        VmFactoryClient::new(&mut transport, factory)
+            .info()
+            .unwrap()
+            .charged_bytes,
+        0
+    );
+    ::sel4::debug_println!(
+        "VM_RPC_PASS mapping=true sharing=true lifetime=true protection=true errors=true"
+    );
+
+    let mut heap = VmHeap::new(transport, factory.as_ref(), address_space.as_ref()).unwrap();
+    // Recycled physical backing must not disclose the previous dirty contents.
+    let pointer = heap.allocate(8192, 4096).unwrap();
+    unsafe {
+        assert!(
+            core::slice::from_raw_parts(pointer.as_ptr(), 8192)
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+    }
+    heap.free(pointer.as_ptr() as usize, 8192).unwrap();
+    unsafe {
+        horn_mimalloc::install(heap).unwrap();
+    }
+    let baseline = horn_mimalloc::info().unwrap();
+    let peak;
+    {
+        let mut values = Vec::with_capacity_in(128 * 1024, Mimalloc);
+        for value in 0..128 * 1024 {
+            values.push(value as u64 ^ 0x1234_5678);
+        }
+        for (index, value) in values.iter().enumerate() {
+            assert_eq!(*value, index as u64 ^ 0x1234_5678);
+        }
+        let layout = Layout::from_size_align(8192, 65536).unwrap();
+        let aligned = Mimalloc.allocate(layout).unwrap();
+        assert_eq!(aligned.as_ptr() as *mut u8 as usize % 65536, 0);
+        unsafe {
+            Mimalloc.deallocate(NonNull::new(aligned.as_ptr() as *mut u8).unwrap(), layout);
+        }
+        let mut impossible = Vec::<u8, _>::new_in(Mimalloc);
+        assert!(
+            impossible
+                .try_reserve_exact(baseline.limit_bytes as usize * 2)
+                .is_err()
+        );
+        peak = horn_mimalloc::info().unwrap().charged_bytes;
+        assert!(peak > baseline.charged_bytes);
+    }
+    horn_mimalloc::collect();
+    let collected = horn_mimalloc::info().unwrap();
+    assert!(collected.charged_bytes < peak);
+    assert_eq!(collected.quarantined_bytes, 0);
+    // Allocator metadata may remain resident; collection must leave it usable.
+    let mut small = Vec::new_in(Mimalloc);
+    small.resize(64, 42u8);
+    assert!(small.iter().all(|byte| *byte == 42));
+    ::sel4::debug_println!(
+        "MIMALLOC_VM_PASS allocation=true alignment=true exhaustion=true pages_returned=true"
+    );
+}

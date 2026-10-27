@@ -53,10 +53,20 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
-    "horn-memory" = rec {
-      packageId = "horn-memory";
+    "horn-mimalloc" = rec {
+      packageId = "horn-mimalloc";
       build = internal.buildRustCrateWithFeatures {
-        packageId = "horn-memory";
+        packageId = "horn-mimalloc";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "horn-vm" = rec {
+      packageId = "horn-vm";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-vm";
       };
 
       # Debug support which might change between releases.
@@ -483,24 +493,52 @@ rec {
             packageId = "sel4";
             optional = true;
           }
+          {
+            name = "sel4-abstract-allocator";
+            packageId = "sel4-abstract-allocator";
+            optional = true;
+          }
         ];
         features = {
-          "sel4" = [ "dep:sel4" ];
+          "sel4" = [ "dep:sel4" "dep:sel4-abstract-allocator" ];
         };
         resolvedDefaultFeatures = [ "default" "sel4" ];
       };
-      "horn-memory" = rec {
-        crateName = "horn-memory";
+      "horn-mimalloc" = rec {
+        crateName = "horn-mimalloc";
         version = "0.1.0";
         edition = "2024";
-        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/core/memory; };
-        libName = "horn_memory";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./runtime/rust/horn-mimalloc; };
+        libName = "horn_mimalloc";
+        dependencies = [
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "horn-vm";
+            packageId = "horn-vm";
+            features = [ "protocol" ];
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+          }
+        ];
+
+      };
+      "horn-vm" = rec {
+        crateName = "horn-vm";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/core/vm; };
+        libName = "horn_vm";
         dependencies = [
           {
             name = "horn-ipc";
             packageId = "horn-ipc";
             optional = true;
-            features = [ "sel4" ];
           }
           {
             name = "sel4";
@@ -514,10 +552,11 @@ rec {
           }
         ];
         features = {
-          "rpc" = [ "sel4" "dep:horn-ipc" ];
+          "protocol" = [ "dep:horn-ipc" ];
+          "rpc" = [ "sel4" "protocol" "horn-ipc/sel4" ];
           "sel4" = [ "dep:sel4" "dep:sel4-abstract-allocator" ];
         };
-        resolvedDefaultFeatures = [ "rpc" "sel4" ];
+        resolvedDefaultFeatures = [ "protocol" "rpc" "sel4" ];
       };
       "idl-demo-child" = rec {
         crateName = "idl-demo-child";
@@ -540,6 +579,15 @@ rec {
             name = "horn-ipc";
             packageId = "horn-ipc";
             features = [ "sel4" ];
+          }
+          {
+            name = "horn-mimalloc";
+            packageId = "horn-mimalloc";
+          }
+          {
+            name = "horn-vm";
+            packageId = "horn-vm";
+            features = [ "protocol" ];
           }
           {
             name = "one-shot-mutex";
@@ -589,8 +637,8 @@ rec {
             features = [ "sel4" ];
           }
           {
-            name = "horn-memory";
-            packageId = "horn-memory";
+            name = "horn-vm";
+            packageId = "horn-vm";
             features = [ "rpc" ];
           }
           {

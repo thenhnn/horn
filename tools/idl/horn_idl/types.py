@@ -476,6 +476,7 @@ class CapSetType(Type):
     name: str
     fields: tuple[Field, ...]
     slots: tuple[tuple[str, int], ...]
+    capacity: int | None = None
     size: int = 0
     align: int = 1
     caps: int = 0

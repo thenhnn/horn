@@ -11,7 +11,7 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-from ..layout import CapLayout
+from ..layout import CapLayout, build_capset_layout
 from ..model import Interface, Method, Object, Schema
 from ..types import (
     ArrayType,
@@ -209,6 +209,15 @@ class CEmitter:
                 lines.append(f"#define HORN_{upper(flags.name)}_{upper(name)} {value}u")
         for capset in self.schema.capsets:
             lines.append(f"typedef horn_cap_t horn_{capset.name}_t;")
+            layout = build_capset_layout(capset.type.fields, capset.type.capacity)
+            prefix = f"HORN_{upper(capset.name)}"
+            lines.extend(
+                [
+                    f"#define {prefix}_SELF_SLOT 0u",
+                    f"#define {prefix}_FIRST_FREE_SLOT {len(capset.type.slots) + 1}u",
+                    f"#define {prefix}_SIZE_BITS {layout.cnode.size_bits}u",
+                ]
+            )
             for name, slot in capset.type.slots:
                 lines.append(
                     f"#define HORN_{upper(capset.name)}_SLOT_{upper(name)} {slot}u"

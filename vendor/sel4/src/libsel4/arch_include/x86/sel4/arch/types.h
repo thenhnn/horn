@@ -34,6 +34,9 @@ typedef enum {
     seL4_X86_CacheDisabled = 2,
     seL4_X86_Uncacheable = 3,
     seL4_X86_WriteCombining = 4,
+    /* x86_64: the mapping is not executable (XD), where the CPU supports
+     * it. May be combined with the cache attributes. */
+    seL4_X86_ExecuteNever = 8,
     SEL4_FORCE_LONG_ENUM(seL4_X86_VMAttributes),
 } seL4_X86_VMAttributes;
 

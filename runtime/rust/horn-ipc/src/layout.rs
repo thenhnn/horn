@@ -79,6 +79,9 @@ impl<'a, S: CapSpace> CapPacker<'a, S> {
 
 impl<S: CapSpace> CapSink for CapPacker<'_, S> {
     fn push(&mut self, cap: CapRef) -> Result<(), RpcError> {
+        if cap.unwrapped_badge().is_some() {
+            return Err(RpcError::NotLocal);
+        }
         if self.node.is_none() {
             if self.index >= self.layout.direct.len() {
                 return Err(RpcError::TooManyCaps);
@@ -173,6 +176,13 @@ impl<S: CapSpace> CapSource for CapUnpacker<'_, S> {
                     .ok_or(RpcError::MissingCap)?;
                 self.index += 1;
                 let mut cap = self.caps.pop()?;
+                if cap.unwrapped_badge().is_some() {
+                    if mode != CapMode::BORROW {
+                        return Err(RpcError::InvalidValue);
+                    }
+                    cap.rights = rights;
+                    return Ok(cap);
+                }
                 cap.mode = mode;
                 cap.rights = rights;
                 return self.maybe_localize(cap);

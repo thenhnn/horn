@@ -131,7 +131,7 @@ impl<S: CapSpace> Transport for Sel4Transport<S> {
             })
         };
         if reply.extra_caps() == 1 {
-            self.space.delete(received_cap)?;
+            self.recv_slot.delete().map_err(|_| RpcError::Transport)?;
         }
         if result.is_ok() {
             self.commit_moves(&wire_caps);
@@ -252,27 +252,35 @@ impl<S: CapSpace> Sel4Server<S> {
         let (info, badge) = endpoint.recv(reply);
         let label = info.label();
         let request_layout = layout_for(label)?;
-        let space = &mut self.space;
-        let args = sel4::with_ipc_buffer_mut(|ipc| {
-            let mut received = WireCaps::default();
-            for index in 0..info.extra_caps() {
-                received.push(CapRef::new(
-                    self.cnode.cptr().bits() as u64,
-                    ipc.caps_or_badges()[index] as u32,
-                    sel4::WORD_SIZE as u8,
-                    0,
-                    CapMode::MOVE,
-                    Rights::ALL,
-                ))?;
+        if info.extra_caps() > 1 || info.length() * 8 > MAX_MESSAGE_BYTES {
+            return Err(RpcError::InvalidValue);
+        }
+        // Snapshot IPC state before any CNode invocation reuses the IPC buffer.
+        let mut bytes = [0; MAX_MESSAGE_BYTES];
+        let mut received = WireCaps::default();
+        sel4::with_ipc_buffer(|ipc| {
+            bytes[..info.length() * 8].copy_from_slice(&ipc.msg_bytes()[..info.length() * 8]);
+            if info.extra_caps() == 1 {
+                let cap = if info.caps_unwrapped() == 1 {
+                    CapRef::from_unwrapped_badge(ipc.caps_or_badges()[0] as u64)
+                } else {
+                    CapRef::new(
+                        recv_slot.root().bits() as u64,
+                        recv_slot.path().bits() as u32,
+                        recv_slot.path().depth() as u8,
+                        0,
+                        CapMode::MOVE,
+                        Rights::ALL,
+                    )
+                };
+                received.push(cap)?;
             }
-            let bytes = &ipc.msg_bytes()[..info.length() * 8];
-            let mut unpacker = CapUnpacker::new(space, request_layout, received);
-            let mut dec = Decoder::new(bytes, &mut unpacker);
-            decode(label, &mut dec).and_then(|value| {
-                unpacker.finish()?;
-                Ok(value)
-            })
+            Ok::<_, RpcError>(())
         })?;
+        let mut unpacker = CapUnpacker::new(&mut self.space, request_layout, received);
+        let mut dec = Decoder::new(&bytes[..info.length() * 8], &mut unpacker);
+        let args = decode(label, &mut dec)?;
+        unpacker.finish()?;
         Ok((
             label,
             args,

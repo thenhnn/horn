@@ -193,3 +193,39 @@ fn packs_direct_caps_without_a_cnode() {
     assert_eq!(unpacker.pop().unwrap().slot, 2);
     assert!(unpacker.pop().is_err());
 }
+
+#[test]
+fn kernel_unwrapped_badges_are_borrow_only_and_cannot_be_forwarded() {
+    static BORROW: CapLayout = CapLayout {
+        direct: &[CapSlot {
+            path: "memory",
+            slot: 0,
+            mode: CapMode::BORROW,
+            rights: Rights::ALL,
+        }],
+        cnode: None,
+        variable: false,
+    };
+    let mut space = MockSpace::default();
+    let badge = CapRef::from_unwrapped_badge(42);
+    let mut caps = horn_ipc::WireCaps::default();
+    caps.push(badge).unwrap();
+    let mut unpacker = CapUnpacker::new_localizing(&mut space, &BORROW, caps);
+    let value = unpacker.pop_typed(CapMode::BORROW, Rights::READ).unwrap();
+    assert_eq!(value.unwrapped_badge(), Some(42));
+    unpacker.finish().unwrap();
+    assert!(space.localized.is_empty());
+    assert_eq!(
+        CapPacker::new(&mut space, &BORROW).push(value),
+        Err(RpcError::NotLocal)
+    );
+    for mode in [CapMode::MOVE, CapMode::COPY] {
+        let mut caps = horn_ipc::WireCaps::default();
+        caps.push(badge).unwrap();
+        let mut unpacker = CapUnpacker::new(&mut space, &BORROW, caps);
+        assert_eq!(
+            unpacker.pop_typed(mode, Rights::ALL),
+            Err(RpcError::InvalidValue)
+        );
+    }
+}

@@ -24,13 +24,16 @@ mod protocol {
 use child_image::CHILD_IMAGE;
 use child_vspace::create_child_vspace;
 use horn_ipc::*;
-use horn_memory::sel4::KernelAllocator as ObjectAllocator;
-use horn_memory::service::{self, Service as MemoryService};
+use horn_vm::sel4::KernelAllocator as ObjectAllocator;
+use horn_vm::service::{self, Service as VmService};
 use protocol::*;
 
 const GRANULE_SIZE: usize = ::sel4::FrameObjectType::GRANULE.bytes();
+const VM_START: usize = 0x4000_0000;
+const VM_SIZE: usize = 64 * 1024 * 1024;
+const VM_PAGES: usize = 4096;
 
-#[root_task(stack_size = 1024 * 256, heap_size = 1024 * 64)]
+#[root_task(stack_size = 1024 * 256, heap_size = 1024 * 1024 * 4)]
 fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
     ::sel4::debug_println!("idl demo root: start");
 
@@ -58,8 +61,9 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
         .allocate(::sel4::ObjectBlueprint::Reply)
         .unwrap()
         .cast();
-    let memory_cap = service::allocator_cap(&mut allocator, memory_endpoint).unwrap();
-    let memory_handle = client_space.register(memory_cap).unwrap();
+    let (vm_cap, space_cap) = service::provision(&mut allocator, memory_endpoint).unwrap();
+    let vm_handle = client_space.register(vm_cap).unwrap();
+    let space_handle = client_space.register(space_cap).unwrap();
     let wake = allocator
         .allocate_fixed_sized::<::sel4::cap_type::Notification>()
         .unwrap();
@@ -92,7 +96,8 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
         wake: Cap::from_ref(wake_handle.with_mode(CapMode::COPY)),
         reply: Cap::from_ref(reply_handle.with_mode(CapMode::MOVE)),
         tcb: Cap::from_ref(tcb_handle.with_mode(CapMode::COPY)),
-        memory: Cap::from_ref(memory_handle.with_mode(CapMode::COPY)),
+        vm: Cap::from_ref(vm_handle.with_mode(CapMode::COPY)),
+        address_space: Cap::from_ref(space_handle.with_mode(CapMode::COPY)),
     };
     let child_cnode_cap = child_caps.pack(&mut client_space).unwrap();
     let child_cnode = client_space
@@ -106,6 +111,7 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
         ::sel4::init_thread::slot::VSPACE.cap(),
         free_page_addr,
         ::sel4::init_thread::slot::ASID_POOL.cap(),
+        VM_START..VM_START + VM_SIZE,
     );
 
     child_tcb
@@ -129,14 +135,15 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
         )
         .unwrap();
 
-    let mut pool =
-        horn_memory::sel4::FramePool::new(&mut allocator, memory_probe::PAGE_BUDGET).unwrap();
+    let mut pool = horn_vm::sel4::FramePool::new(&mut allocator, VM_PAGES).unwrap();
     memory_probe::check_backing(&mut pool, free_page_addr);
-    let memory = MemoryService::new(
+    let memory = VmService::new(
         allocator,
         pool,
         memory_endpoint,
-        memory_probe::OBJECT_BUDGET,
+        child_vspace,
+        VM_START..VM_START + VM_SIZE,
+        128,
     )
     .unwrap();
 

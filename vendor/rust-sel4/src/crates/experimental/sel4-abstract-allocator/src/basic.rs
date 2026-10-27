@@ -103,45 +103,30 @@ impl AbstractAllocator for BasicAllocator {
         assert_eq!(offset % self.granule_size(), 0);
         let size = size.next_multiple_of(self.granule_size());
 
-        let holes = self
+        let previous = self
             .holes
             .range(..&offset)
             .next_back()
-            .map(copy_typle_fields)
-            .map(|prev_hole| {
-                (
-                    prev_hole,
-                    self.holes.range(&offset..).next().map(copy_typle_fields),
-                )
-            });
-
-        let mut island = true;
-
-        if let Some(((prev_hole_offset, prev_hole_size), next_hole)) = holes {
-            assert!(prev_hole_offset + prev_hole_size <= offset);
-            let adjacent_to_prev = prev_hole_offset + prev_hole_size == offset;
-            if adjacent_to_prev {
-                island = false;
-                *self.holes.get_mut(&prev_hole_offset).unwrap() += size;
-            }
-            if let Some((next_hole_offset, next_hole_size)) = next_hole {
-                assert!(offset + size <= next_hole_offset);
-                let adjacent_to_next = offset + size == next_hole_offset;
-                if adjacent_to_next {
-                    island = false;
-                    self.holes.remove(&next_hole_offset).unwrap();
-                    if adjacent_to_prev {
-                        *self.holes.get_mut(&prev_hole_offset).unwrap() += next_hole_size;
-                    } else {
-                        self.holes.insert(offset, size + next_hole_size);
-                    }
-                }
+            .map(copy_typle_fields);
+        let next = self.holes.range(&offset..).next().map(copy_typle_fields);
+        let mut start = offset;
+        let mut length = size;
+        if let Some((hole_offset, hole_size)) = previous {
+            assert!(hole_offset + hole_size <= offset);
+            if hole_offset + hole_size == offset {
+                self.holes.remove(&hole_offset);
+                start = hole_offset;
+                length += hole_size;
             }
         }
-
-        if island {
-            self.holes.insert(offset, size);
+        if let Some((hole_offset, hole_size)) = next {
+            assert!(offset + size <= hole_offset);
+            if offset + size == hole_offset {
+                self.holes.remove(&hole_offset);
+                length += hole_size;
+            }
         }
+        self.holes.insert(start, length);
     }
 }
 

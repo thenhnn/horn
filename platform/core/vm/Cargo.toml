@@ -1,13 +1,14 @@
 [package]
-name = "horn-memory"
+name = "horn-vm"
 version = "0.1.0"
 edition = "2024"
 
 [features]
 sel4 = ["dep:sel4", "dep:sel4-abstract-allocator"]
-rpc = ["sel4", "dep:horn-ipc"]
+protocol = ["dep:horn-ipc"]
+rpc = ["sel4", "protocol", "horn-ipc/sel4"]
 
 [dependencies]
-horn-ipc = { path = "../../../runtime/rust/horn-ipc", features = ["sel4"], optional = true }
+horn-ipc = { path = "../../../runtime/rust/horn-ipc", optional = true }
 sel4-abstract-allocator = { path = "../../../vendor/rust-sel4/src/crates/experimental/sel4-abstract-allocator", optional = true }
 sel4 = { path = "../../../vendor/rust-sel4/src/crates/sel4", optional = true }

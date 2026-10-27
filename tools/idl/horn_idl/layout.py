@@ -92,7 +92,7 @@ def build_layout(caps: list[CapPath], *, variable: bool = False) -> CapLayout:
     )
 
 
-def build_capset_layout(fields) -> CapLayout:
+def build_capset_layout(fields, capacity=None) -> CapLayout:
     """A capset is always one flat CNode, even when it has <= 3 caps."""
 
     caps = [CapPath(field.name, field.type) for field in fields]
@@ -117,5 +117,5 @@ def build_capset_layout(fields) -> CapLayout:
     )
     return CapLayout(
         direct=(),
-        cnode=CapNodeLayout(_size_bits(len(caps) + 1), slots),
+        cnode=CapNodeLayout(_size_bits(capacity or len(caps) + 1), slots),
     )

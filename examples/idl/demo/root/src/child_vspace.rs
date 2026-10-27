@@ -22,6 +22,7 @@ pub(crate) fn create_child_vspace(
     caller_vspace: sel4::cap::VSpace,
     free_page_addr: usize,
     asid_pool: sel4::cap::AsidPool,
+    vm_window: Range<usize>,
 ) -> (sel4::cap::VSpace, usize, sel4::cap::Granule) {
     let child_vspace = allocator
         .allocate_fixed_sized::<sel4::cap_type::VSpace>()
@@ -33,7 +34,10 @@ pub(crate) fn create_child_vspace(
     map_intermediate_translation_tables(
         allocator,
         child_vspace,
-        image_footprint.start..(image_footprint.end + GRANULE_SIZE),
+        [
+            image_footprint.start..(image_footprint.end + GRANULE_SIZE),
+            vm_window,
+        ],
     );
 
     map_image(
@@ -75,25 +79,31 @@ fn footprint(image: &'static ChildImage) -> Range<usize> {
 fn map_intermediate_translation_tables(
     allocator: &mut ObjectAllocator,
     vspace: sel4::cap::VSpace,
-    footprint: Range<usize>,
+    footprints: [Range<usize>; 2],
 ) {
+    let mut mapped = alloc::collections::BTreeSet::new();
     for level in 1..sel4::vspace_levels::NUM_LEVELS {
         let span_bytes = 1 << sel4::vspace_levels::span_bits(level);
-        let footprint_at_level = coarsen_footprint(&footprint, span_bytes);
-        for i in 0..(footprint_at_level.len() / span_bytes) {
-            let ty = sel4::TranslationTableObjectType::from_level(level).unwrap();
-            let addr = footprint_at_level.start + i * span_bytes;
-            allocator
-                .allocate(ty.blueprint())
-                .unwrap()
-                .cast::<sel4::cap_type::UnspecifiedIntermediateTranslationTable>()
-                .generic_intermediate_translation_table_map(
-                    ty,
-                    vspace,
-                    addr,
-                    sel4::VmAttributes::default(),
-                )
-                .unwrap()
+        for footprint in &footprints {
+            let footprint_at_level = coarsen_footprint(footprint, span_bytes);
+            for i in 0..(footprint_at_level.len() / span_bytes) {
+                let ty = sel4::TranslationTableObjectType::from_level(level).unwrap();
+                let addr = footprint_at_level.start + i * span_bytes;
+                if !mapped.insert((level, addr)) {
+                    continue;
+                }
+                allocator
+                    .allocate(ty.blueprint())
+                    .unwrap()
+                    .cast::<sel4::cap_type::UnspecifiedIntermediateTranslationTable>()
+                    .generic_intermediate_translation_table_map(
+                        ty,
+                        vspace,
+                        addr,
+                        sel4::VmAttributes::default(),
+                    )
+                    .unwrap()
+            }
         }
     }
 }

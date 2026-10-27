@@ -176,10 +176,12 @@ def capset(
     cls: type | None = None,
     *,
     name: str | None = None,
+    capacity: int | None = None,
 ) -> Any:
     def decorate(klass: type) -> type:
         klass.__horn_kind__ = "capset"
         klass.__horn_name__ = name or klass.__name__
+        klass.__horn_capacity__ = capacity
         return klass
 
     return decorate(cls) if cls is not None else decorate

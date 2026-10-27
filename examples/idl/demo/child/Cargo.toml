@@ -8,6 +8,8 @@ name = "task"
 path = "src/main.rs"
 
 [dependencies]
+horn-mimalloc = { path = "../../../../runtime/rust/horn-mimalloc" }
+horn-vm = { path = "../../../../platform/core/vm", features = ["protocol"] }
 cfg-if = "1.0.4"
 one-shot-mutex = "0.2.1"
 horn-ipc = { path = "../../../../runtime/rust/horn-ipc", features = ["sel4"] }

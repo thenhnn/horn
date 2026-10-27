@@ -11,7 +11,7 @@ pub mod sel4;
 #[cfg(feature = "rpc")]
 pub mod service;
 
-#[cfg(feature = "rpc")]
+#[cfg(feature = "protocol")]
 #[allow(dead_code, unused_imports, non_camel_case_types)]
 pub mod protocol {
     include!(concat!(env!("OUT_DIR"), "/protocol.rs"));
@@ -99,5 +99,27 @@ impl<F> MemoryObject<F> {
     }
 }
 
+/// Validate a page-aligned range before indexing backing or mapping metadata.
+pub fn page_range(
+    offset: u64,
+    length: u64,
+    limit: u64,
+    page: u64,
+) -> Result<core::ops::Range<usize>, Error> {
+    if !page.is_power_of_two() || length == 0 || offset % page != 0 || length % page != 0 {
+        return Err(Error::InvalidSize);
+    }
+    let end = offset
+        .checked_add(length)
+        .filter(|end| *end <= limit)
+        .ok_or(Error::InvalidSize)?;
+    Ok(
+        usize::try_from(offset / page).map_err(|_| Error::InvalidSize)?
+            ..usize::try_from(end / page).map_err(|_| Error::InvalidSize)?,
+    )
+}
+
+#[cfg(all(test, feature = "sel4"))]
+mod allocator_tests;
 #[cfg(test)]
 mod tests;

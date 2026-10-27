@@ -202,6 +202,19 @@ impl CapRef {
         }
     }
 
+    /// Kernel-authenticated same-endpoint badge, not a transferable CPtr.
+    pub const fn from_unwrapped_badge(badge: u64) -> Self {
+        Self::new(badge, 0, u8::MAX, 0, CapMode::BORROW, Rights::ALL)
+    }
+
+    pub const fn unwrapped_badge(self) -> Option<u64> {
+        if self.depth == u8::MAX {
+            Some(self.cnode)
+        } else {
+            None
+        }
+    }
+
     pub const fn with_mode(mut self, mode: CapMode) -> Self {
         self.mode = mode;
         self
@@ -921,6 +934,28 @@ pub use sel4_backend::{Sel4Reply, Sel4Server, Sel4Transport};
 
 #[cfg(feature = "sel4")]
 pub use sel4_space::Sel4CapSpace;
+
+impl<T: Transport + ?Sized> Transport for &mut T {
+    fn call<A: Wire, R: Wire>(
+        &mut self,
+        target: CapRef,
+        label: u64,
+        args: &A,
+        request: &'static CapLayout,
+        result: &'static CapLayout,
+    ) -> Result<R, RpcError> {
+        (**self).call(target, label, args, request, result)
+    }
+    fn send<A: Wire>(
+        &mut self,
+        target: CapRef,
+        label: u64,
+        args: &A,
+        request: &'static CapLayout,
+    ) -> Result<(), RpcError> {
+        (**self).send(target, label, args, request)
+    }
+}
 
 pub trait Transport {
     fn call<A: Wire, R: Wire>(

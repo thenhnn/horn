@@ -471,7 +471,15 @@ class _Resolver:
                     f"{capset.name}: {len(fields)} slots exceed the "
                     f"{MAX_CAPSET_CAPS}-slot capset limit"
                 )
-            type_ = CapSetType(capset.name, tuple(fields), tuple(slots))
+            capacity = getattr(cls, "__horn_capacity__", None)
+            if capacity is not None and (
+                not isinstance(capacity, int)
+                or capacity < len(fields) + 1
+                or capacity > MAX_CAPSET_CAPS + 1
+                or capacity & (capacity - 1)
+            ):
+                raise DeclarationError(f"{capset.name}: invalid capset capacity")
+            type_ = CapSetType(capset.name, tuple(fields), tuple(slots), capacity)
             capset.type = type_
             return type_
         finally:

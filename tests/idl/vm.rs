@@ -54,7 +54,6 @@ mod tests {
                     1 => VmUpdate::Map(VmMap {
                         offset: range.offset,
                         length: range.length,
-                        memory: memory(index as u32 + 1),
                         memory_offset: 0,
                         protection: VmProtection::READ,
                     }),
@@ -68,9 +67,10 @@ mod tests {
             }
             round(
                 VmregionApplyArgs {
+                    memory: (len >= 2).then(|| memory(1)),
                     updates: Parcel::inline(updates),
                 },
-                (len + 2) as usize / 4,
+                usize::from(len >= 2),
             );
         }
         let mut updates = List::default();
@@ -79,16 +79,16 @@ mod tests {
             updates.data[index] = VmUpdate::Map(VmMap {
                 offset: index as u64 * 4096,
                 length: 4096,
-                memory: memory(index as u32 + 1),
                 memory_offset: 0,
                 protection: VmProtection::READ,
             });
         }
         round(
             VmregionApplyArgs {
+                memory: Some(memory(1)),
                 updates: Parcel::inline(updates),
             },
-            16,
+            1,
         );
         assert!(VmregionApplyArgs::SIZE <= MAX_MESSAGE_BYTES);
     }
@@ -117,7 +117,6 @@ mod tests {
             replies.data[index] = if index % 2 == 0 {
                 VmFaultReply::Map(VmFaultMap {
                     id: index as u64 + 1,
-                    memory: memory(index as u32 + 1),
                     memory_offset: 0,
                     protection: VmProtection::READ,
                 })
@@ -130,9 +129,10 @@ mod tests {
         }
         round(
             VmpagerResolveArgs {
+                memory: Some(memory(1)),
                 replies: Parcel::inline(replies),
             },
-            8,
+            1,
         );
         assert!(VmpagerResolveArgs::SIZE <= MAX_MESSAGE_BYTES);
         assert!(VmpagerDrainReply::SIZE + 4 <= MAX_MESSAGE_BYTES);

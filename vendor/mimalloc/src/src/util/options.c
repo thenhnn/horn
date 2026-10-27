@@ -515,7 +515,11 @@ static void mi_recurse_exit(void) {
 }
 
 void _mi_fputs(mi_output_fun* out, void* arg, const char* prefix, const char* message) {
-  if (out==NULL || (void*)out==(void*)stdout || (void*)out==(void*)stderr) { // todo: use mi_out_stderr for stderr?
+  if (out==NULL
+#if !defined(MI_HORN)
+      || (void*)out==(void*)stdout || (void*)out==(void*)stderr
+#endif
+     ) {
     if (!mi_recurse_enter()) return;
     out = mi_out_get_default(&arg);
     if (prefix != NULL) out(prefix, arg);

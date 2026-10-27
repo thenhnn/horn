@@ -43,6 +43,13 @@ impl KernelAllocator {
             .map_err(|_| Error::Exhausted)
     }
 
+    pub fn clear_slot(&self, slot: usize) -> Result<(), Error> {
+        self.root
+            .absolute_cptr(::sel4::CPtr::from_bits(slot as Word))
+            .delete()
+            .map_err(|_| Error::Backend)
+    }
+
     pub fn release_slot(&mut self, slot: usize) -> Result<(), Error> {
         self.root
             .absolute_cptr(::sel4::CPtr::from_bits(slot as Word))
@@ -97,6 +104,7 @@ pub struct FramePool {
     pages: Vec<Page>,
     free: BasicAllocator,
     available: usize,
+    quarantined: usize,
 }
 
 impl FramePool {
@@ -122,6 +130,7 @@ impl FramePool {
             pages,
             free: BasicAllocator::with_granule_size(count, 1),
             available: count,
+            quarantined: 0,
         })
     }
 
@@ -130,6 +139,9 @@ impl FramePool {
     }
     pub fn available(&self) -> usize {
         self.available
+    }
+    pub fn quarantined_bytes(&self) -> usize {
+        self.quarantined * PAGE_SIZE
     }
 
     /// Trusted kernel access; raw frame caps are never exported by memory RPC.
@@ -166,14 +178,19 @@ impl Frames for FramePool {
         self.available -= 1;
         let page = &self.pages[allocation.range().start];
         // Retyping clears frame contents. Failed operations quarantine the allocation.
-        page.untyped
+        if page
+            .untyped
             .untyped_retype(
                 &::sel4::FrameObjectType::GRANULE.blueprint(),
                 &self.root.absolute_cptr_for_self(),
                 page.slot,
                 1,
             )
-            .map_err(|_| Error::Backend)?;
+            .is_err()
+        {
+            self.quarantined += 1;
+            return Err(Error::Backend);
+        }
         Ok(Frame {
             pool: self.pages[0].untyped.bits(),
             allocation,
@@ -182,10 +199,15 @@ impl Frames for FramePool {
 
     fn release(&mut self, frame: Frame) -> Result<(), Error> {
         let index = self.index(&frame)?;
-        self.root
+        if self
+            .root
             .absolute_cptr(::sel4::CPtr::from_bits(self.pages[index].untyped.bits()))
             .revoke()
-            .map_err(|_| Error::Backend)?;
+            .is_err()
+        {
+            self.quarantined += 1;
+            return Err(Error::Backend);
+        }
         self.free.deallocate(frame.allocation);
         self.available += 1;
         Ok(())

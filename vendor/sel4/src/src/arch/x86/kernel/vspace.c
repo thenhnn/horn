@@ -962,6 +962,14 @@ exception_t decodeX86FrameInvocation(
         vaddr = getSyscallArg(0, buffer);
         w_rightsMask = getSyscallArg(1, buffer);
         vmAttr = vmAttributesFromWord(getSyscallArg(2, buffer));
+#ifdef CONFIG_ARCH_X86_64
+        /* Reject unsupported protection rather than silently allowing execute. */
+        if (vm_attributes_get_x86XDBit(vmAttr) && !x86_64_nxEnabled()) {
+            current_syscall_error.type = seL4_InvalidArgument;
+            current_syscall_error.invalidArgumentNumber = 2;
+            return EXCEPTION_SYSCALL_ERROR;
+        }
+#endif
         vspaceCap = current_extra_caps.excaprefs[0]->cap;
 
         capVMRights = cap_frame_cap_get_capFVMRights(cap);

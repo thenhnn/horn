@@ -15,11 +15,11 @@ use sel4_panicking_env::abort;
 
 use crate::main;
 
-const STACK_SIZE: usize = 1024 * 64;
+const STACK_SIZE: usize = 1024 * 256;
 
 sel4_runtime_common::declare_stack!(STACK_SIZE);
 
-const HEAP_SIZE: usize = 1024 * 64;
+const HEAP_SIZE: usize = 1024 * 256;
 
 static STATIC_HEAP: StaticHeap<HEAP_SIZE> = StaticHeap::new();
 

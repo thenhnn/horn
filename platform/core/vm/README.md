@@ -1,89 +1,93 @@
-# VM protocol
+# Root-hosted VM
 
-`idl/horn_vm.py` is the proposed root-hosted VM service contract. It is not yet
-an implemented service. mimalloc is pinned separately in `vendor/mimalloc/`.
+`idl/horn_vm.py` defines the full capability-addressed VM protocol.
+`src/service.rs` implements the resident subset; `src/sel4.rs` owns the kernel
+objects and reusable, independently revocable backing pool. The old memory RPC
+has been removed. The demo provisions an ordinary child with factory and adopted
+address-space endpoint capabilities, not frame, Untyped or VSpace capabilities.
 
-## Surface
+## Surface and availability
 
-- `VmFactory`: budget-bound allocation, address spaces, pagers and subaccounts.
-- `VmMemory`: backing information, attenuated duplicate handles, close, revoke.
-- `VmAddressSpace`: virtual-region reservation and destruction.
-- `VmRegion`: prepared/batched native mapping updates and pager binding.
-- `VmPager`: notification-driven fault draining and batched resolution.
+- `VmFactory`: account information, backing, address spaces, pagers, subaccounts.
+- `VmMemory`: backing information, duplicate, close, revoke.
+- `VmAddressSpace`: region reservation and destruction.
+- `VmRegion`: information, prepared mapping batches, pager binding, destruction.
+- `VmPager`: notification-driven fault draining and resolution batches.
 
-`VmHost` generates the aggregate dispatcher. Badges/object state, not interface
-views, must authorize each request. A factory capability identifies an account;
-callers cannot nominate another account by passing an integer.
+`VmHost` generates dispatch. Kernel-authenticated endpoint badges and object
+state authorize operations; interface casts do not grant authority. Badge values
+never wrap or get reused. An account cannot be selected using a client integer.
 
-## Availability
+The implementation advertises RESIDENT and PROTECTION. It supports Anywhere
+reservations inside one loader-provisioned window, prepared maps, aliases,
+read/write protection changes, acknowledged unmaps, close/revoke and region
+teardown. The loader installs translation tables before adopting the VSpace.
 
-`VmFactory.info().features` advertises implemented optional facilities. Merely
-having a generated method does not mean that facility is supported. Unfinished
-features return application error `VmError.Unsupported`, not a panic, framework
-error or successful dummy object. Batch failure uses `VmBatchError` instead.
+Demand-zero, fixed placement, new spaces, duplicate handles, subaccounts and
+pagers return typed Unsupported on authorized requests. Adopted-space destruction
+returns Busy: the service does not own thread shutdown/ASID reclamation. Invalid
+pager capabilities are denied, not accepted as dummy pager objects.
 
-The intended first implementation supports resident backing and managed mappings
-in a root-provisioned child address space. Demand-zero backing, user pagers,
-new address spaces and subaccounts may initially return `Unsupported`. Requests
-for unavailable protection modes must fail, not silently weaken protection.
+Only readable mappings are supported. Write-plus-execute mappings **and ceilings**
+are rejected. x86 non-executable mappings use the vendored kernel's ExecuteNever
+attribute; missing NX support fails closed. RW-to-RX code publication and its
+alias policy are not implemented. Permission changes have boot coverage, but a
+hardware execution-fault test is still required.
 
 ## Mapping batches
 
-`VmRegion.apply(Parcel[List[VmUpdate, 16]])` accepts ordered Prepare, Map,
-Protect and Unmap operations. All offsets are relative to that region; backing
-offsets are relative to the supplied memory handle. Ranges must be nonempty,
-page-aligned, overflow-free and bounded by the relevant objects. Permissions
-must fit both the region ceiling and the memory handle's ceiling. Fixed
-reservations reject overlaps, including loader/provisioning reservations.
+`VmRegion.apply(memory: Option[Cap[VmMemoryObject, Borrow]], updates:
+Parcel[List[VmUpdate, 16]])` takes one optional backing capability shared by all
+Map operations. Prepare, Protect and Unmap do not need backing authority.
+Same-endpoint seL4 unwrapping authenticates that borrowed capability without a
+CNode bundle or per-entry capabilities. A foreign capability, serialized badge
+lookalike or wrong object badge cannot select backing. Unwrapped badges are
+borrow-only server references, not transferable CPtrs.
 
-Prepare reserves the translation tables, mapping-cap slots and metadata needed
-for its range. Map requires prepared capacity and an unmapped destination;
-replacement is explicit Unmap then Map. Unmap retains prepared capacity for
-reuse. Resident publication must not allocate backing or wait on a caller.
+Offsets are region-relative; source offsets are backing-relative. Ranges must
+be nonempty, page-aligned, overflow-free and bounded. Mapping permissions must
+fit both ceilings. Prepare reserves mapping-cap slots; page metadata and native
+translation tables already exist. Map requires prepared, unmapped destinations;
+replacement is explicit Unmap then Map. Unmap retains prepared slots. Publication
+does not allocate physical backing.
 
-Success acknowledges completion of every operation, including required TLB
-invalidation. Failure reports the completed prefix; subsequent operations were
-not attempted. An ordinary failure leaves the failing operation unchanged.
-Rollback failure returns Quarantined: the affected object is unusable and its
-resources remain retained/charged. No assumption that the failing range is now
-unmapped is safe in that case. Batches are not all-or-nothing transactions.
+Success acknowledges completion, including native invalidation. Failure reports
+the completed prefix and does not attempt later entries. An ordinary failure
+leaves the failing operation unchanged. Failed rollback poisons the affected
+region/backing and returns Quarantined; no assumption that its range is unmapped
+is safe. Cleanup can be retried through retained authority. Batches are not
+transactions or pipelined calls. Empty batches with valid authority succeed.
+Parcels are inline; the 16-entry limit fits the 960-byte payload and needs at most
+one borrowed capability.
 
-An empty batch succeeds. Unsupported operations return Unsupported at their
-position, with the actual completed prefix. Two-way calls are completion
-barriers; this protocol does not promise transport pipelining.
+## Lifetimes and accounting
 
-Parcels currently use inline storage. The limit of 16 keeps the maximum request
-within the current 960-byte IPC payload and 256-capability flat-bundle limits.
-There is no unimplemented shared-parcel transport hidden behind this API.
+Mappings retain backing after logical close. Kernel-cap copies alias the same
+handle; close revokes those copies, not mappings. Revoke removes mappings before
+closing the owner handle. Failed revoke retains cleanup authority and prevents
+new mappings from poisoned backing. Region destruction removes native aliases
+before returning backing or virtual ranges to their allocators.
 
-## Fault batches
+`limit_bytes` is the fixed backing pool size. `charged_bytes` counts unavailable
+pool pages, including quarantine; `quarantined_bytes` counts failed physical
+reclamation and backing implicated in poisoned regions. Returning pages to this
+pool is **not** returning its reserved Untyped memory to a system-wide allocator.
+These counters do not account for all metadata, translation tables or cap slots.
+The demo uses separate fixed object, CSpace, virtual-window and control-heap
+budgets. Metadata allocation can still abort on control-heap exhaustion; this is
+not a production resource-prepayment/accounting implementation.
 
-`create_pager` copies a write-only notification capability. `drain` is
-nonblocking and returns up to 16 events. The consumer waits on its notification
-and drains until empty. The producer must signal when events become available,
-including races with drain/wait, and bound queues/pending-fault resources.
+Automatic process-death cleanup, malformed-request recovery, untrusted CNode
+recovery, SMP scheduling and failure-injected kernel cleanup are unfinished. seL4 does not notify the service
+when the last endpoint-cap alias disappears. This service must not be used as a
+claim of complete process lifecycle, DMA isolation or Linux VM integration.
 
-Fault IDs have meaning only under the pager capability that delivered them.
-They are one-shot, must reject stale/replayed resolutions, and must never wrap
-into an outstanding or previously valid ID. Binding cookies are caller data,
-not authority. Resolving a fault cannot escape its bound region, page or
-permission ceiling. There is no capability mint/import/delete for every fault.
-Fault-reply batches have the same completed-prefix semantics as mapping batches.
-Queue overflow and pager destruction require an explicit fail-closed thread
-resolution policy before the pager feature can be advertised.
+## Deferred fault contract
 
-## Lifetimes
-
-A mapping retains backing independently of memory handles. `close` invalidates
-that logical handle, not its mappings or independently duplicated handles.
-`duplicate` creates an independent handle with an equal or narrower ceiling and
-without owner-only revocation authority. `revoke` is owner-authorized and must
-invalidate all derived handles and remove their mappings before backing reuse.
-Kernel-cap copies are aliases of one logical handle, not independent duplicates.
-
-Destroying a region acknowledges removal of all its mappings and prepared
-resources. Address-space destruction requires that the process service first
-unbind/stop its threads; otherwise it returns Busy. ASID reclamation and physical
-reuse require completed native teardown. Cleanup failure quarantines resources
-and preserves their charges. Process-death cleanup must not depend on seL4
-notifying the service when the last endpoint-cap copy is deleted.
+Pager creation copies a write-only notification. Drain is nonblocking, bounded
+to 16 events and followed by notification waits; producer wakeups must cover
+wait/drain races. Fault IDs are pager-scoped, one-shot values, not per-fault caps.
+Stale/replayed IDs and ID wrap must be rejected. Cookies are data, not authority.
+Resolution uses one optional borrowed backing capability and the same ordered,
+completed-prefix semantics. Queue overflow and pager destruction need explicit
+fail-closed thread-resolution policies before USER_PAGER can be advertised.

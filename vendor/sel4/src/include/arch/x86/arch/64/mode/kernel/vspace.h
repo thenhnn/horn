@@ -14,6 +14,9 @@ struct lookupPDPTSlot_ret {
 };
 typedef struct lookupPDPTSlot_ret lookupPDPTSlot_ret_t;
 
+/* Whether execute-disable is enabled (seL4_X86_ExecuteNever mappings). */
+bool_t x86_64_nxEnabled(void);
+
 static inline pte_t x86_make_device_pte(paddr_t phys)
 {
     return pte_new(

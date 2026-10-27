@@ -7,8 +7,10 @@
 //! The current implementation supports flat layouts: root CNodes and one
 //! level of child CNodes.  Deeper trees are rejected rather than guessed at.
 
+use core::alloc::Layout;
 use sel4::cap_type::CNode;
 use sel4::{AbsoluteCPtr, CPtr, Cap, CapRights, ObjectBlueprint, Word};
+use sel4_abstract_allocator::{ByRange, basic::BasicAllocator};
 
 use crate::layout::{CapSpace, SlotRef};
 use crate::{CapMode, CapRef, Rights, RpcError};
@@ -16,8 +18,9 @@ use crate::{CapMode, CapRef, Rights, RpcError};
 pub struct Sel4CapSpace {
     pub root: sel4::cap::CNode,
     pub untyped: Option<sel4::cap::Untyped>,
-    next_slot: Word,
+    first_slot: Word,
     end_slot: Word,
+    slots: ByRange<BasicAllocator>,
     root_ref: CapRef,
 }
 
@@ -46,8 +49,12 @@ impl Sel4CapSpace {
         Self {
             root,
             untyped,
-            next_slot: first_slot,
+            first_slot,
             end_slot,
+            slots: ByRange::new(BasicAllocator::with_granule_size(
+                (end_slot - first_slot) as usize,
+                1,
+            )),
             root_ref: CapRef::new(
                 root.cptr().bits() as u64,
                 0,
@@ -68,12 +75,10 @@ impl Sel4CapSpace {
     }
 
     fn alloc_root_slot(&mut self) -> Result<Word, RpcError> {
-        if self.next_slot >= self.end_slot {
-            return Err(RpcError::TooManyCaps);
-        }
-        let slot = self.next_slot;
-        self.next_slot += 1;
-        Ok(slot)
+        self.slots
+            .allocate(Layout::new::<u8>())
+            .map(|range| self.first_slot + range.start as Word)
+            .map_err(|_| RpcError::TooManyCaps)
     }
 
     fn cnode_cptr_of(&self, cnode: CapRef) -> Result<u64, RpcError> {
@@ -99,18 +104,15 @@ impl Sel4CapSpace {
             return Ok(self.root.absolute_cptr(CPtr::from_bits(slot as Word)));
         }
         let cnode_cap = self.cnode_cap_for_slot(cnode)?;
-        Ok(cnode_cap.absolute_cptr_from_bits_with_depth(
-            slot as Word,
-            cnode.cnode_bits as usize,
-        ))
+        Ok(cnode_cap.absolute_cptr_from_bits_with_depth(slot as Word, cnode.cnode_bits as usize))
     }
 
     fn cap_abs(&self, cap: CapRef) -> Result<AbsoluteCPtr, RpcError> {
+        if cap.unwrapped_badge().is_some() {
+            return Err(RpcError::NotLocal);
+        }
         let cnode_cap = Cap::<CNode>::from_bits(cap.cnode as Word);
-        Ok(cnode_cap.absolute_cptr_from_bits_with_depth(
-            cap.slot as Word,
-            cap.depth as usize,
-        ))
+        Ok(cnode_cap.absolute_cptr_from_bits_with_depth(cap.slot as Word, cap.depth as usize))
     }
 
     pub fn register<T: sel4::CapType>(&mut self, cap: Cap<T>) -> Result<CapRef, RpcError> {
@@ -238,7 +240,13 @@ impl CapSpace for Sel4CapSpace {
 
     fn delete(&mut self, cap: CapRef) -> Result<(), RpcError> {
         let abs = self.cap_abs(cap)?;
-        abs.delete().map_err(|_| RpcError::Transport)
+        abs.delete().map_err(|_| RpcError::Transport)?;
+        let slot = cap.slot as Word;
+        if cap.cnode == self.root_cptr() && slot >= self.first_slot && slot < self.end_slot {
+            let offset = (slot - self.first_slot) as usize;
+            self.slots.deallocate(offset..offset + 1);
+        }
+        Ok(())
     }
 
     fn localize(&mut self, cap: CapRef) -> Result<CapRef, RpcError> {
@@ -286,11 +294,12 @@ impl CapSpace for Sel4CapSpace {
                 sel4::CNodeCapData::skip_high_bits(cnode.cnode_bits as usize).into_word(),
             )
             .map_err(|_| RpcError::Transport)?;
-        self.move_into(SlotRef { cnode, slot: 0 }, temp)
+        self.move_into(SlotRef { cnode, slot: 0 }, temp)?;
+        self.delete(temp)
     }
 
     fn cptr(&self, cap: CapRef) -> Result<u64, RpcError> {
-        if cap.cnode == self.root_cptr() {
+        if cap.unwrapped_badge().is_none() && cap.cnode == self.root_cptr() {
             return Ok(cap.slot as u64);
         }
         Err(RpcError::NotLocal)

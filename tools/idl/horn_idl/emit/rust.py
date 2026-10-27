@@ -541,7 +541,7 @@ class RustEmitter:
         self.add(
             f"pub const {upper(type_.name)}_FIRST_FREE_SLOT: u32 = {len(type_.slots) + 1};"
         )
-        layout = build_capset_layout(type_.fields)
+        layout = build_capset_layout(type_.fields, type_.capacity)
         self.emit_layout_const(f"{upper(type_.name)}_CAPSET", layout)
         self.add(
             f"pub const {upper(type_.name)}_SIZE_BITS: u8 = "

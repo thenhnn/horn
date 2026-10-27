@@ -51,10 +51,9 @@ int main(void) {
             case HORN_VM_UPDATE_MAP:
                 op->value.map = (horn_VmMap_t){
                     .offset = i * 4096, .length = 4096,
-                    .memory = {.slot = i + 1, .mode = HORN_CAP_BORROW, .rights = 15},
                     .protection = HORN_VM_PROTECTION_READ,
                 };
-                count++;
+                count = 1;
                 break;
             case HORN_VM_UPDATE_PROTECT:
                 op->value.protect = (horn_VmProtect_t){i * 4096, 4096, HORN_VM_PROTECTION_READ};
@@ -64,6 +63,8 @@ int main(void) {
                 break;
             }
         }
+        value.memory.present = count;
+        value.memory.value = (horn_cap_t){.slot = 1, .mode = HORN_CAP_BORROW, .rights = 15};
         roundtrip(value, count);
     }
     horn_VmregionApplyArgs_t full = {.updates.len = 16};
@@ -72,12 +73,13 @@ int main(void) {
             .tag = HORN_VM_UPDATE_MAP,
             .value.map = {
                 .offset = i * 4096, .length = 4096,
-                .memory = {.slot = i + 1, .mode = HORN_CAP_BORROW, .rights = 15},
                 .protection = HORN_VM_PROTECTION_READ,
             },
         };
     }
-    roundtrip(full, 16);
+    full.memory.present = 1;
+    full.memory.value = (horn_cap_t){.slot = 1, .mode = HORN_CAP_BORROW, .rights = 15};
+    roundtrip(full, 1);
     horn_vm_region_apply_result_t error = {
         .tag = HORN_RESULT_ERR,
         .value.err = {.completed = 3, .error = HORN_VM_ERROR_UNSUPPORTED},

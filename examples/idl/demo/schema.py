@@ -1,9 +1,4 @@
-"""Minimal child-process IPC demo.
-
-The root task packs a ChildCaps capset into a fresh CNode, loads the child
-ELF, and calls the generated Counter client.  The child serves one request
-and signals the wake notification.
-"""
+"""Counter demo with capability-provisioned root-hosted VM endpoints."""
 
 from horn_idl import (
     U32,
@@ -19,30 +14,6 @@ from horn_idl import (
     record,
     sel4,
 )
-from horn_memory import (
-    Memory,
-    MemoryAllocator,
-    MemoryAllocatorService,
-    MemoryError,
-    MemoryHost,
-    MemoryInfo,
-    MemoryObject,
-)
-
-__all__ = [
-    "ChildCaps",
-    "Counter",
-    "CounterService",
-    "CounterState",
-    "CounterValue",
-    "Memory",
-    "MemoryAllocator",
-    "MemoryAllocatorService",
-    "MemoryError",
-    "MemoryHost",
-    "MemoryInfo",
-    "MemoryObject",
-]
 
 
 @enum
@@ -72,10 +43,12 @@ class CounterService:
     pass
 
 
-@capset
+@capset(capacity=256)
 class ChildCaps:
     service: Cap[CounterService, Copy]
     wake: Cap[sel4.Notification, Copy]
     reply: Cap[sel4.Reply, Move]
     tcb: Cap[sel4.TCB, Copy]
-    memory: Cap[MemoryAllocatorService, Copy]
+    # Interfaces/codecs live in horn-vm; no raw frame or VSpace authority.
+    vm: Cap[sel4.Endpoint, Copy]
+    address_space: Cap[sel4.Endpoint, Copy]

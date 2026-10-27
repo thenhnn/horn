@@ -119,10 +119,20 @@ name = "horn-ipc"
 version = "0.1.0"
 dependencies = [
  "sel4",
+ "sel4-abstract-allocator",
 ]
 
 [[package]]
-name = "horn-memory"
+name = "horn-mimalloc"
+version = "0.1.0"
+dependencies = [
+ "horn-ipc",
+ "horn-vm",
+ "sel4",
+]
+
+[[package]]
+name = "horn-vm"
 version = "0.1.0"
 dependencies = [
  "horn-ipc",
@@ -136,6 +146,8 @@ version = "0.1.0"
 dependencies = [
  "cfg-if",
  "horn-ipc",
+ "horn-mimalloc",
+ "horn-vm",
  "one-shot-mutex",
  "sel4",
  "sel4-dlmalloc",
@@ -149,7 +161,7 @@ name = "idl-demo-root"
 version = "0.1.0"
 dependencies = [
  "horn-ipc",
- "horn-memory",
+ "horn-vm",
  "object",
  "sel4",
  "sel4-root-task",

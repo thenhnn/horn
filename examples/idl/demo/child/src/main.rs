@@ -1,8 +1,11 @@
 #![no_std]
 #![no_main]
+#![feature(allocator_api)]
 
-mod memory_probe;
+extern crate alloc;
+
 mod runtime;
+mod vm_probe;
 
 #[allow(dead_code, unused_imports, non_camel_case_types)]
 mod protocol {
@@ -56,7 +59,7 @@ fn main() -> ! {
         counter_service_reply(reply, &mut server.space, &response).unwrap();
     }
     wake.signal();
-    memory_probe::run(root, recv_slot, server.space);
+    vm_probe::run(root, recv_slot, server.space);
     tcb.tcb_suspend().unwrap();
     unreachable!()
 }
