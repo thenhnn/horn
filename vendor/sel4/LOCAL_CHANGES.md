@@ -13,6 +13,7 @@ Horn reads EFER directly instead of retaining the patch's static NXE cache.
 Unsupported NX requests return InvalidArgument (argument 2), rather than
 silently granting executable access. No snapshot-fix patches are imported here.
 
-The kernel builds and resident-map debug/release boots pass. An explicit
-instruction-fetch fault test is still outstanding; this is not a verification
-claim for the modified kernel.
+The debug/release process boot test attempts instruction fetch from a present,
+RW+NX IPC page and checks the resulting instruction-fetch protection fault.
+This covers 4 KiB mappings in QEMU, not huge pages, SMP, or formal verification
+of the modified kernel.

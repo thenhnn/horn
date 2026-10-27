@@ -1,0 +1,6 @@
+target/
+**/target/
+*.o
+*.a
+/c/horn-ipc/tests/layout
+/c/horn-ipc/tests/layout-test

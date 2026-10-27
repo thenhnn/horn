@@ -56,6 +56,7 @@ class VmFeatures:
     CREATE_SPACE = 16
     DERIVE_ACCOUNT = 32
     DUPLICATE_MEMORY = 64
+    UNTYPED = 128
 
 
 @enum(base=U32)
@@ -267,6 +268,26 @@ class VmPagerObject:
     pass
 
 
+@record
+class VmUntypedGrant:
+    capability: Cap[sel4.Untyped, Copy]
+    size_bits: U32
+
+
+@iface("net.nhnn.horn.vm.untyped", version=(1, 0))
+class VmUntyped:
+    @method
+    def capability(self) -> Result[VmUntypedGrant, VmError]: ...
+
+    @method
+    def close(self) -> Result[None, VmError]: ...
+
+
+@object(implements=(VmUntyped,))
+class VmUntypedObject:
+    pass
+
+
 @iface("net.nhnn.horn.vm.factory", version=(1, 0))
 class VmFactory:
     @method
@@ -288,6 +309,11 @@ class VmFactory:
     ) -> Result[Cap[VmPagerObject, Move], VmError]: ...
 
     @method
+    def delegate(
+        self, size_bits: U32
+    ) -> Result[Cap[VmUntypedObject, Move], VmError]: ...
+
+    @method
     def derive(self, limit_bytes: U64) -> Result[Cap[VmService, Move], VmError]: ...
 
 
@@ -296,6 +322,6 @@ class VmService:
     pass
 
 
-@object(implements=(VmFactory, VmMemory, VmAddressSpace, VmRegion, VmPager))
+@object(implements=(VmFactory, VmMemory, VmAddressSpace, VmRegion, VmPager, VmUntyped))
 class VmHost:
     pass

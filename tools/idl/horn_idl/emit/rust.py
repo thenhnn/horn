@@ -338,16 +338,6 @@ class RustEmitter:
             self.emit_ring(ring.type)
         for region in self.schema.regions:
             self.emit_region(region.type)
-        component = (
-            self.schema.interfaces[0].fqn
-            if self.schema.interfaces
-            else self.schema.objects[0].fqn
-            if self.schema.objects
-            else self.schema.module
-        )
-        self.add("")
-        self.add(f"horn_ipc::horn_tag!({rust_str(component)}, 0);")
-        self.add("")
         for interface in self.schema.interfaces:
             self.emit_interface(interface)
         for object_ in self.schema.objects:

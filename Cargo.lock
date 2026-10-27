@@ -132,6 +132,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "horn-procd"
+version = "0.1.0"
+dependencies = [
+ "horn-ipc",
+ "horn-vm",
+ "object",
+ "sel4",
+]
+
+[[package]]
 name = "horn-vm"
 version = "0.1.0"
 dependencies = [
@@ -147,6 +157,7 @@ dependencies = [
  "cfg-if",
  "horn-ipc",
  "horn-mimalloc",
+ "horn-procd",
  "horn-vm",
  "one-shot-mutex",
  "sel4",
@@ -161,8 +172,8 @@ name = "idl-demo-root"
 version = "0.1.0"
 dependencies = [
  "horn-ipc",
+ "horn-procd",
  "horn-vm",
- "object",
  "sel4",
  "sel4-root-task",
 ]

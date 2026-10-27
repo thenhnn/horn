@@ -2,7 +2,7 @@
 pkgs.llvmPackages.stdenv.mkDerivation {
   pname = "horn-mimalloc";
   version = "3.6.0";
-  src = ../../vendor/mimalloc/src;
+  src = ../../../vendor/mimalloc/src;
   dontConfigure = true;
   hardeningDisable = ["all"];
   buildPhase = ''

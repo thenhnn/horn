@@ -1,0 +1,16 @@
+[package]
+name = "horn-ipc"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+
+[features]
+default = []
+sel4 = ["dep:sel4", "dep:sel4-abstract-allocator"]
+
+[dependencies]
+sel4-abstract-allocator = { path = "../../../../vendor/rust-sel4/src/crates/experimental/sel4-abstract-allocator", optional = true }
+sel4 = { path = "../../../../vendor/rust-sel4/src/crates/sel4", optional = true }

@@ -1,4 +1,4 @@
 [workspace]
 resolver = "3"
-members = ["tests/boot/rust-root-task", "hardware/net/r8169/compiler", "hardware/net/r8169/firmware", "examples/idl/demo/root", "examples/idl/demo/child", "runtime/rust/horn-ipc", "platform/core/vm", "runtime/rust/horn-mimalloc"]
+members = ["tests/boot/rust-root-task", "hardware/net/r8169/compiler", "hardware/net/r8169/firmware", "examples/idl/demo/root", "examples/idl/demo/child", "platform/runtime/rust/horn-ipc", "platform/core/vm", "platform/core/procd", "platform/runtime/rust/horn-mimalloc"]
 exclude = ["vendor/rust-sel4/src"]

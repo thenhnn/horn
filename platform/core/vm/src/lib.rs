@@ -5,6 +5,8 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+pub mod account;
+
 #[cfg(feature = "sel4")]
 pub mod sel4;
 
@@ -20,6 +22,7 @@ pub mod protocol {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     InvalidSize,
+    QuotaExceeded,
     Exhausted,
     MetadataExhausted,
     Backend,

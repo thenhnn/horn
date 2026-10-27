@@ -5,7 +5,7 @@
   ...
 }: let
   idl = "${../../../tools/idl}";
-  mimalloc = import ../../../runtime/mimalloc/default.nix {pkgs = pkgs.pkgsBuildBuild;};
+  mimalloc = import ../../../platform/runtime/mimalloc/default.nix {pkgs = pkgs.pkgsBuildBuild;};
   protocolOverride = old: {
     HORN_IDL = idl;
     nativeBuildInputs = (old.nativeBuildInputs or []) ++ [pkgs.python3];
@@ -15,8 +15,10 @@
     target = "sel4";
     crateOverrides = {
       horn-vm = protocolOverride;
+      horn-procd = protocolOverride;
       horn-mimalloc = old: {MIMALLOC_LIB = "${mimalloc}/lib";};
       idl-demo-child = demoOverride;
+      memchr = old: {features = ["alloc"];};
     };
   };
   child = childWorkspace.members.idl-demo-child;
@@ -24,6 +26,7 @@
     target = "sel4-roottask";
     crateOverrides = {
       horn-vm = protocolOverride;
+      horn-procd = protocolOverride;
       idl-demo-root = old: (demoOverride old) // {CHILD_ELF = "${child}/bin/task.elf";};
       memchr = old: {features = ["alloc"];};
     };

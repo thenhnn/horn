@@ -52,3 +52,4 @@ class ChildCaps:
     # Interfaces/codecs live in horn-vm; no raw frame or VSpace authority.
     vm: Cap[sel4.Endpoint, Copy]
     address_space: Cap[sel4.Endpoint, Copy]
+    lifecycle: Cap[sel4.Endpoint, Copy]

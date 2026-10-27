@@ -9,6 +9,6 @@ protocol = ["dep:horn-ipc"]
 rpc = ["sel4", "protocol", "horn-ipc/sel4"]
 
 [dependencies]
-horn-ipc = { path = "../../../runtime/rust/horn-ipc", optional = true }
+horn-ipc = { path = "../../../platform/runtime/rust/horn-ipc", optional = true }
 sel4-abstract-allocator = { path = "../../../vendor/rust-sel4/src/crates/experimental/sel4-abstract-allocator", optional = true }
 sel4 = { path = "../../../vendor/rust-sel4/src/crates/sel4", optional = true }

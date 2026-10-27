@@ -355,9 +355,9 @@ For each schema the compiler emits:
 
 The runtime lives in:
 
-- `runtime/rust/horn-ipc`: `Wire`, `Encoder`, `Decoder`, `Cap`, `WireCaps`,
+- `platform/runtime/rust/horn-ipc`: `Wire`, `Encoder`, `Decoder`, `Cap`, `WireCaps`,
   `Ring`, `Region`, and the `Transport` trait.
-- `runtime/c/horn-ipc`: the same primitives with a `horn_transport_t` vtable.
+- `platform/runtime/c/horn-ipc`: the same primitives with a `horn_transport_t` vtable.
 
 A seL4 backend can add `Sel4Transport`/`horn_sel4_transport` without changing
 generated code.
@@ -432,35 +432,14 @@ receives, `localize`, and CNode operations.  Fields start at slot 1.
 
 ## HornTag
 
-A Horn component ELF carries a `.horn` section with a `HornTag`:
+A Horn executable emits `horn_ipc::horn_tag!()` once. Its mandatory `.horn`
+section contains exactly four magic bytes (`HORN`) and a little-endian u32 ABI
+version (currently 1). Generated protocol modules do not emit tags.
 
-```c
-struct HornTag {
-    char magic[4];      // "HORN"
-    uint32_t version;
-    char component[32];
-    uint64_t layout_hash; // expected capset/CSpace layout
-};
-```
-
-Generated Rust protocols emit the tag through the runtime macro:
-
-```rust
-horn_ipc::horn_tag!("net.nhnn.horn.demo.counter", 0);
-```
-
-The macro defines `HornTag` and the `.horn`-section `HORN_TAG` static, padding
-the component name to 32 bytes.
-
-The loader reads the section with the `object` crate before mapping the
-image.  This is not a substitute for the ELF OSABI field: OSABI is coarse,
-often left as `SYSV`/`NONE` for bare-metal binaries, and cannot carry a capset
-layout hash.  The tag is the place for the Horn ABI version, component name,
-and expected CSpace layout.
-
-The demo currently verifies magic and version at build time; the layout hash
-field is reserved for the next step, where the generator will hash the
-`@capset` layout and the loader will compare it with the packed CNode.
+The tag identifies the runtime ABI, not a component name, capability layout,
+quota or security authority. Those come from the launch contract. Entry point,
+segment permissions and TLS use standard ELF metadata. `horn-procd` validates
+the tag and ELF at runtime before launching the process.
 
 ## Bootstrap demo
 
@@ -468,16 +447,16 @@ field is reserved for the next step, where the generator will hash the
 
 - `schema.py` declares the `Counter` interface, `CounterService` object, and
   `ChildCaps` capset.
-- `root` packs the capset into a fresh CNode, creates the child VSpace/TCB,
-  starts the child, and calls the generated `CounterClient`.
-- `child` serves one request with the generated `CounterService` handler and
-  signals a wake notification.
+- Root-hosted `procd` creates the child's accounted CNode/VSpace/TCB. `root`
+  installs bootstrap capabilities in generated named slots, starts the child,
+  and calls the generated `CounterClient`.
+- `child` serves counter requests, signals a wake notification, exercises VM
+  and mimalloc, then exits through its lifecycle capability.
 - `root/build.rs` and `child/build.rs` run the Python IDL generator and
   `include!` the generated protocol from `OUT_DIR`; no generated protocol is
   checked in.
-- `root/build.rs` uses the `object` crate to parse the child ELF, verify the
-  `.horn` tag, and emit a `ChildImage` table of segments.  The root task does
-  not parse ELF at runtime.
+- `root/build.rs` only embeds the ELF. The root-hosted `horn-procd` validates
+  and loads it at runtime, accounts for its resources, and handles explicit exit.
 
 Run it with:
 

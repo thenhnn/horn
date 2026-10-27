@@ -50,7 +50,65 @@ pub fn run(root: ::sel4::cap::CNode, recv: ::sel4::AbsoluteCPtr, space: Sel4CapS
     let mut transport = Sel4Transport::new(root, recv, space);
     let factory = target::<VmFactoryTag>(root, CHILD_CAPS_VM_SLOT);
     let address_space = target::<VmAddressSpaceTag>(root, CHILD_CAPS_ADDRESS_SPACE_SLOT);
+    let initial_charge = VmFactoryClient::new(&mut transport, factory)
+        .info()
+        .unwrap()
+        .charged_bytes;
+    // A whole Untyped is charged once, independent of the objects retyped inside it.
+    let lease = VmFactoryClient::new(&mut transport, factory)
+        .delegate(13)
+        .unwrap();
+    let grant = VmUntypedClient::new(&mut transport, Cap::from_ref(lease.as_ref()))
+        .capability()
+        .unwrap();
+    assert_eq!(grant.size_bits, 13);
+    let untyped = grant.capability;
+    let kernel_untyped = transport
+        .space
+        .cap::<::sel4::cap_type::Untyped>(untyped.as_ref())
+        .unwrap();
+    let slot = transport.space.reserve_slot().unwrap();
+    kernel_untyped
+        .untyped_retype(
+            &::sel4::ObjectBlueprint::Tcb,
+            &root.absolute_cptr_for_self(),
+            slot.path().bits() as usize,
+            1,
+        )
+        .unwrap();
+    assert_eq!(
+        VmFactoryClient::new(&mut transport, factory)
+            .info()
+            .unwrap()
+            .charged_bytes,
+        initial_charge + 8192
+    );
+    VmUntypedClient::new(&mut transport, Cap::from_ref(lease.as_ref()))
+        .close()
+        .unwrap();
+    let derived = transport
+        .space
+        .register(::sel4::cap::Tcb::from_bits(slot.path().bits()))
+        .unwrap();
+    transport.space.delete(derived).unwrap();
+    transport.space.delete(untyped.as_ref()).unwrap();
+    transport.space.delete(lease.as_ref()).unwrap();
+    assert_eq!(
+        VmFactoryClient::new(&mut transport, factory)
+            .info()
+            .unwrap()
+            .charged_bytes,
+        initial_charge
+    );
     let rw = VmProtection(VmProtection::READ.0 | VmProtection::WRITE.0);
+    assert_eq!(
+        VmFactoryClient::new(&mut transport, factory).allocate(
+            4096,
+            VmBacking::Resident,
+            VmProtection(VmProtection::READ.0 | VmProtection::EXECUTE.0)
+        ),
+        Err(CallError::Remote(VmError::Denied))
+    );
     let range = VmRange {
         offset: 0,
         length: 8192,
@@ -136,7 +194,7 @@ pub fn run(root: ::sel4::cap::CNode, recv: ::sel4::AbsoluteCPtr, space: Sel4CapS
             .info()
             .unwrap()
             .charged_bytes,
-        8192
+        initial_charge + 8192
     );
     VmRegionClient::new(&mut transport, Cap::from_ref(alias.as_ref()))
         .apply(
@@ -174,7 +232,7 @@ pub fn run(root: ::sel4::cap::CNode, recv: ::sel4::AbsoluteCPtr, space: Sel4CapS
             .info()
             .unwrap()
             .charged_bytes,
-        0
+        initial_charge
     );
     let revoked = VmFactoryClient::new(&mut transport, factory)
         .allocate(4096, VmBacking::Resident, rw)
@@ -207,12 +265,16 @@ pub fn run(root: ::sel4::cap::CNode, recv: ::sel4::AbsoluteCPtr, space: Sel4CapS
             .info()
             .unwrap()
             .charged_bytes,
-        0
+        initial_charge
     );
     ::sel4::debug_println!(
         "VM_RPC_PASS mapping=true sharing=true lifetime=true protection=true errors=true"
     );
 
+    // Leave one lease live: process exit, not client cooperation, must reclaim it.
+    let _unclosed = VmFactoryClient::new(&mut transport, factory)
+        .delegate(12)
+        .unwrap();
     let mut heap = VmHeap::new(transport, factory.as_ref(), address_space.as_ref()).unwrap();
     // Recycled physical backing must not disclose the previous dirty contents.
     let pointer = heap.allocate(8192, 4096).unwrap();

@@ -12,44 +12,14 @@ use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 pub const MAX_CAPS: usize = 3;
-/// Pad a component name into the fixed-size HornTag component field.
-pub const fn horn_tag_component(bytes: &[u8]) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    let mut index = 0;
-    while index < bytes.len() && index < out.len() {
-        out[index] = bytes[index];
-        index += 1;
-    }
-    out
-}
-
-/// Emit a `.horn` ELF tag for a generated component.
-///
-/// The tag is intentionally simple: magic, version, padded component name,
-/// and a reserved layout hash.  The root task validates the magic at build
-/// time before loading the image.
+/// Emit once per executable, not once per generated protocol module.
+/// Segment permissions, entry point and TLS use the standard ELF metadata.
 #[macro_export]
 macro_rules! horn_tag {
-    ($component:expr) => {
-        $crate::horn_tag!($component, 0)
-    };
-    ($component:expr, $layout_hash:expr) => {
-        #[repr(C)]
-        pub struct HornTag {
-            pub magic: [u8; 4],
-            pub version: u32,
-            pub component: [u8; 32],
-            pub layout_hash: u64,
-        }
-
+    () => {
         #[used]
         #[unsafe(link_section = ".horn")]
-        pub static HORN_TAG: HornTag = HornTag {
-            magic: *b"HORN",
-            version: 1,
-            component: $crate::horn_tag_component($component.as_bytes()),
-            layout_hash: $layout_hash,
-        };
+        pub static HORN_TAG: [u8; 8] = *b"HORN\x01\x00\x00\x00";
     };
 }
 

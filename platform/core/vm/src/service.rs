@@ -1,21 +1,36 @@
-//! Root-hosted resident VM. All kernel authority stays in the service.
+//! Root-hosted VM. Mapping authority stays here; private Untyped may be delegated.
 use alloc::vec::Vec;
-use core::{alloc::Layout, convert::Infallible, ops::Range};
+use core::{
+    alloc::Layout,
+    ops::Range,
+    sync::atomic::{AtomicU64, Ordering},
+};
 use horn_ipc::*;
 use sel4_abstract_allocator::{ByRange, basic::BasicAllocator};
 
 use crate::{
     Error, MemoryObject,
     protocol::*,
-    sel4::{Frame, FramePool, KernelAllocator, PAGE_SIZE},
+    sel4::{Frame, FramePool, KernelAllocator, PAGE_SIZE, UntypedLease},
 };
 
-const FACTORY: ::sel4::Word = 1;
-const SPACE: ::sel4::Word = 2;
+const FACTORY: usize = 0;
+const SPACE: usize = 1;
+// Never recycle a badge when a VM instance is destroyed. Root process lifecycle
+// uses the upper namespace on the shared endpoint.
+static NEXT_BADGE: AtomicU64 = AtomicU64::new(1);
+fn new_badge() -> Result<::sel4::Word, VmError> {
+    NEXT_BADGE
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            value.checked_add(1).filter(|&next| next < (1 << 32))
+        })
+        .map_err(|_| VmError::Exhausted)
+}
 
 fn error(value: Error) -> VmError {
     match value {
         Error::InvalidSize => VmError::Invalid,
+        Error::QuotaExceeded => VmError::QuotaExceeded,
         Error::Exhausted | Error::MetadataExhausted => VmError::Exhausted,
         Error::Backend => VmError::Quarantined,
     }
@@ -43,12 +58,19 @@ fn mint(
     Ok(slot)
 }
 
-pub fn provision(
+fn provision(
     allocator: &mut KernelAllocator,
     endpoint: ::sel4::cap::Endpoint,
+    badges: [::sel4::Word; 2],
 ) -> Result<(::sel4::cap::Endpoint, ::sel4::cap::Endpoint), VmError> {
-    let factory = mint(allocator, endpoint, FACTORY)?;
-    let space = mint(allocator, endpoint, SPACE)?;
+    let factory = mint(allocator, endpoint, badges[FACTORY])?;
+    let space = match mint(allocator, endpoint, badges[SPACE]) {
+        Ok(slot) => slot,
+        Err(value) => {
+            allocator.release_slot(factory).map_err(error)?;
+            return Err(value);
+        }
+    };
     Ok((
         ::sel4::cap::Endpoint::from_bits(factory as _),
         ::sel4::cap::Endpoint::from_bits(space as _),
@@ -83,16 +105,24 @@ struct Region {
     poisoned: bool,
 }
 
+struct Delegation {
+    badge: ::sel4::Word,
+    authority: usize,
+    lease: Option<UntypedLease>,
+}
+
 pub struct Service {
     allocator: KernelAllocator,
     pool: FramePool,
     endpoint: ::sel4::cap::Endpoint,
+    authority: [Option<usize>; 2],
     vspace: ::sel4::cap::VSpace,
     window: Range<usize>,
     virtual_free: ByRange<BasicAllocator>,
     memories: Vec<Option<Memory>>,
     regions: Vec<Option<Region>>,
-    next_badge: ::sel4::Word,
+    delegations: Vec<Option<Delegation>>,
+    badges: [::sel4::Word; 2],
     outgoing: Option<usize>,
 }
 
@@ -100,7 +130,7 @@ impl Service {
     /// The loader must reserve this window and install its translation tables.
     /// The adopted VSpace remains owned by the process service; destroy is Busy.
     pub fn new(
-        allocator: KernelAllocator,
+        mut allocator: KernelAllocator,
         pool: FramePool,
         endpoint: ::sel4::cap::Endpoint,
         vspace: ::sel4::cap::VSpace,
@@ -123,8 +153,13 @@ impl Service {
             .try_reserve_exact(max_objects)
             .map_err(|_| VmError::Exhausted)?;
         regions.resize_with(max_objects, || None);
+        let mut delegations = Vec::new();
+        delegations.resize_with(max_objects, || None);
         let virtual_free = ByRange::new(BasicAllocator::with_granule_size(window.len(), PAGE_SIZE));
+        let badges = [new_badge()?, new_badge()?];
+        let (factory, space) = provision(&mut allocator, endpoint, badges)?;
         Ok(Self {
+            authority: [Some(factory.bits() as usize), Some(space.bits() as usize)],
             allocator,
             pool,
             endpoint,
@@ -133,42 +168,89 @@ impl Service {
             virtual_free,
             memories,
             regions,
-            next_badge: SPACE + 1,
+            delegations,
+            badges,
             outgoing: None,
         })
     }
 
-    pub fn run(
-        mut self,
-        mut server: Sel4Server<Sel4CapSpace>,
-        authority: ::sel4::ReplyAuthority,
-    ) -> Result<Infallible, RpcError> {
-        loop {
-            let (request, reply) = vm_host_recv(&mut server, authority)?;
-            let response = vm_host_dispatch(
-                request,
-                &mut Caller {
-                    service: &mut self,
-                    badge: reply.badge,
-                },
-            );
-            let sent = vm_host_reply(reply, &mut server.space, &response);
-            if let Some(slot) = self.outgoing.take() {
-                self.allocator
-                    .release_slot(slot)
-                    .map_err(|_| RpcError::Transport)?;
-            }
-            server.recv_slot.delete().map_err(|_| RpcError::Transport)?;
-            sent?;
+    pub fn factory(&self) -> ::sel4::cap::Endpoint {
+        ::sel4::Cap::from_bits(self.authority[FACTORY].unwrap() as _)
+    }
+    pub fn address_space(&self) -> ::sel4::cap::Endpoint {
+        ::sel4::Cap::from_bits(self.authority[SPACE].unwrap() as _)
+    }
+    /// Root dispatcher uses this alongside other generated protocol dispatchers.
+    pub fn dispatch(&mut self, request: VmHostRequest, badge: ::sel4::Word) -> VmHostResponse {
+        vm_host_dispatch(
+            request,
+            &mut Caller {
+                service: self,
+                badge,
+            },
+        )
+    }
+    pub fn finish_reply(&mut self, server: &mut Sel4Server<Sel4CapSpace>) -> Result<(), RpcError> {
+        if let Some(slot) = self.outgoing.take() {
+            self.allocator
+                .release_slot(slot)
+                .map_err(|_| RpcError::Transport)?;
         }
+        server.recv_slot.delete().map_err(|_| RpcError::Transport)
     }
-
-    fn badge(&mut self) -> Result<::sel4::Word, VmError> {
-        let badge = self.next_badge;
-        self.next_badge = badge.checked_add(1).ok_or(VmError::Exhausted)?;
-        Ok(badge)
+    /// All threads using this adopted address space must already be stopped.
+    pub fn shutdown(&mut self) -> Result<(), VmError> {
+        for index in 0..self.delegations.len() {
+            if self.delegations[index].is_some() {
+                self.close_delegation(index)?;
+            }
+        }
+        for index in 0..self.regions.len() {
+            if self.regions[index].is_some() {
+                self.destroy_region(index)?;
+            }
+        }
+        for index in 0..self.memories.len() {
+            if self.memories[index]
+                .as_ref()
+                .is_some_and(|m| m.authority.is_some())
+            {
+                self.close(index)?;
+            }
+        }
+        for authority in &mut self.authority {
+            if let Some(slot) = *authority {
+                self.allocator
+                    .root()
+                    .absolute_cptr(::sel4::CPtr::from_bits(slot as _))
+                    .revoke()
+                    .map_err(|_| VmError::Backend)?;
+                self.allocator.release_slot(slot).map_err(error)?;
+                *authority = None;
+            }
+        }
+        Ok(())
     }
-
+    fn delegation_index(&self, badge: ::sel4::Word) -> Result<usize, VmError> {
+        self.delegations
+            .iter()
+            .position(|entry| entry.as_ref().is_some_and(|d| d.badge == badge))
+            .ok_or(VmError::Stale)
+    }
+    fn close_delegation(&mut self, index: usize) -> Result<(), VmError> {
+        let entry = self.delegations[index].as_mut().unwrap();
+        let lease = entry.lease.take().ok_or(VmError::Quarantined)?;
+        self.allocator.reclaim(lease).map_err(error)?;
+        let authority = entry.authority;
+        self.allocator
+            .root()
+            .absolute_cptr(::sel4::CPtr::from_bits(authority as _))
+            .revoke()
+            .map_err(|_| VmError::Backend)?;
+        self.allocator.release_slot(authority).map_err(error)?;
+        self.delegations[index] = None;
+        Ok(())
+    }
     fn export<T: CapType>(&mut self, badge: ::sel4::Word) -> Result<(usize, Cap<T>), VmError> {
         let authority = mint(&mut self.allocator, self.endpoint, badge)?;
         let slot = match self.allocator.reserve_slot() {
@@ -250,6 +332,9 @@ impl Service {
         ceiling: VmProtection,
     ) -> Result<Cap<VmMemoryObjectTag>, VmError> {
         permissions(ceiling)?;
+        if ceiling.0 & VmProtection::EXECUTE.0 != 0 {
+            return Err(VmError::Denied);
+        }
         if backing != VmBacking::Resident {
             return Err(VmError::Unsupported);
         }
@@ -257,14 +342,14 @@ impl Service {
             return Err(VmError::Invalid);
         }
         if size > (self.pool.available() * PAGE_SIZE) as u64 {
-            return Err(VmError::Exhausted);
+            return Err(VmError::QuotaExceeded);
         }
         let index = self
             .memories
             .iter()
             .position(Option::is_none)
             .ok_or(VmError::Exhausted)?;
-        let badge = self.badge()?;
+        let badge = new_badge()?;
         let object = MemoryObject::allocate(size, &mut self.pool).map_err(error)?;
         let (authority, cap) = match self.export(badge) {
             Ok(value) => value,
@@ -286,6 +371,9 @@ impl Service {
 
     fn reserve(&mut self, request: VmRegionRequest) -> Result<Cap<VmRegionObjectTag>, VmError> {
         permissions(request.ceiling)?;
+        if request.ceiling.0 & VmProtection::EXECUTE.0 != 0 {
+            return Err(VmError::Denied);
+        }
         if request.placement != VmPlacement::Anywhere {
             return Err(VmError::Unsupported);
         }
@@ -308,7 +396,7 @@ impl Service {
             .iter()
             .position(Option::is_none)
             .ok_or(VmError::Exhausted)?;
-        let badge = self.badge()?;
+        let badge = new_badge()?;
         let mut pages = Vec::new();
         pages
             .try_reserve_exact(size / PAGE_SIZE)
@@ -694,16 +782,17 @@ struct Caller<'a> {
 }
 impl VmFactory for Caller<'_> {
     fn info(&mut self) -> Result<VmInfo, VmError> {
-        if self.badge != FACTORY {
+        if self.badge != self.service.badges[FACTORY] {
             return Err(VmError::Denied);
         }
         Ok(VmInfo {
-            features: VmFeatures(VmFeatures::RESIDENT.0 | VmFeatures::PROTECTION.0),
+            features: VmFeatures(
+                VmFeatures::RESIDENT.0 | VmFeatures::PROTECTION.0 | VmFeatures::UNTYPED.0,
+            ),
             page_size: PAGE_SIZE as u64,
             batch_limit: 16,
-            limit_bytes: (self.service.pool.capacity() * PAGE_SIZE) as u64,
-            charged_bytes: ((self.service.pool.capacity() - self.service.pool.available())
-                * PAGE_SIZE) as u64,
+            limit_bytes: self.service.pool.account().usage().limit as u64,
+            charged_bytes: self.service.pool.account().usage().charged as u64,
             quarantined_bytes: self.service.pool.quarantined_bytes() as u64
                 + self
                     .service
@@ -721,28 +810,87 @@ impl VmFactory for Caller<'_> {
         backing: VmBacking,
         ceiling: VmProtection,
     ) -> Result<Cap<VmMemoryObjectTag>, VmError> {
-        if self.badge != FACTORY {
+        if self.badge != self.service.badges[FACTORY] {
             return Err(VmError::Denied);
         }
         self.service.allocate(size, backing, ceiling)
     }
     fn create_address_space(&mut self) -> Result<Cap<VmAddressSpaceObjectTag>, VmError> {
-        if self.badge != FACTORY {
+        if self.badge != self.service.badges[FACTORY] {
             return Err(VmError::Denied);
         }
         Err(VmError::Unsupported)
     }
     fn create_pager(&mut self, _: Cap<Notification>) -> Result<Cap<VmPagerObjectTag>, VmError> {
-        if self.badge != FACTORY {
+        if self.badge != self.service.badges[FACTORY] {
             return Err(VmError::Denied);
         }
         Err(VmError::Unsupported)
     }
+    fn delegate(&mut self, bits: u32) -> Result<Cap<VmUntypedObjectTag>, VmError> {
+        if self.badge != self.service.badges[FACTORY] {
+            return Err(VmError::Denied);
+        }
+        let index = self
+            .service
+            .delegations
+            .iter()
+            .position(Option::is_none)
+            .ok_or(VmError::Exhausted)?;
+        let badge = new_badge()?;
+        let lease = self
+            .service
+            .allocator
+            .delegate(bits as usize)
+            .map_err(error)?;
+        let (authority, cap) = match self.service.export(badge) {
+            Ok(result) => result,
+            Err(error) => {
+                self.service
+                    .allocator
+                    .reclaim(lease)
+                    .map_err(crate::service::error)?;
+                return Err(error);
+            }
+        };
+        self.service.delegations[index] = Some(Delegation {
+            badge,
+            authority,
+            lease: Some(lease),
+        });
+        Ok(cap)
+    }
     fn derive(&mut self, _: u64) -> Result<Cap<VmServiceTag>, VmError> {
-        if self.badge != FACTORY {
+        if self.badge != self.service.badges[FACTORY] {
             return Err(VmError::Denied);
         }
         Err(VmError::Unsupported)
+    }
+}
+impl VmUntyped for Caller<'_> {
+    fn capability(&mut self) -> Result<VmUntypedGrant, VmError> {
+        let index = self.service.delegation_index(self.badge)?;
+        let lease = self.service.delegations[index]
+            .as_ref()
+            .unwrap()
+            .lease
+            .as_ref()
+            .ok_or(VmError::Quarantined)?;
+        Ok(VmUntypedGrant {
+            capability: Cap::from_ref(CapRef::new(
+                self.service.allocator.root().bits() as u64,
+                lease.cap().bits() as u32,
+                ::sel4::WORD_SIZE as u8,
+                0,
+                CapMode::COPY,
+                Rights::ALL,
+            )),
+            size_bits: lease.size_bits() as u32,
+        })
+    }
+    fn close(&mut self) -> Result<(), VmError> {
+        let index = self.service.delegation_index(self.badge)?;
+        self.service.close_delegation(index)
     }
 }
 impl VmMemory for Caller<'_> {
@@ -783,13 +931,13 @@ impl VmMemory for Caller<'_> {
 }
 impl VmAddressSpace for Caller<'_> {
     fn reserve(&mut self, request: VmRegionRequest) -> Result<Cap<VmRegionObjectTag>, VmError> {
-        if self.badge != SPACE {
+        if self.badge != self.service.badges[SPACE] {
             return Err(VmError::Denied);
         }
         self.service.reserve(request)
     }
     fn destroy(&mut self) -> Result<(), VmError> {
-        if self.badge != SPACE {
+        if self.badge != self.service.badges[SPACE] {
             return Err(VmError::Denied);
         }
         Err(VmError::Busy)

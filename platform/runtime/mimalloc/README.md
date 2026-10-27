@@ -2,7 +2,7 @@
 
 `default.nix` compiles the pinned, vendored mimalloc 3.6.0 sources into a
 freestanding archive without fetching sources. `horn/prim.c` implements its OS
-primitives through `runtime/rust/horn-mimalloc`; `init.c` configures initialization.
+primitives through `platform/runtime/rust/horn-mimalloc`; `init.c` configures initialization.
 The Rust wrapper implements the standard allocator API, not a replacement heap.
 
 The demo keeps its Rust global/control heap independent and allocates application
@@ -14,7 +14,7 @@ OS allocation creates resident backing and a region, prepares/maps it with one
 borrowed capability, then closes the backing handle. The mapping retains backing.
 OS free destroys that region; slots and ranges are reusable. Failed cleanup is
 not treated as successful reuse. There is no forced allocator teardown: metadata
-may stay resident until process cleanup is implemented.
+may stay resident until procd tears down the process.
 
 The build uses upstream MI_FREE_USE_PAGEMAP, a fully committed page map and a
 32-bit virtual-address bound. This avoids large aligned metadata reservations;

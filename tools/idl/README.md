@@ -11,5 +11,5 @@ PYTHONPATH=tools/idl python3 -m horn_idl examples/idl/schema.py \
     --c work/idl/protocol.c
 ```
 
-The generated code depends on `runtime/rust/horn-ipc` and
-`runtime/c/horn-ipc`, not on generated copies of the wire runtime.
+The generated code depends on `platform/runtime/rust/horn-ipc` and
+`platform/runtime/c/horn-ipc`, not on generated copies of the wire runtime.

@@ -4,6 +4,8 @@
 
 extern crate alloc;
 
+horn_ipc::horn_tag!();
+
 mod runtime;
 mod vm_probe;
 
@@ -60,6 +62,15 @@ fn main() -> ! {
     }
     wake.signal();
     vm_probe::run(root, recv_slot, server.space);
+    let lifecycle = ::sel4::cap::Endpoint::from_bits(CHILD_CAPS_LIFECYCLE_SLOT as _);
+    let mut space = local_space(root);
+    let target = Cap::<horn_procd::protocol::ProcessLifecycleTag>::from_ref(
+        space.register(lifecycle).unwrap(),
+    );
+    let transport = Sel4Transport::new(root, recv_slot, space);
+    let mut process = horn_procd::protocol::ProcessLifecycleClient::new(transport, target);
+    assert!(process.info().unwrap().charged_bytes > 0);
+    process.exit(0).unwrap();
     tcb.tcb_suspend().unwrap();
     unreachable!()
 }

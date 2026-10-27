@@ -26,7 +26,7 @@ pub fn check_backing(pool: &mut FramePool, scratch: usize) {
     }
     assert!(matches!(
         MemoryObject::allocate(((pool.capacity() + 1) * PAGE_SIZE) as u64, pool),
-        Err(Error::Exhausted)
+        Err(Error::QuotaExceeded)
     ));
     assert_eq!(pool.available(), pool.capacity());
     ::sel4::debug_println!("MEMORY_BACKING_PASS zeroed=true rollback=true reclaimed=true");

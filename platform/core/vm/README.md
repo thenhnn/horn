@@ -2,13 +2,14 @@
 
 `idl/horn_vm.py` defines the full capability-addressed VM protocol.
 `src/service.rs` implements the resident subset; `src/sel4.rs` owns the kernel
-objects and reusable, independently revocable backing pool. The old memory RPC
-has been removed. The demo provisions an ordinary child with factory and adopted
-address-space endpoint capabilities, not frame, Untyped or VSpace capabilities.
+objects and a shared, reclaimable Untyped allocator. The demo provisions an
+ordinary child with factory and adopted-space capabilities, never raw VSpace or
+ASID authority. Untyped is available explicitly through quota-backed leases.
 
 ## Surface and availability
 
-- `VmFactory`: account information, backing, address spaces, pagers, subaccounts.
+- `VmFactory`: account information, backing, Untyped leases, address spaces, pagers, subaccounts.
+- `VmUntyped`: get the kernel capability plus its size bits; close revokes all descendants.
 - `VmMemory`: backing information, duplicate, close, revoke.
 - `VmAddressSpace`: region reservation and destruction.
 - `VmRegion`: information, prepared mapping batches, pager binding, destruction.
@@ -18,7 +19,7 @@ address-space endpoint capabilities, not frame, Untyped or VSpace capabilities.
 state authorize operations; interface casts do not grant authority. Badge values
 never wrap or get reused. An account cannot be selected using a client integer.
 
-The implementation advertises RESIDENT and PROTECTION. It supports Anywhere
+The implementation advertises RESIDENT, PROTECTION and UNTYPED. It supports Anywhere
 reservations inside one loader-provisioned window, prepared maps, aliases,
 read/write protection changes, acknowledged unmaps, close/revoke and region
 teardown. The loader installs translation tables before adopting the VSpace.
@@ -28,11 +29,12 @@ pagers return typed Unsupported on authorized requests. Adopted-space destructio
 returns Busy: the service does not own thread shutdown/ASID reclamation. Invalid
 pager capabilities are denied, not accepted as dummy pager objects.
 
-Only readable mappings are supported. Write-plus-execute mappings **and ceilings**
-are rejected. x86 non-executable mappings use the vendored kernel's ExecuteNever
+The dynamic heap window supports readable, non-executable mappings only. Its
+factory and regions reject executable ceilings; executable ELF pages are loaded
+by procd outside that window. Write-plus-execute mappings **and ceilings** are rejected. x86 non-executable mappings use the vendored kernel's ExecuteNever
 attribute; missing NX support fails closed. RW-to-RX code publication and its
-alias policy are not implemented. Permission changes have boot coverage, but a
-hardware execution-fault test is still required.
+alias policy are not implemented. Debug/release boots check permission changes
+and an instruction-fetch protection fault on a present 4 KiB NX page.
 
 ## Mapping batches
 
@@ -68,18 +70,29 @@ closing the owner handle. Failed revoke retains cleanup authority and prevents
 new mappings from poisoned backing. Region destruction removes native aliases
 before returning backing or virtual ranges to their allocators.
 
-`limit_bytes` is the fixed backing pool size. `charged_bytes` counts unavailable
-pool pages, including quarantine; `quarantined_bytes` counts failed physical
-reclamation and backing implicated in poisoned regions. Returning pages to this
-pool is **not** returning its reserved Untyped memory to a system-wide allocator.
-These counters do not account for all metadata, translation tables or cap slots.
-The demo uses separate fixed object, CSpace, virtual-window and control-heap
-budgets. Metadata allocation can still abort on control-heap exhaustion; this is
-not a production resource-prepayment/accounting implementation.
+`limit_bytes` is the process account limit, not a preallocated pool. Managed
+backing, ELF pages, process kernel objects and whole delegated Untypeds share
+that budget. Physical allocations use at least a page-sized, independently
+revocable Untyped; small kernel objects are conservatively charged a whole page.
+Retype inside a delegated lease is not charged again. Child account charges also
+consume their parent budget; limits do not reserve RAM.
 
-Automatic process-death cleanup, malformed-request recovery, untrusted CNode
-recovery, SMP scheduling and failure-injected kernel cleanup are unfinished. seL4 does not notify the service
-when the last endpoint-cap alias disappears. This service must not be used as a
+RAM is acquired lazily from the non-device BootInfo Untypeds. Release revokes
+all descendants before returning the unit to the common allocator; free buddy
+units coalesce. Other accounts can then use the memory. Dropping a Rust handle
+or deleting a client cap does not return a lease. Failed reclamation retains
+its charge and authority; quarantine is not reusable RAM.
+
+Root control-heap metadata and the shared root CNode are not charged per request.
+Object counts, cap slots and the virtual window still have explicit finite
+bounds. Metadata allocation can still abort. This is not complete resource
+prepayment, DMA lifetime management or a hardened untrusted-RPC server.
+
+Explicit single-threaded exit cleanup is wired through procd: stop the thread,
+clear VM objects, then revoke remaining process resources. Automatic fault/death
+cleanup, malformed-request recovery, untrusted CNode recovery, SMP scheduling
+and failure-injected kernel cleanup remain unfinished. seL4 does not notify the
+service when the last endpoint-cap alias disappears. This service must not be used as a
 claim of complete process lifecycle, DMA isolation or Linux VM integration.
 
 ## Deferred fault contract

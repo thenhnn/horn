@@ -7,11 +7,9 @@ edition = "2024"
 name = "task"
 path = "src/main.rs"
 
-[build-dependencies]
-object = { version = "0.40.0", default-features = false, features = ["read"] }
-
 [dependencies]
+horn-procd = { path = "../../../../platform/core/procd" }
 horn-vm = { path = "../../../../platform/core/vm", features = ["rpc"] }
-horn-ipc = { path = "../../../../runtime/rust/horn-ipc", features = ["sel4"] }
+horn-ipc = { path = "../../../../platform/runtime/rust/horn-ipc", features = ["sel4"] }
 sel4 = { path = "../../../../vendor/rust-sel4/src/crates/sel4" }
 sel4-root-task = { path = "../../../../vendor/rust-sel4/src/crates/sel4-root-task" }

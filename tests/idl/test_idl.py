@@ -64,7 +64,7 @@ def test_rust_and_c_glue_reference_runtime():
     assert "pub fn counter_service_reply<S: CapSpace, R: AsyncReply>" in rust
     assert "pub fn counter_service_serve_one" not in rust
     assert "recv_request_dynamic" in rust
-    assert 'horn_ipc::horn_tag!("net.nhnn.horn.counter", 0);' in rust
+    assert "horn_tag!" not in rust
     header, source = emit_c(schema)
     assert "#include <horn_ipc.h>" in header
     assert "horn_counter_add" in header
@@ -195,7 +195,7 @@ def test_generated_c_compiles_against_runtime(tmp_path):
             "-Wall",
             "-Werror",
             "-I",
-            str(ROOT / "runtime/c/horn-ipc/include"),
+            str(ROOT / "platform/runtime/c/horn-ipc/include"),
             "-I",
             str(tmp_path),
             "-fsyntax-only",
@@ -216,7 +216,7 @@ def test_generated_rust_compiles_against_runtime(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src/lib.rs").write_text("#![no_std]\npub mod protocol;\n")
     (tmp_path / "src/protocol.rs").write_text(emit_rust(schema))
-    runtime = ROOT / "runtime/rust/horn-ipc"
+    runtime = ROOT / "platform/runtime/rust/horn-ipc"
     (tmp_path / "Cargo.toml").write_text(
         "[package]\n"
         'name = "idl-check"\n'
@@ -571,6 +571,7 @@ def test_vm_schema_has_bounded_batches_and_scoped_faults():
         "VmRegion",
         "VmPager",
         "VmFactory",
+        "VmUntyped",
     }
     assert all(
         interface.fqn.startswith("net.nhnn.horn.vm.") for interface in schema.interfaces
@@ -601,7 +602,7 @@ def test_vm_schema_has_bounded_batches_and_scoped_faults():
 def test_object_dispatch_keeps_interface_qualified_method_names():
     schema = compile_path(ROOT / "platform/core/vm/idl/horn_vm.py")
     host = next(value for value in schema.objects if value.python_name == "VmHost")
-    assert len(list(host.methods())) == 18
+    assert len(list(host.methods())) == 21
     rust = emit_rust(schema)
     for interface in ("VmFactory", "VmMemory", "VmRegion"):
         assert f"{interface}::info(handler)" in rust

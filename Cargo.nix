@@ -63,6 +63,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-procd" = rec {
+      packageId = "horn-procd";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-procd";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-vm" = rec {
       packageId = "horn-vm";
       build = internal.buildRustCrateWithFeatures {
@@ -485,7 +495,7 @@ rec {
         crateName = "horn-ipc";
         version = "0.1.0";
         edition = "2024";
-        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./runtime/rust/horn-ipc; };
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/runtime/rust/horn-ipc; };
         libName = "horn_ipc";
         dependencies = [
           {
@@ -508,7 +518,7 @@ rec {
         crateName = "horn-mimalloc";
         version = "0.1.0";
         edition = "2024";
-        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./runtime/rust/horn-mimalloc; };
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/runtime/rust/horn-mimalloc; };
         libName = "horn_mimalloc";
         dependencies = [
           {
@@ -520,6 +530,36 @@ rec {
             name = "horn-vm";
             packageId = "horn-vm";
             features = [ "protocol" ];
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+          }
+        ];
+
+      };
+      "horn-procd" = rec {
+        crateName = "horn-procd";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/core/procd; };
+        libName = "horn_procd";
+        dependencies = [
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "horn-vm";
+            packageId = "horn-vm";
+            features = [ "sel4" ];
+          }
+          {
+            name = "object";
+            packageId = "object";
+            usesDefaultFeatures = false;
+            features = [ "read" ];
           }
           {
             name = "sel4";
@@ -585,6 +625,10 @@ rec {
             packageId = "horn-mimalloc";
           }
           {
+            name = "horn-procd";
+            packageId = "horn-procd";
+          }
+          {
             name = "horn-vm";
             packageId = "horn-vm";
             features = [ "protocol" ];
@@ -637,6 +681,10 @@ rec {
             features = [ "sel4" ];
           }
           {
+            name = "horn-procd";
+            packageId = "horn-procd";
+          }
+          {
             name = "horn-vm";
             packageId = "horn-vm";
             features = [ "rpc" ];
@@ -648,14 +696,6 @@ rec {
           {
             name = "sel4-root-task";
             packageId = "sel4-root-task";
-          }
-        ];
-        buildDependencies = [
-          {
-            name = "object";
-            packageId = "object";
-            usesDefaultFeatures = false;
-            features = [ "read" ];
           }
         ];
 
