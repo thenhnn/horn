@@ -1,8 +1,10 @@
-//! Privileged discovery process. No drivers are started and no DMA is enabled.
+//! Privileged discovery/resource service. Device-specific drivers run elsewhere.
 #![no_std]
 #![no_main]
 extern crate alloc;
+mod native;
 mod runtime;
+mod service;
 
 use acpi::{AcpiHandler, AcpiTables, PhysicalMapping, rsdp::Rsdp};
 use alloc::alloc::{alloc, dealloc, handle_alloc_error};
@@ -11,7 +13,7 @@ use horn_devmgr::{Inventory, firmware, pci::ConfigRead, protocol::*};
 use horn_ipc::*;
 horn_ipc::horn_tag!();
 
-type PlatformClient = DevicePlatformClient<Sel4Transport<Sel4CapSpace>>;
+use native::PlatformClient;
 
 #[derive(Clone)]
 struct Firmware<'a>(&'a RefCell<PlatformClient>);
@@ -73,7 +75,7 @@ fn main() -> ! {
     let receive = root.absolute_cptr(sel4::CPtr::from_bits(DEVICE_CAPS_FIRST_FREE_SLOT as _));
     let space = Sel4CapSpace::new_local(
         root,
-        (DEVICE_CAPS_FIRST_FREE_SLOT + 1) as _,
+        (DEVICE_CAPS_FIRST_FREE_SLOT + 2) as _,
         1 << DEVICE_CAPS_SIZE_BITS,
     );
     let target = Cap::new(
@@ -84,7 +86,12 @@ fn main() -> ! {
         CapMode::COPY,
         Rights::ALL,
     );
-    let mut platform = DevicePlatformClient::new(Sel4Transport::new(root, receive, space), target);
+    let private_receive = root.absolute_cptr(sel4::CPtr::from_bits(
+        (DEVICE_CAPS_FIRST_FREE_SLOT + 1) as _,
+    ));
+    let mut platform =
+        DevicePlatformClient::new(Sel4Transport::new(root, private_receive, space), target);
+    let policy = platform.policy().expect("bootstrap policy");
     let supplied = platform.rsdp().expect("bootstrap RSDP");
     let mut bytes = [0u8; 36];
     assert!(supplied.len == 20 || supplied.len == 36);
@@ -110,32 +117,85 @@ fn main() -> ! {
         .expect("ACPI root table");
     let regions = firmware::ecam_regions(&tables).expect("ACPI MCFG");
     let mut inventory = Inventory::discover(&mut firmware, &regions, 256).expect("PCIe discovery");
+    let dmar = if policy.vtd {
+        Some(horn_devmgr::vtd::dmar::Dmar::discover(&tables).expect("ACPI DMAR"))
+    } else {
+        None
+    };
     drop(tables);
     let count = inventory.status().unwrap().pci_devices;
-    sel4::debug_println!("DEVMGR_READY devices={} ecam=true iommu=false", count);
-    firmware.0.borrow_mut().ready().expect("bootstrap ready");
-    // Reuse the bootstrap transport's local slots; never export its authority.
-    let client = platform.into_inner();
-    let mut server = Sel4Server::new(
-        root,
-        sel4::cap::Endpoint::from_bits(DEVICE_CAPS_SERVICE_SLOT as _),
-        receive,
-        client.transport.space,
+    let mut io = native::Io::new(platform.into_inner());
+    let mut service = if let Some(dmar) = dmar {
+        assert!(regions.iter().all(|r| r.segment == 0 && r.first_bus == 0));
+        let mut cursor = 0;
+        loop {
+            let page = inventory.list(cursor).unwrap();
+            for device in &page.entries.data[..page.entries.len as usize] {
+                let bdf = ((device.address.bus << 8)
+                    | (device.address.device << 3)
+                    | device.address.function) as u16;
+                let address = regions
+                    .iter()
+                    .find(|r| r.segment == 0 && device.address.bus <= r.last_bus as u32)
+                    .unwrap()
+                    .address(bdf, 4)
+                    .unwrap();
+                let command = io.config(address) as u16;
+                io.write(address, 2, (command & !4) as u64);
+            }
+            if page.next == 0 {
+                break;
+            }
+            cursor = page.next;
+        }
+        io.initialize(dmar.registers);
+        let unit =
+            unsafe { horn_devmgr::vtd::Vtd::enable(io, dmar, policy.ticks_per_us * 1_000_000) }
+                .expect("VT-d initialization");
+        sel4::debug_println!(
+            "VTD_ACTIVE translation=true interrupt_remap=true compatibility=false"
+        );
+        service::Service::enabled(inventory, regions, unit)
+    } else {
+        service::Service::new(inventory, regions, io)
+    };
+    sel4::debug_println!(
+        "DEVMGR_READY devices={} ecam=true iommu={}",
+        count,
+        policy.vtd
     );
+    service.io().platform.ready().expect("bootstrap ready");
     let reply = sel4::cap::Reply::from_bits(DEVICE_CAPS_REPLY_SLOT as _);
     loop {
-        match server.recv_request_dynamic(
-            device_discovery_request_layout,
-            reply,
-            DeviceDiscoveryRequest::decode,
-        ) {
+        let request = {
+            let mut server = Sel4Server::new(
+                root,
+                sel4::cap::Endpoint::from_bits(DEVICE_CAPS_SERVICE_SLOT as _),
+                receive,
+                service.io().space(),
+            );
+            server.recv_request_dynamic(
+                device_host_request_layout,
+                reply,
+                DeviceHostRequest::decode,
+            )
+        };
+        match request {
             Ok((_, request, reply)) => {
-                let response = device_discovery_dispatch(request, &mut inventory);
-                device_discovery_reply(reply, &mut server.space, &response).unwrap();
+                let badge = reply.badge;
+                let response = device_host_dispatch(
+                    request,
+                    &mut service::Caller {
+                        service: &mut service,
+                        badge,
+                    },
+                );
+                device_host_reply(reply, service.io().space(), &response).unwrap();
+                receive.delete().unwrap();
             }
             Err(_) => {
-                // Observer requests carry no caps. Discard an unsolicited cap
-                // and abandon the malformed call, rather than killing devmgr.
+                // Discard unsolicited/invalid capability arguments and abandon
+                // the malformed call, rather than killing the critical service.
                 receive.delete().unwrap();
             }
         }

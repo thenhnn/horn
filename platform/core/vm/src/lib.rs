@@ -14,6 +14,8 @@ pub mod sel4;
 pub mod service;
 
 #[cfg(feature = "rpc")]
+pub mod dma;
+#[cfg(feature = "rpc")]
 mod seals;
 
 #[cfg(feature = "protocol")]

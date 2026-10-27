@@ -99,6 +99,24 @@ pub struct Info<'a> {
     pub ram: Usage,
 }
 
+/// Trusted IOMMU broker token; dropping it does not release device-accessible RAM.
+#[must_use]
+pub struct DmaPin {
+    process: ProcessId,
+    pin: horn_vm::dma::Pin,
+}
+impl DmaPin {
+    pub fn pages(&self) -> &[u64] {
+        self.pin.pages()
+    }
+}
+
+#[must_use]
+pub struct MmioLease {
+    process: ProcessId,
+    lease: horn_vm::service::MmioLease,
+}
+
 pub struct Manager {
     allocator: KernelAllocator,
     caller_vspace: sel4::cap::VSpace,
@@ -306,6 +324,93 @@ impl Manager {
     pub fn vspace(&self, id: ProcessId) -> Result<sel4::cap::VSpace, Error> {
         Ok(self.live(id)?.loaded.vspace)
     }
+    /// Root routing only: `memory` must come from the kernel receive path on
+    /// the shared VM endpoint, never from caller-supplied numeric badge data.
+    pub fn pin_dma(
+        &mut self,
+        memory: horn_ipc::CapRef,
+        offset: u64,
+        length: u64,
+        access: horn_vm::protocol::VmProtection,
+    ) -> Result<DmaPin, horn_vm::protocol::VmError> {
+        for process in &mut self.processes {
+            if !matches!(process.state, State::Created | State::Active) {
+                continue;
+            }
+            if let Some(vm) = &mut process.vm {
+                if vm.owns_memory(memory) {
+                    return Ok(DmaPin {
+                        process: process.id,
+                        pin: vm.pin_dma(memory, offset, length, access)?,
+                    });
+                }
+            }
+        }
+        Err(horn_vm::protocol::VmError::Denied)
+    }
+    /// Trusted device broker only. `space` must be kernel-unwrapped on the VM
+    /// endpoint. Ordinary clients never select a destination by numeric ID.
+    pub fn import_mmio(
+        &mut self,
+        space: horn_ipc::CapRef,
+        bank: &mut horn_vm::sel4::device::DeviceBank,
+        address: usize,
+        length: usize,
+        ceiling: horn_vm::protocol::VmProtection,
+    ) -> Result<
+        (
+            MmioLease,
+            horn_ipc::Cap<horn_vm::protocol::VmMemoryObjectTag>,
+        ),
+        horn_vm::protocol::VmError,
+    > {
+        for process in &mut self.processes {
+            if !matches!(process.state, State::Created | State::Active) {
+                continue;
+            }
+            if let Some(vm) = &mut process.vm {
+                if vm.owns_address_space(space) {
+                    let backing = bank.memory(address, length).map_err(|e| match e {
+                        horn_vm::Error::InvalidSize => horn_vm::protocol::VmError::Invalid,
+                        horn_vm::Error::Backend => horn_vm::protocol::VmError::Quarantined,
+                        _ => horn_vm::protocol::VmError::Exhausted,
+                    })?;
+                    let (lease, cap) = vm.import_mmio(backing, ceiling)?;
+                    return Ok((
+                        MmioLease {
+                            process: process.id,
+                            lease,
+                        },
+                        cap,
+                    ));
+                }
+            }
+        }
+        Err(horn_vm::protocol::VmError::Denied)
+    }
+    pub fn revoke_mmio(&mut self, token: MmioLease) -> Result<(), horn_vm::protocol::VmError> {
+        let process = self
+            .process_mut(token.process)
+            .map_err(|_| horn_vm::protocol::VmError::Stale)?;
+        process
+            .vm
+            .as_mut()
+            .ok_or(horn_vm::protocol::VmError::Stale)?
+            .revoke_mmio(token.lease)
+    }
+    /// # Safety
+    /// All translations must be removed and DMA drained before releasing this
+    /// token. A stopping/quarantined process intentionally retains its VM.
+    pub unsafe fn unpin_dma(&mut self, token: DmaPin) -> Result<(), horn_vm::protocol::VmError> {
+        let process = self
+            .process_mut(token.process)
+            .map_err(|_| horn_vm::protocol::VmError::Stale)?;
+        let vm = process
+            .vm
+            .as_mut()
+            .ok_or(horn_vm::protocol::VmError::Stale)?;
+        unsafe { vm.unpin_dma(token.pin) }
+    }
     pub fn provision_self(
         &mut self,
         id: ProcessId,
@@ -317,7 +422,7 @@ impl Manager {
         }
         let badge = NEXT_SELF_BADGE
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                value.checked_add(1)
+                value.checked_add(1).filter(|next| *next < (1 << 48))
             })
             .map_err(|_| Error::Denied)?;
         let slot = p.allocator.reserve_slot()?;

@@ -84,6 +84,8 @@ struct Memory {
     ceiling: VmProtection,
     seals: VmSeals,
     references: usize,
+    dma: crate::dma::Pins,
+    mmio_lease: bool,
     poisoned: bool,
 }
 
@@ -112,6 +114,14 @@ struct Delegation {
     badge: ::sel4::Word,
     authority: usize,
     lease: Option<UntypedLease>,
+}
+
+/// Root-held lifetime/control token for a device-backed memory object.
+/// Drop retains the backing; it never silently revokes CPU mappings.
+#[must_use]
+pub struct MmioLease {
+    memory: usize,
+    badge: u64,
 }
 
 pub struct Service {
@@ -194,6 +204,168 @@ impl Service {
     pub fn owns_memory(&self, cap: CapRef) -> bool {
         cap.unwrapped_badge()
             .is_some_and(|badge| self.memory_index(badge as _).is_ok())
+    }
+
+    pub fn owns_address_space(&self, cap: CapRef) -> bool {
+        cap.unwrapped_badge() == Some(self.badges[SPACE] as u64)
+    }
+    /// Trusted device broker only. The bank has already checked physical device
+    /// authority. This does not charge MMIO bytes as resident RAM. CPU mapping
+    /// objects/page tables still belong to this process's account.
+    pub fn import_mmio(
+        &mut self,
+        backing: MemoryObject<Frame>,
+        ceiling: VmProtection,
+    ) -> Result<(MmioLease, Cap<VmMemoryObjectTag>), VmError> {
+        let result = (|| {
+            permissions(ceiling)?;
+            if ceiling.0 & VmProtection::EXECUTE.0 != 0
+                || backing.resident_size() != 0
+                || backing.page_count() == 0
+            {
+                return Err(VmError::Denied);
+            }
+            let index = self
+                .memories
+                .iter()
+                .position(Option::is_none)
+                .ok_or(VmError::Exhausted)?;
+            let badge = new_badge()?;
+            let (authority, cap) = self.export(badge)?;
+            Ok((index, badge, authority, cap))
+        })();
+        let (index, badge, authority, cap) = match result {
+            Ok(value) => value,
+            Err(value) => {
+                backing.release(&mut self.pool).map_err(error)?;
+                return Err(value);
+            }
+        };
+        self.memories[index] = Some(Memory {
+            badge,
+            authority: Some(authority),
+            backing,
+            ceiling,
+            seals: VmSeals(0),
+            references: 1,
+            dma: crate::dma::Pins::default(),
+            mmio_lease: true,
+            poisoned: false,
+        });
+        Ok((
+            MmioLease {
+                memory: index,
+                badge: badge as u64,
+            },
+            cap,
+        ))
+    }
+    /// Acknowledges removal of EVERY alias, even after the client closed its
+    /// memory authority. Only after success may devmgr stop/reset the function
+    /// and tear down its DMA domain. On failure retain DMA pins and fail-stop.
+    pub fn revoke_mmio(&mut self, lease: MmioLease) -> Result<(), VmError> {
+        let memory = self
+            .memories
+            .get(lease.memory)
+            .and_then(Option::as_ref)
+            .ok_or(VmError::Stale)?;
+        if memory.badge as u64 != lease.badge || !memory.mmio_lease {
+            return Err(VmError::Stale);
+        }
+        self.revoke_aliases(lease.memory)?;
+        if self.memory(lease.memory).authority.is_some() {
+            self.close(lease.memory)?;
+        }
+        let memory = self.memories[lease.memory].as_mut().unwrap();
+        memory.mmio_lease = false;
+        memory.references -= 1;
+        self.collect(lease.memory)
+    }
+    fn revoke_aliases(&mut self, index: usize) -> Result<(), VmError> {
+        if self.memory(index).dma.count != 0 {
+            return Err(VmError::Busy);
+        }
+        for region in 0..self.regions.len() {
+            if self.regions[region].is_none() {
+                continue;
+            }
+            for page in 0..self.region(region).pages.len() {
+                if self.page(region, page).memory == Some(index)
+                    && self.unmap(region, page..page + 1).is_err()
+                {
+                    self.memories[index].as_mut().unwrap().poisoned = true;
+                    return Err(self.poison(region));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Trusted IOMMU broker only. The reference must carry a kernel-unwrapped
+    /// memory badge; device access is bounded to whole resident pages (at most 16).
+    /// This adds a backing reference, not a RAM charge or a raw capability export.
+    pub fn pin_dma(
+        &mut self,
+        cap: CapRef,
+        offset: u64,
+        length: u64,
+        access: VmProtection,
+    ) -> Result<crate::dma::Pin, VmError> {
+        let index = self.memory_index(cap.unwrapped_badge().ok_or(VmError::Denied)? as _)?;
+        let memory = self.memory(index);
+        if memory.poisoned {
+            return Err(VmError::Quarantined);
+        }
+        if memory.backing.resident_size() == 0 {
+            return Err(VmError::Denied);
+        }
+        let range = crate::page_range(offset, length, memory.backing.size(), PAGE_SIZE as u64)
+            .map_err(error)?;
+        if range.len() > 16 {
+            return Err(VmError::Invalid);
+        }
+        let pins = memory.dma.adding(access, memory.ceiling, memory.seals)?;
+        let references = memory.references.checked_add(1).ok_or(VmError::Exhausted)?;
+        let mut pages = Vec::new();
+        pages
+            .try_reserve_exact(range.len())
+            .map_err(|_| VmError::Exhausted)?;
+        for frame in &memory.backing.frames()[range] {
+            pages.push(
+                self.pool
+                    .cap(frame)
+                    .map_err(error)?
+                    .frame_get_address()
+                    .map_err(|_| VmError::Backend)? as u64,
+            );
+        }
+        let pin = crate::dma::Pin {
+            memory: index,
+            badge: memory.badge as u64,
+            writer: access.0 & VmProtection::WRITE.0 != 0,
+            pages,
+        };
+        let memory = self.memories[index].as_mut().unwrap();
+        memory.dma = pins;
+        memory.references = references;
+        Ok(pin)
+    }
+    /// # Safety
+    /// Every device translation for this token must already be removed with
+    /// acknowledged IOTLB invalidation AND read/write draining. No IOVA reuse
+    /// may expose a new allocation to stale device requests.
+    pub unsafe fn unpin_dma(&mut self, pin: crate::dma::Pin) -> Result<(), VmError> {
+        let memory = self
+            .memories
+            .get_mut(pin.memory)
+            .and_then(Option::as_mut)
+            .ok_or(VmError::Stale)?;
+        if memory.badge as u64 != pin.badge {
+            return Err(VmError::Stale);
+        }
+        memory.dma.remove(pin.writer);
+        memory.references -= 1;
+        self.collect(pin.memory)
     }
 
     /// Borrow immutable resident bytes without copying or transferring ownership.
@@ -331,6 +503,16 @@ impl Service {
     }
     /// All threads using this adopted address space must already be stopped.
     pub fn shutdown(&mut self) -> Result<(), VmError> {
+        // Account destruction would revoke RAM even if a backing reference is
+        // retained. Refuse BEFORE any teardown while hardware can still use it.
+        if self
+            .memories
+            .iter()
+            .flatten()
+            .any(|m| m.dma.count != 0 || m.mmio_lease)
+        {
+            return Err(VmError::Busy);
+        }
         for index in 0..self.delegations.len() {
             if self.delegations[index].is_some() {
                 self.close_delegation(index)?;
@@ -496,6 +678,8 @@ impl Service {
             ceiling,
             seals: VmSeals::default(),
             references: 0,
+            dma: crate::dma::Pins::default(),
+            mmio_lease: false,
             poisoned: false,
         });
         Ok((index, cap))
@@ -584,15 +768,19 @@ impl Service {
         if memory.poisoned {
             return Err(VmError::Quarantined);
         }
+        if memory.backing.resident_size() == 0 {
+            return Err(VmError::Unsupported);
+        }
         // All aliases are mediated here. Requests are serialized with Map,
         // Protect and Unmap; may_write is cleared only after native cleanup.
         // WRITE never silently downgrades mappings or races a remote writer.
-        let may_write = self.regions.iter().flatten().any(|region| {
-            region
-                .pages
-                .iter()
-                .any(|page| page.memory == Some(index) && page.may_write)
-        });
+        let may_write = memory.dma.writers != 0
+            || self.regions.iter().flatten().any(|region| {
+                region
+                    .pages
+                    .iter()
+                    .any(|page| page.memory == Some(index) && page.may_write)
+            });
         let seals = memory.seals.adding(requested, may_write)?;
         self.memories[index].as_mut().unwrap().seals = seals;
         Ok(())
@@ -649,7 +837,9 @@ impl Service {
                     true,
                     protection.0 & VmProtection::WRITE.0 != 0,
                 ),
-                if protection.0 & VmProtection::EXECUTE.0 == 0 {
+                if self.memory(state.memory.unwrap()).backing.resident_size() == 0 {
+                    ::sel4::VmAttributes::CACHE_DISABLED | ::sel4::VmAttributes::EXECUTE_NEVER
+                } else if protection.0 & VmProtection::EXECUTE.0 == 0 {
                     ::sel4::VmAttributes::EXECUTE_NEVER
                 } else {
                     ::sel4::VmAttributes::default()
@@ -1087,19 +1277,7 @@ impl VmMemory for Caller<'_> {
     }
     fn revoke(&mut self) -> Result<(), VmError> {
         let index = self.service.memory_index(self.badge)?;
-        for region in 0..self.service.regions.len() {
-            if self.service.regions[region].is_none() {
-                continue;
-            }
-            for page in 0..self.service.region(region).pages.len() {
-                if self.service.page(region, page).memory == Some(index) {
-                    if self.service.unmap(region, page..page + 1).is_err() {
-                        self.service.memories[index].as_mut().unwrap().poisoned = true;
-                        return Err(self.service.poison(region));
-                    }
-                }
-            }
-        }
+        self.service.revoke_aliases(index)?;
         self.service.close(index)
     }
 }

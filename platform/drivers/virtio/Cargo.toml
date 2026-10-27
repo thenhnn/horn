@@ -1,0 +1,8 @@
+[package]
+name = "horn-virtio"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+virtio-drivers = { version = "=0.13.0", default-features = false, features = ["alloc"] }
+zerocopy = { version = "=0.8.63", default-features = false }

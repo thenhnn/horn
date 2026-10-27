@@ -8,6 +8,12 @@ use protocol::*;
 
 pub mod firmware;
 pub mod pci;
+pub mod vtd;
+
+// Never export an unbadged endpoint: CNode_Mint could rebrand it as another
+// role. Nonzero endpoint badges cannot be changed by deriving capabilities.
+pub const OBSERVER_BADGE: u64 = 1;
+pub const ASSIGNMENT_BADGE: u64 = 2;
 #[cfg(test)]
 mod tests;
 
@@ -20,6 +26,7 @@ pub mod protocol {
 /// This is not a hotplug inventory: a new process starts a new snapshot.
 pub struct Inventory {
     devices: Vec<PciDeviceInfo>,
+    iommu: IommuState,
 }
 impl Inventory {
     pub fn discover(
@@ -30,7 +37,14 @@ impl Inventory {
         firmware::validate_regions(regions)?;
         Ok(Self {
             devices: pci::scan(config, regions, limit)?,
+            iommu: IommuState::NotInitialized,
         })
+    }
+}
+impl Inventory {
+    /// Trusted owner calls only after translation AND interrupt remapping are active.
+    pub fn iommu_enabled(&mut self) {
+        self.iommu = IommuState::Enabled;
     }
 }
 impl DeviceObserver for Inventory {
@@ -38,7 +52,7 @@ impl DeviceObserver for Inventory {
         Ok(DeviceStatus {
             phase: DevicePhase::DiscoveryReady,
             pci_devices: self.devices.len() as u32,
-            iommu: IommuState::NotInitialized,
+            iommu: self.iommu,
         })
     }
     fn list(&mut self, after: u64) -> Result<DevicePage, DeviceError> {

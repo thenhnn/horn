@@ -24,6 +24,36 @@ pub trait CapSpace {
     fn cptr(&self, cap: CapRef) -> Result<u64, RpcError>;
 }
 
+impl<S: CapSpace + ?Sized> CapSpace for &mut S {
+    fn alloc_cnode(&mut self, parent: Option<SlotRef>, bits: u8) -> Result<CapRef, RpcError> {
+        (**self).alloc_cnode(parent, bits)
+    }
+    fn free_cnode(&mut self, cap: CapRef) -> Result<(), RpcError> {
+        (**self).free_cnode(cap)
+    }
+    fn copy_into(&mut self, dest: SlotRef, src: CapRef, rights: Rights) -> Result<(), RpcError> {
+        (**self).copy_into(dest, src, rights)
+    }
+    fn move_into(&mut self, dest: SlotRef, src: CapRef) -> Result<(), RpcError> {
+        (**self).move_into(dest, src)
+    }
+    fn cap_at(&mut self, slot: SlotRef) -> Result<CapRef, RpcError> {
+        (**self).cap_at(slot)
+    }
+    fn delete(&mut self, cap: CapRef) -> Result<(), RpcError> {
+        (**self).delete(cap)
+    }
+    fn localize(&mut self, cap: CapRef) -> Result<CapRef, RpcError> {
+        (**self).localize(cap)
+    }
+    fn install_self_cnode(&mut self, cap: CapRef) -> Result<(), RpcError> {
+        (**self).install_self_cnode(cap)
+    }
+    fn cptr(&self, cap: CapRef) -> Result<u64, RpcError> {
+        (**self).cptr(cap)
+    }
+}
+
 pub struct CapPacker<'a, S: CapSpace> {
     space: &'a mut S,
     layout: &'static CapLayout,

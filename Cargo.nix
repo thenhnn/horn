@@ -103,6 +103,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-virtio" = rec {
+      packageId = "horn-virtio";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-virtio";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-vm" = rec {
       packageId = "horn-vm";
       build = internal.buildRustCrateWithFeatures {
@@ -550,6 +560,31 @@ rec {
           "use_std" = [ "std" ];
         };
       };
+      "enumn" = rec {
+        crateName = "enumn";
+        version = "0.1.14";
+        edition = "2021";
+        sha256 = "0f1gagm6841sih4ipw46c7gn1idjgqfay1f5q6hchdwjg2rxd7ig";
+        procMacro = true;
+        authors = [
+          "David Tolnay <dtolnay@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+          }
+          {
+            name = "syn";
+            packageId = "syn 2.0.119";
+          }
+        ];
+
+      };
       "fallible-iterator" = rec {
         crateName = "fallible-iterator";
         version = "0.3.0";
@@ -748,6 +783,27 @@ rec {
           {
             name = "sel4";
             packageId = "sel4";
+          }
+        ];
+
+      };
+      "horn-virtio" = rec {
+        crateName = "horn-virtio";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/drivers/virtio; };
+        libName = "horn_virtio";
+        dependencies = [
+          {
+            name = "virtio-drivers";
+            packageId = "virtio-drivers";
+            usesDefaultFeatures = false;
+            features = [ "alloc" ];
+          }
+          {
+            name = "zerocopy";
+            packageId = "zerocopy";
+            usesDefaultFeatures = false;
           }
         ];
 
@@ -1696,6 +1752,25 @@ rec {
         ];
 
       };
+      "safe-mmio" = rec {
+        crateName = "safe-mmio";
+        version = "0.3.2";
+        edition = "2024";
+        sha256 = "1q5bkvq0pcki2idahf9dmaq3hdyy5vd9vf9cc5qvcx0pr5jfv1g8";
+        libName = "safe_mmio";
+        authors = [
+          "Andrew Walbran <qwandor@google.com>"
+        ];
+        dependencies = [
+          {
+            name = "zerocopy";
+            packageId = "zerocopy";
+            features = [ "derive" ];
+          }
+        ];
+        features = {
+        };
+      };
       "scopeguard" = rec {
         crateName = "scopeguard";
         version = "1.2.0";
@@ -2640,6 +2715,50 @@ rec {
         };
         resolvedDefaultFeatures = [ "clone-impls" "default" "derive" "full" "parsing" "printing" "proc-macro" ];
       };
+      "thiserror" = rec {
+        crateName = "thiserror";
+        version = "2.0.21";
+        edition = "2021";
+        sha256 = "17hq1lh5dyr3bkc7zzjrbrp4qgkvhc48kgq1n5fdxkindaw2rr89";
+        authors = [
+          "David Tolnay <dtolnay@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "thiserror-impl";
+            packageId = "thiserror-impl";
+          }
+        ];
+        features = {
+          "default" = [ "std" ];
+        };
+      };
+      "thiserror-impl" = rec {
+        crateName = "thiserror-impl";
+        version = "2.0.21";
+        edition = "2021";
+        sha256 = "0945n8agp7kg6n6b35yyjb4g5xv2q22vrw15h6jj1nw76a99flgy";
+        procMacro = true;
+        libName = "thiserror_impl";
+        authors = [
+          "David Tolnay <dtolnay@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+          }
+          {
+            name = "syn";
+            packageId = "syn 3.0.9";
+          }
+        ];
+
+      };
       "ucd-trie" = rec {
         crateName = "ucd-trie";
         version = "0.1.7";
@@ -2695,6 +2814,60 @@ rec {
           "spin" = [ "dep:spin" ];
         };
         resolvedDefaultFeatures = [ "fde-custom" "hide-trace" "panicking" "personality" "unwinder" ];
+      };
+      "virtio-drivers" = rec {
+        crateName = "virtio-drivers";
+        version = "0.13.0";
+        edition = "2024";
+        sha256 = "1xz2gl4ww73gcqlyf4grz6g8wcyha3aqwnp6p71yg36xiii1rp6g";
+        libName = "virtio_drivers";
+        authors = [
+          "Jiajie Chen <noc@jiegec.ac.cn>"
+          "Runji Wang <wangrunji0408@163.com>"
+          "Yuekai Jia <equation618@gmail.com>"
+          "Andrew Walbran <qwandor@google.com>"
+        ];
+        dependencies = [
+          {
+            name = "bitflags";
+            packageId = "bitflags";
+          }
+          {
+            name = "enumn";
+            packageId = "enumn";
+          }
+          {
+            name = "log";
+            packageId = "log";
+          }
+          {
+            name = "safe-mmio";
+            packageId = "safe-mmio";
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "zerocopy";
+            packageId = "zerocopy";
+            features = [ "derive" ];
+          }
+        ];
+        devDependencies = [
+          {
+            name = "zerocopy";
+            packageId = "zerocopy";
+            features = [ "alloc" ];
+          }
+        ];
+        features = {
+          "alloc" = [ "zerocopy/alloc" ];
+          "default" = [ "alloc" "embedded-io" ];
+          "embedded-io" = [ "dep:embedded-io" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" ];
       };
       "windows-link" = rec {
         crateName = "windows-link";
@@ -2996,6 +3169,69 @@ rec {
           "indexmap" = [ "dep:indexmap" ];
         };
         resolvedDefaultFeatures = [ "default" ];
+      };
+      "zerocopy" = rec {
+        crateName = "zerocopy";
+        version = "0.8.63";
+        edition = "2021";
+        sha256 = "1n1fm40mq4adw83hvn56j6rhnph0lldccx11jq01l6863f7izzp5";
+        dependencies = [
+          {
+            name = "zerocopy-derive";
+            packageId = "zerocopy-derive";
+            optional = true;
+          }
+          {
+            name = "zerocopy-derive";
+            packageId = "zerocopy-derive";
+            target = { target, features }: false;
+          }
+        ];
+        devDependencies = [
+          {
+            name = "zerocopy-derive";
+            packageId = "zerocopy-derive";
+          }
+        ];
+        features = {
+          "__internal_use_only_features_that_work_on_stable" = [ "alloc" "derive" "simd" "std" ];
+          "derive" = [ "zerocopy-derive" ];
+          "simd-nightly" = [ "simd" ];
+          "std" = [ "alloc" ];
+          "zerocopy-derive" = [ "dep:zerocopy-derive" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" "derive" "zerocopy-derive" ];
+      };
+      "zerocopy-derive" = rec {
+        crateName = "zerocopy-derive";
+        version = "0.8.63";
+        edition = "2021";
+        sha256 = "0zqc4g3yf378dkbsr68h1jjx3n0d4k4zvnxf83bv8gr9hfnd6fl6";
+        procMacro = true;
+        libName = "zerocopy_derive";
+        dependencies = [
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+          }
+          {
+            name = "syn";
+            packageId = "syn 2.0.119";
+            features = [ "full" ];
+          }
+        ];
+        devDependencies = [
+          {
+            name = "syn";
+            packageId = "syn 2.0.119";
+            features = [ "visit" ];
+          }
+        ];
+
       };
       "zmij" = rec {
         crateName = "zmij";

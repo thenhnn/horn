@@ -105,7 +105,9 @@ impl Manager {
     }
     fn mint(&mut self, endpoint: sel4::cap::Endpoint) -> Result<(usize, sel4::Word), Error> {
         let badge = NEXT_SELF_BADGE
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                v.checked_add(1).filter(|next| *next < (1 << 48))
+            })
             .map_err(|_| Error::Denied)?;
         let slot = self.allocator.reserve_slot()?;
         if let Err(e) = self

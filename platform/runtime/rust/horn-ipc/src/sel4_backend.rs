@@ -250,6 +250,26 @@ impl<S: CapSpace> Sel4Server<S> {
         let recv_slot = self.recv_slot;
         sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&recv_slot));
         let (info, badge) = endpoint.recv(reply);
+        self.decode_received_dynamic(info, badge, reply, layout_for, decode)
+    }
+
+    /// Decode an envelope obtained directly from the kernel (for example by a
+    /// deadline loop using NBRecv). Call before any invocation overwrites IPC
+    /// state. The caller must distinguish no-sender from a real receive; NBRecv
+    /// provides no usable MessageInfo in the no-sender case.
+    pub fn decode_received_dynamic<A, L, F>(
+        &mut self,
+        info: sel4::MessageInfo,
+        badge: Word,
+        reply: sel4::ReplyAuthority,
+        layout_for: L,
+        decode: F,
+    ) -> Result<(u64, A, Sel4Reply), RpcError>
+    where
+        L: FnOnce(u64) -> Result<&'static CapLayout, RpcError>,
+        F: for<'a> FnOnce(u64, &mut Decoder<'a>) -> Result<A, RpcError>,
+    {
+        let recv_slot = self.recv_slot;
         let label = info.label();
         let request_layout = layout_for(label)?;
         if info.extra_caps() > 1 || info.length() * 8 > MAX_MESSAGE_BYTES {

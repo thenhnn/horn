@@ -1,5 +1,6 @@
 //! Reclaimable Untyped trees. Managed objects and delegated leases use the same RAM.
-use crate::{Error, Frames, account::Account};
+use crate::{Error, Frames, MemoryObject, account::Account};
+pub mod device;
 use ::sel4::{
     Cap, CapTypeForObjectOfFixedSize, CapTypeForObjectOfVariableSize, ObjectBlueprint, Word, cap,
     cap_type,
@@ -410,8 +411,14 @@ impl KernelAllocator {
 
 #[must_use]
 pub struct Frame {
-    cap: cap::Granule,
-    allocator: Rc<RefCell<Allocator>>,
+    kind: FrameKind,
+}
+enum FrameKind {
+    Resident {
+        cap: cap::Granule,
+        allocator: Rc<RefCell<Allocator>>,
+    },
+    Device(device::DevicePage),
 }
 pub struct FramePool {
     allocator: KernelAllocator,
@@ -441,20 +448,26 @@ impl FramePool {
         self.allocator.account.usage().quarantined
     }
     pub fn cap(&self, frame: &Frame) -> Result<cap::Granule, Error> {
-        if !Rc::ptr_eq(&self.allocator.inner, &frame.allocator) {
+        let FrameKind::Resident { cap, allocator } = &frame.kind else {
+            let FrameKind::Device(page) = &frame.kind else {
+                unreachable!()
+            };
+            return Ok(page.cap());
+        };
+        if !Rc::ptr_eq(&self.allocator.inner, allocator) {
             return Err(Error::Backend);
         }
         let inner = self.allocator.inner.borrow();
         let lease = inner
             .objects
-            .get(&(frame.cap.bits() as usize))
+            .get(&(cap.bits() as usize))
             .ok_or(Error::Backend)?;
         if !lease.account.same(&self.allocator.account)
             || inner.nodes[lease.node].state != State::Used
         {
             return Err(Error::Backend);
         }
-        Ok(frame.cap)
+        Ok(*cap)
     }
     pub fn account(&self) -> &Account {
         &self.allocator.account
@@ -469,11 +482,16 @@ impl Frames for FramePool {
         self.allocator
             .allocate_fixed_sized::<cap_type::Granule>()
             .map(|cap| Frame {
-                cap,
-                allocator: self.allocator.inner.clone(),
+                kind: FrameKind::Resident {
+                    cap,
+                    allocator: self.allocator.inner.clone(),
+                },
             })
     }
     fn release(&mut self, frame: Frame) -> Result<(), Error> {
+        if let FrameKind::Device(page) = frame.kind {
+            return page.release();
+        }
         let cap = self.cap(&frame)?;
         self.allocator.release_slot(cap.bits() as usize)
     }

@@ -22,8 +22,13 @@ def test_devmgr_discovery(system, release, fault, cpus):
         assert "DEVMGR_RPC_PASS" in output
         assert "DEVMGR_FATAL reboot=true reason=devmgr stopped or faulted" in output
         return
+    vm.serial.wait_for(
+        b"DEVMGR_BANK_PASS retained=true shared=true coalesced=true mmio_charge=0",
+        timeout=60,
+    )
     vm.serial.wait_for(b"DEVMGR_READY devices=", timeout=60)
     vm.serial.wait_for(b"DEVMGR_PLATFORM_PASS bounded=true returned=true")
+    vm.serial.wait_for(b"DEVMGR_AUTH_PASS observer_rebadge=false")
     vm.serial.wait_for(
         b"DEVMGR_RPC_PASS ecam=true pagination=true info=true msi=true readonly=true",
         timeout=60,
