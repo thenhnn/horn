@@ -1,6 +1,36 @@
 use crate::{Error, elf::Image};
 use alloc::vec;
 
+#[test]
+fn process_management_is_bounded_inline_and_preserves_exit_info() {
+    use crate::protocol::*;
+    use horn_ipc::{Decoder, Encoder, List, MAX_MESSAGE_BYTES, Wire, WireCaps};
+    assert!(ProcessPage::SIZE + 8 <= MAX_MESSAGE_BYTES);
+    assert_eq!(ProcessfactoryLaunchArgs::CAPS, 1);
+    let mut name = List::default();
+    name.len = 6;
+    name.data[..6].copy_from_slice(b"driver");
+    let info = ProcessInfo {
+        id: 42,
+        name,
+        state: ProcessState::Exited,
+        exit: Some(ProcessExit::Code(7)),
+        ram: ProcessUsage {
+            limit_bytes: 8192,
+            charged_bytes: 0,
+            quarantined_bytes: 0,
+        },
+    };
+    let mut entries = List::default();
+    entries.len = 4;
+    entries.data.fill(info);
+    let page = ProcessPage { entries, next: 42 };
+    let mut bytes = vec![0; ProcessPage::SIZE];
+    page.encode(&mut Encoder::new(&mut bytes));
+    let decoded = ProcessPage::decode(&mut Decoder::new(&bytes, &mut WireCaps::default())).unwrap();
+    assert_eq!(decoded, page);
+}
+
 // A static ELF64 with one RX page, one RW page, and the eight-byte Horn tag.
 fn image() -> alloc::vec::Vec<u8> {
     let mut bytes = vec![0; 0x2c0];

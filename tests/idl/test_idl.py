@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -70,6 +71,41 @@ def test_rust_and_c_glue_reference_runtime():
     assert "horn_counter_add" in header
     assert "horn_counter_service_dispatch" in header
     assert "void horn_encoder_u64(" not in source
+
+
+def test_c_parameters_do_not_collide_with_client_or_vtable_locals(tmp_path):
+    schema = load_source(
+        tmp_path,
+        "colliding_parameters",
+        """
+from horn_idl import U32, iface, method
+@iface("test.locals")
+class LocalNames:
+    @method
+    def call(self, status: U32, ctx: U32, target: U32, result: U32,
+             transport: U32, args: U32, arg_status: U32) -> U32: ...
+""",
+    )
+    header, source = emit_c(schema)
+    (tmp_path / "protocol.h").write_text(header)
+    (tmp_path / "protocol.c").write_text(source)
+    subprocess.run(
+        [
+            "cc",
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-I",
+            str(ROOT / "platform/runtime/c/horn-ipc/include"),
+            "-c",
+            str(tmp_path / "protocol.c"),
+            "-o",
+            str(tmp_path / "protocol.o"),
+        ],
+        check=True,
+        capture_output=True,
+    )
 
 
 def test_cap_target_must_be_capability_backed(tmp_path):

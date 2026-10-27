@@ -12,6 +12,37 @@ use core::ops::Range;
 use horn_vm::sel4::{KernelAllocator, PAGE_SIZE};
 use object::{Object, ObjectSegment};
 
+/// Trusted boot setup, not a client-selectable mapping operation.
+pub(crate) fn prepare_window(
+    allocator: &mut KernelAllocator,
+    vspace: sel4::cap::VSpace,
+    window: Range<usize>,
+) -> Result<(), Error> {
+    for level in 1..sel4::vspace_levels::NUM_LEVELS {
+        let span = 1usize << sel4::vspace_levels::span_bits(level);
+        for address in (window.start & !(span - 1)..window.end).step_by(span) {
+            let ty = sel4::TranslationTableObjectType::from_level(level).ok_or(Error::Denied)?;
+            let cap = allocator
+                .allocate(ty.blueprint())?
+                .cast::<sel4::cap_type::UnspecifiedIntermediateTranslationTable>();
+            match cap.generic_intermediate_translation_table_map(
+                ty,
+                vspace,
+                address,
+                sel4::VmAttributes::DEFAULT,
+            ) {
+                Ok(()) => (),
+                Err(sel4::Error::DeleteFirst) => allocator.release_slot(cap.bits() as usize)?,
+                Err(e) => {
+                    allocator.release_slot(cap.bits() as usize)?;
+                    return Err(e.into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) struct Loaded {
     pub vspace: sel4::cap::VSpace,
     pub ipc: sel4::cap::Granule,

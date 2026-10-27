@@ -183,6 +183,86 @@ impl Service {
     pub fn address_space(&self) -> ::sel4::cap::Endpoint {
         ::sel4::Cap::from_bits(self.authority[SPACE].unwrap() as _)
     }
+    /// Trusted root routing only; badges must come from the kernel receive path.
+    pub fn handles(&self, badge: ::sel4::Word) -> bool {
+        self.badges.contains(&badge)
+            || self.memory_index(badge).is_ok()
+            || self.region_index(badge).is_ok()
+            || self.delegation_index(badge).is_ok()
+    }
+
+    pub fn owns_memory(&self, cap: CapRef) -> bool {
+        cap.unwrapped_badge()
+            .is_some_and(|badge| self.memory_index(badge as _).is_ok())
+    }
+
+    /// Borrow immutable resident bytes without copying or transferring ownership.
+    ///
+    /// # Safety
+    /// `vspace` must be the current VSpace. `window` must be reserved exclusively
+    /// for this call, have translation tables, and not overlap the callback's
+    /// scratch mappings. A Quarantined result forbids reusing the window.
+    pub unsafe fn with_sealed_bytes<R>(
+        &mut self,
+        cap: CapRef,
+        vspace: ::sel4::cap::VSpace,
+        window: Range<usize>,
+        read: impl FnOnce(&[u8]) -> R,
+    ) -> Result<R, VmError> {
+        let badge = cap.unwrapped_badge().ok_or(VmError::Denied)?;
+        let index = self.memory_index(badge as _)?;
+        let memory = self.memory(index);
+        if memory.poisoned {
+            return Err(VmError::Quarantined);
+        }
+        if memory.seals.0 & VmSeals::WRITE.0 == 0 {
+            return Err(VmError::Denied);
+        }
+        let size = usize::try_from(memory.backing.size()).map_err(|_| VmError::Invalid)?;
+        if window.start >= window.end
+            || window.start % PAGE_SIZE != 0
+            || window.end % PAGE_SIZE != 0
+            || window.len() > isize::MAX as usize
+            || memory.backing.resident_size() > window.len() as u64
+        {
+            return Err(VmError::Invalid);
+        }
+        let mut mapped = 0;
+        let mapping = (|| {
+            for frame in memory.backing.frames() {
+                self.pool
+                    .cap(frame)
+                    .map_err(error)?
+                    .frame_map(
+                        vspace,
+                        window.start + mapped * PAGE_SIZE,
+                        ::sel4::CapRights::new(false, false, true, false),
+                        ::sel4::VmAttributes::EXECUTE_NEVER,
+                    )
+                    .map_err(|_| VmError::Backend)?;
+                mapped += 1;
+            }
+            Ok(())
+        })();
+        let value = mapping.map(|()| {
+            // WRITE excludes all managed writers; &mut self pins backing until
+            // the callback returns and prevents concurrent close/revoke here.
+            read(unsafe { core::slice::from_raw_parts(window.start as *const u8, size) })
+        });
+        let mut failed = false;
+        for frame in &memory.backing.frames()[..mapped] {
+            failed |= match self.pool.cap(frame) {
+                Ok(cap) => cap.frame_unmap().is_err(),
+                Err(_) => true,
+            };
+        }
+        if failed {
+            self.memories[index].as_mut().unwrap().poisoned = true;
+            return Err(VmError::Quarantined);
+        }
+        value
+    }
+
     /// Root dispatcher uses this alongside other generated protocol dispatchers.
     pub fn dispatch(&mut self, request: VmHostRequest, badge: ::sel4::Word) -> VmHostResponse {
         vm_host_dispatch(
@@ -193,13 +273,61 @@ impl Service {
             },
         )
     }
-    pub fn finish_reply(&mut self, server: &mut Sel4Server<Sel4CapSpace>) -> Result<(), RpcError> {
+    pub fn finish_exports(&mut self) -> Result<(), RpcError> {
         if let Some(slot) = self.outgoing.take() {
             self.allocator
                 .release_slot(slot)
                 .map_err(|_| RpcError::Transport)?;
         }
+        Ok(())
+    }
+    pub fn finish_reply(&mut self, server: &mut Sel4Server<Sel4CapSpace>) -> Result<(), RpcError> {
+        self.finish_exports()?;
         server.recv_slot.delete().map_err(|_| RpcError::Transport)
+    }
+
+    /// Initialize boot-provided bytes before publishing a sealed memory cap.
+    /// # Safety
+    /// `vspace` is the current VSpace, with one exclusively reserved unmapped
+    /// scratch page and installed translation tables.
+    pub unsafe fn publish(
+        &mut self,
+        bytes: &[u8],
+        vspace: ::sel4::cap::VSpace,
+        scratch: usize,
+    ) -> Result<Cap<VmMemoryObjectTag>, VmError> {
+        let (index, cap) =
+            self.allocate(bytes.len() as _, VmBacking::Resident, VmProtection::READ)?;
+        for (frame, data) in self
+            .memory(index)
+            .backing
+            .frames()
+            .iter()
+            .zip(bytes.chunks(PAGE_SIZE))
+        {
+            let frame = self.pool.cap(frame).map_err(error)?;
+            if frame
+                .frame_map(
+                    vspace,
+                    scratch,
+                    ::sel4::CapRights::read_write(),
+                    ::sel4::VmAttributes::EXECUTE_NEVER,
+                )
+                .is_err()
+            {
+                self.close(index)?;
+                return Err(VmError::Backend);
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(data.as_ptr(), scratch as *mut u8, data.len());
+            }
+            if frame.frame_unmap().is_err() {
+                self.memories[index].as_mut().unwrap().poisoned = true;
+                return Err(VmError::Quarantined);
+            }
+        }
+        self.add_seals(index, VmSeals::WRITE)?;
+        Ok(cap)
     }
     /// All threads using this adopted address space must already be stopped.
     pub fn shutdown(&mut self) -> Result<(), VmError> {
@@ -333,7 +461,7 @@ impl Service {
         size: u64,
         backing: VmBacking,
         ceiling: VmProtection,
-    ) -> Result<Cap<VmMemoryObjectTag>, VmError> {
+    ) -> Result<(usize, Cap<VmMemoryObjectTag>), VmError> {
         permissions(ceiling)?;
         if ceiling.0 & VmProtection::EXECUTE.0 != 0 {
             return Err(VmError::Denied);
@@ -370,7 +498,7 @@ impl Service {
             references: 0,
             poisoned: false,
         });
-        Ok(cap)
+        Ok((index, cap))
     }
 
     fn reserve(&mut self, request: VmRegionRequest) -> Result<Cap<VmRegionObjectTag>, VmError> {
@@ -852,7 +980,9 @@ impl VmFactory for Caller<'_> {
         if self.badge != self.service.badges[FACTORY] {
             return Err(VmError::Denied);
         }
-        self.service.allocate(size, backing, ceiling)
+        self.service
+            .allocate(size, backing, ceiling)
+            .map(|(_, cap)| cap)
     }
     fn create_address_space(&mut self) -> Result<Cap<VmAddressSpaceObjectTag>, VmError> {
         if self.badge != self.service.badges[FACTORY] {

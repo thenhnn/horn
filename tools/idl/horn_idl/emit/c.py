@@ -464,7 +464,7 @@ class CEmitter:
     def _client_signature(self, interface: Interface, method: Method) -> str:
         params = ["horn_transport_t *transport", "void *ctx", "horn_cap_t target"]
         for param in method.params:
-            params.append(f"{c_typedef(param.type)} {snake(param.name)}")
+            params.append(f"{c_typedef(param.type)} arg_{snake(param.name)}")
         if method.result is not None:
             params.append(f"{c_typedef(method.result)} *result")
         return (
@@ -481,7 +481,7 @@ class CEmitter:
             for method in interface.all_methods():
                 params = ["void *ctx"]
                 for param in method.params:
-                    params.append(f"{c_typedef(param.type)} {snake(param.name)}")
+                    params.append(f"{c_typedef(param.type)} arg_{snake(param.name)}")
                 if method.result is not None:
                     params.append(f"{c_typedef(method.result)} *result")
                 lines.append(
@@ -986,7 +986,7 @@ class CEmitter:
             f"    {args_type} args = {{0}};",
         ]
         for param in method.params:
-            lines.append(f"    args.{snake(param.name)} = {snake(param.name)};")
+            lines.append(f"    args.{snake(param.name)} = arg_{snake(param.name)};")
         lines.extend(
             [
                 f"    uint8_t args_buf[{max(args.size, 1)}];",

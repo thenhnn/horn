@@ -553,7 +553,7 @@ rec {
           {
             name = "horn-vm";
             packageId = "horn-vm";
-            features = [ "sel4" ];
+            features = [ "rpc" ];
           }
           {
             name = "object";
@@ -603,6 +603,11 @@ rec {
         version = "0.1.0";
         edition = "2024";
         crateBin = [
+          {
+            name = "launched";
+            path = "src/launched.rs";
+            requiredFeatures = [ ];
+          }
           {
             name = "task";
             path = "src/main.rs";

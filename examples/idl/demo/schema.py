@@ -53,3 +53,6 @@ class ChildCaps:
     vm: Cap[sel4.Endpoint, Copy]
     address_space: Cap[sel4.Endpoint, Copy]
     lifecycle: Cap[sel4.Endpoint, Copy]
+    process_factory: Cap[sel4.Endpoint, Copy]
+    process_observer: Cap[sel4.Endpoint, Copy]
+    elf: Cap[sel4.Endpoint, Copy]

@@ -8,7 +8,7 @@ extern crate alloc;
 use core::ptr;
 use horn_ipc::*;
 use horn_procd::protocol as process;
-use horn_procd::{Config, Exit, Manager};
+use horn_procd::{Config, Exit, LaunchPolicy, Manager};
 use horn_vm::protocol as vm;
 use horn_vm::{
     sel4::{FramePool, KernelAllocator},
@@ -23,6 +23,7 @@ mod protocol {
 use protocol::*;
 
 static CHILD_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/child.elf"));
+static LAUNCH_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/launched.elf"));
 const GRANULE_SIZE: usize = ::sel4::FrameObjectType::GRANULE.bytes();
 const VM_START: usize = 0x4000_0000;
 const VM_SIZE: usize = 64 * 1024 * 1024;
@@ -40,7 +41,7 @@ fn config(name: &str) -> Config<'_> {
 }
 enum Request {
     Vm(vm::VmHostRequest),
-    Process(process::ProcessSelfRequest),
+    Process(process::ProcessHostRequest),
 }
 
 #[root_task(stack_size = 1024 * 256, heap_size = 1024 * 1024 * 4)]
@@ -84,18 +85,24 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
         .allocate(::sel4::ObjectBlueprint::Reply)
         .unwrap()
         .cast();
+    // Scratch was unmapped above; the high reader window is outside this image.
+    // Both ranges remain exclusive to the root's manager for its lifetime.
+    let mut processes = unsafe {
+        Manager::new(
+            allocator.clone(),
+            ::sel4::init_thread::slot::VSPACE.cap(),
+            scratch,
+            ::sel4::init_thread::slot::ASID_POOL.cap(),
+            // Exercise remote-CPU mappings when more than one CPU is available.
+            bootinfo
+                .sched_control()
+                .index(bootinfo.inner().numNodes as usize - 1)
+                .cap(),
+        )
+    };
+
+    unsafe { processes.enable_launch(0x8000_0000..0x8100_0000) }.unwrap();
     let system_charge = allocator.account().usage().charged;
-    let mut processes = Manager::new(
-        allocator.clone(),
-        ::sel4::init_thread::slot::VSPACE.cap(),
-        scratch,
-        ::sel4::init_thread::slot::ASID_POOL.cap(),
-        // Exercise remote-CPU mappings when more than one CPU is available.
-        bootinfo
-            .sched_control()
-            .index(bootinfo.inner().numNodes as usize - 1)
-            .cap(),
-    );
 
     // Independent accounts share physical RAM, not their individual quotas.
     let peer = processes.create(CHILD_ELF, config("peer")).unwrap();
@@ -190,6 +197,22 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
         128,
     )
     .unwrap();
+    let elf =
+        unsafe { memory.publish(LAUNCH_ELF, ::sel4::init_thread::slot::VSPACE.cap(), scratch) }
+            .unwrap();
+    let (process_factory, process_observer) = processes
+        .provision_launch(
+            child,
+            system,
+            LaunchPolicy {
+                max_children: 5,
+                max_ram: 8 * 1024 * 1024,
+                vm_window: VM_START..VM_START + VM_SIZE,
+                cpu_budget_us: 1000,
+                cpu_period_us: 1000,
+            },
+        )
+        .unwrap();
     let factory = memory.factory();
     let address_space = memory.address_space();
     // The generated named slots remain the bootstrap contract. The CNode itself
@@ -203,6 +226,9 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
         (CHILD_CAPS_VM_SLOT, factory.bits()),
         (CHILD_CAPS_ADDRESS_SPACE_SLOT, address_space.bits()),
         (CHILD_CAPS_LIFECYCLE_SLOT, lifecycle.bits()),
+        (CHILD_CAPS_PROCESS_FACTORY_SLOT, process_factory.bits()),
+        (CHILD_CAPS_PROCESS_OBSERVER_SLOT, process_observer.bits()),
+        (CHILD_CAPS_ELF_SLOT, elf.as_ref().slot as _),
     ] {
         child_cnode
             .absolute_cptr_from_bits_with_depth(slot as _, CHILD_CAPS_SIZE_BITS as usize)
@@ -212,6 +238,8 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
             )
             .unwrap();
     }
+    memory.finish_exports().unwrap();
+    processes.attach_vm(child, memory).unwrap();
     ::sel4::debug_println!("idl demo root: child Horn ABI verified at runtime");
     processes.start(child).unwrap();
 
@@ -240,29 +268,34 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
             .recv_request_dynamic(
                 |label| {
                     vm::vm_host_request_layout(label)
-                        .or_else(|_| process::process_self_request_layout(label))
+                        .or_else(|_| process::process_host_request_layout(label))
                 },
                 system_reply,
                 |label, input| {
                     if vm::vm_host_request_layout(label).is_ok() {
                         vm::VmHostRequest::decode(label, input).map(Request::Vm)
                     } else {
-                        process::ProcessSelfRequest::decode(label, input).map(Request::Process)
+                        process::ProcessHostRequest::decode(label, input).map(Request::Process)
                     }
                 },
             )
             .unwrap();
         match request {
             Request::Vm(request) => {
-                let response = memory.dispatch(request, reply.badge);
-                vm::vm_host_reply(reply, &mut server.space, &response).unwrap();
-                memory.finish_reply(&mut server).unwrap();
+                if let Some(response) = processes.dispatch_vm(request, reply.badge) {
+                    vm::vm_host_reply(reply, &mut server.space, &response).unwrap();
+                } else {
+                    reply.reply_status(1).unwrap();
+                }
+                processes.finish_reply(&mut server).unwrap();
             }
             Request::Process(request) => {
                 let response = processes.dispatch(request, reply.badge);
                 if let Some(id) = processes.take_exit() {
-                    memory.shutdown().unwrap();
                     processes.finish(id).unwrap();
+                    if id != child {
+                        continue;
+                    }
                     let info = processes.info(id).unwrap();
                     assert_eq!(info.ram.charged, 0);
                     assert_eq!(info.ram.quarantined, 0);
@@ -280,8 +313,8 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
                         wake.wait();
                     }
                 }
-                process::process_self_reply(reply, &mut server.space, &response).unwrap();
-                server.recv_slot.delete().unwrap();
+                process::process_host_reply(reply, &mut server.space, &response).unwrap();
+                processes.finish_reply(&mut server).unwrap();
             }
         }
     }

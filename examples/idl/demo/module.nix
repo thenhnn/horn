@@ -8,6 +8,7 @@
   mimalloc = import ../../../platform/runtime/mimalloc/default.nix {pkgs = pkgs.pkgsBuildBuild;};
   protocolOverride = old: {
     HORN_IDL = idl;
+    HORN_VM_IDL = "${../../../platform/core/vm/idl}";
     nativeBuildInputs = (old.nativeBuildInputs or []) ++ [pkgs.python3];
   };
   demoOverride = old: (protocolOverride old) // {HORN_SCHEMA = "${./schema.py}";};
@@ -27,7 +28,12 @@
     crateOverrides = {
       horn-vm = protocolOverride;
       horn-procd = protocolOverride;
-      idl-demo-root = old: (demoOverride old) // {CHILD_ELF = "${child}/bin/task.elf";};
+      idl-demo-root = old:
+        (demoOverride old)
+        // {
+          CHILD_ELF = "${child}/bin/task.elf";
+          LAUNCH_ELF = "${child}/bin/launched.elf";
+        };
       memchr = old: {features = ["alloc"];};
     };
   };

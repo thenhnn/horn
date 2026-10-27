@@ -39,12 +39,11 @@ fn run_python(schema: &Path, idl: &Path, output: &Path) {
 
 fn main() {
     generate_protocol();
-    println!("cargo:rerun-if-env-changed=CHILD_ELF");
-    let child = env::var("CHILD_ELF").expect("CHILD_ELF is not set");
-    println!("cargo:rerun-if-changed={child}");
-    fs::copy(
-        child,
-        PathBuf::from(env::var("OUT_DIR").unwrap()).join("child.elf"),
-    )
-    .expect("copy child ELF");
+    for (variable, name) in [("CHILD_ELF", "child.elf"), ("LAUNCH_ELF", "launched.elf")] {
+        println!("cargo:rerun-if-env-changed={variable}");
+        let path = env::var(variable).expect("ELF input is not set");
+        println!("cargo:rerun-if-changed={path}");
+        fs::copy(path, PathBuf::from(env::var("OUT_DIR").unwrap()).join(name))
+            .expect("copy ELF input");
+    }
 }

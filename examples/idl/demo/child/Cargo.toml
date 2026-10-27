@@ -7,6 +7,10 @@ edition = "2024"
 name = "task"
 path = "src/main.rs"
 
+[[bin]]
+name = "launched"
+path = "src/launched.rs"
+
 [dependencies]
 horn-procd = { path = "../../../../platform/core/procd" }
 horn-mimalloc = { path = "../../../../platform/runtime/rust/horn-mimalloc" }

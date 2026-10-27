@@ -14,6 +14,10 @@ def test_idl_child_process_demo(system, release):
     )
     vm.serial.wait_for(b"NX_EXECUTE_NEVER_PASS fault=true")
     vm.serial.wait_for(b"IDL_DEMO_PASS value=41")
+    vm.serial.wait_for(b"LAUNCH_CHILD_PASS bootstrap=true")
+    vm.serial.wait_for(
+        b"LAUNCH_RPC_PASS sealed=true quota=true pagination=true control=true cleanup=true"
+    )
     vm.serial.wait_for(b"VM_CLIENT_CPU id=1")
     vm.serial.wait_for(
         b"VM_SEALS_PASS aliases=true future_write=true immutable=true cleanup=true"

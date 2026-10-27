@@ -6,6 +6,7 @@ extern crate alloc;
 
 horn_ipc::horn_tag!();
 
+mod launch_probe;
 mod runtime;
 mod vm_probe;
 
@@ -61,7 +62,8 @@ fn main() -> ! {
         counter_service_reply(reply, &mut server.space, &response).unwrap();
     }
     wake.signal();
-    vm_probe::run(root, recv_slot, server.space);
+    let space = launch_probe::run(root, recv_slot, server.space);
+    vm_probe::run(root, recv_slot, space);
     let lifecycle = ::sel4::cap::Endpoint::from_bits(CHILD_CAPS_LIFECYCLE_SLOT as _);
     let mut space = local_space(root);
     let target = Cap::<horn_procd::protocol::ProcessLifecycleTag>::from_ref(

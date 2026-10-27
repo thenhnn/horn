@@ -17,6 +17,8 @@ use horn_vm::{
 
 pub mod elf;
 mod loader;
+mod service;
+pub use service::LaunchPolicy;
 #[cfg(test)]
 mod tests;
 
@@ -63,7 +65,7 @@ pub enum Exit {
     Killed,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProcessId(usize);
+pub struct ProcessId(u64);
 
 pub struct Config<'a> {
     pub name: &'a str,
@@ -74,6 +76,11 @@ pub struct Config<'a> {
     pub cpu_period_us: u64,
 }
 struct Process {
+    id: ProcessId,
+    parent: Option<ProcessId>,
+    vm: Option<horn_vm::service::Service>,
+    control: Option<(usize, sel4::Word)>,
+    launch: Option<service::Grant>,
     name: String,
     state: State,
     exit: Option<Exit>,
@@ -100,10 +107,17 @@ pub struct Manager {
     scheduler: sel4::cap::SchedControl,
     processes: Vec<Process>,
     pending_exit: Option<ProcessId>,
+    next_id: u64,
+    launch_window: Option<Range<usize>>,
+    launch_poisoned: bool,
+    outgoing: Option<usize>,
 }
 impl Manager {
-    /// The caller supplies an unmapped scratch page in its own VSpace.
-    pub fn new(
+    /// # Safety
+    /// `caller_vspace` must remain current while using this manager. `scratch`
+    /// must be an exclusively reserved, unmapped page with translation tables
+    /// for the manager's lifetime; it must not overlap Rust allocations.
+    pub unsafe fn new(
         allocator: KernelAllocator,
         caller_vspace: sel4::cap::VSpace,
         scratch: usize,
@@ -118,11 +132,34 @@ impl Manager {
             scheduler,
             processes: Vec::new(),
             pending_exit: None,
+            next_id: 1,
+            launch_window: None,
+            launch_poisoned: false,
+            outgoing: None,
         }
     }
     /// Build a suspended process. The trusted launcher installs bootstrap caps, then calls start.
     pub fn create(&mut self, bytes: &[u8], config: Config<'_>) -> Result<ProcessId, Error> {
-        if config.cnode_bits == 0
+        self.create_in(bytes, config, None)
+    }
+    fn create_in(
+        &mut self,
+        bytes: &[u8],
+        config: Config<'_>,
+        parent: Option<ProcessId>,
+    ) -> Result<ProcessId, Error> {
+        if self.processes.len() >= 64 {
+            return Err(Error::Resource(horn_vm::Error::MetadataExhausted));
+        }
+        let id = ProcessId(self.next_id);
+        self.next_id = self.next_id.checked_add(1).ok_or(Error::Denied)?;
+        self.processes
+            .try_reserve(1)
+            .map_err(|_| Error::Resource(horn_vm::Error::MetadataExhausted))?;
+        if config.name.is_empty()
+            || config.name.len() > 64
+            || config.name.as_bytes().contains(&0)
+            || config.cnode_bits == 0
             || config.cnode_bits > 16
             || config.cpu_budget_us == 0
             || config.cpu_budget_us > config.cpu_period_us
@@ -133,6 +170,8 @@ impl Manager {
         {
             return Err(Error::Denied);
         }
+        // Process ownership does not imply RAM funding: all process accounts
+        // are peers under the system allocator, never under the launcher's quota.
         let account = self.allocator.account().child(config.ram_limit)?;
         let image = elf::Image::parse(
             bytes,
@@ -188,8 +227,12 @@ impl Manager {
                 return Err(error);
             }
         };
-        let id = ProcessId(self.processes.len());
         self.processes.push(Process {
+            id,
+            parent,
+            vm: None,
+            control: None,
+            launch: None,
             name: config.name.to_string(),
             state: State::Created,
             exit: None,
@@ -203,7 +246,10 @@ impl Manager {
         Ok(id)
     }
     fn process(&self, id: ProcessId) -> Result<&Process, Error> {
-        self.processes.get(id.0).ok_or(Error::Stale)
+        self.processes
+            .iter()
+            .find(|p| p.id == id)
+            .ok_or(Error::Stale)
     }
     fn live(&self, id: ProcessId) -> Result<&Process, Error> {
         let p = self.process(id)?;
@@ -213,7 +259,10 @@ impl Manager {
         Ok(p)
     }
     fn process_mut(&mut self, id: ProcessId) -> Result<&mut Process, Error> {
-        self.processes.get_mut(id.0).ok_or(Error::Stale)
+        self.processes
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or(Error::Stale)
     }
     pub fn info(&self, id: ProcessId) -> Result<Info<'_>, Error> {
         let p = self.process(id)?;
@@ -226,8 +275,8 @@ impl Manager {
         })
     }
     pub fn list(&self) -> impl Iterator<Item = Info<'_>> {
-        self.processes.iter().enumerate().map(|(i, p)| Info {
-            id: ProcessId(i),
+        self.processes.iter().map(|p| Info {
+            id: p.id,
             name: &p.name,
             state: p.state,
             exit: p.exit,
@@ -286,10 +335,10 @@ impl Manager {
     }
     pub fn dispatch(
         &mut self,
-        request: protocol::ProcessSelfRequest,
+        request: protocol::ProcessHostRequest,
         badge: sel4::Word,
-    ) -> protocol::ProcessSelfResponse {
-        protocol::process_self_dispatch(
+    ) -> protocol::ProcessHostResponse {
+        protocol::process_host_dispatch(
             request,
             &mut Caller {
                 manager: self,
@@ -311,23 +360,63 @@ impl Manager {
         p.state = State::Active;
         Ok(())
     }
-    /// Stop execution first. The owner must then clear VM bookkeeping before finish.
+    /// Revoke exported execution authority and stop the entire owned subtree.
+    /// No memory is reclaimed until finish has observed successful stop.
     pub fn stop(&mut self, id: ProcessId, exit: Exit) -> Result<(), Error> {
         let p = self.process_mut(id)?;
         if !matches!(p.state, State::Created | State::Active | State::Stopping) {
             return Err(Error::InvalidState);
         }
+        // Raw bootstrap TCB copies must not permit a concurrent resume.
+        p.allocator.root().absolute_cptr(p.tcb.cptr()).revoke()?;
         p.tcb.tcb_suspend()?;
         p.state = State::Stopping;
         p.exit = Some(exit);
         p.allocator.account().close();
+        let children: Vec<_> = self
+            .processes
+            .iter()
+            .filter(|p| {
+                p.parent == Some(id)
+                    && matches!(p.state, State::Created | State::Active | State::Stopping)
+            })
+            .map(|p| p.id)
+            .collect();
+        let mut failed = false;
+        for child in children {
+            failed |= self.stop(child, Exit::Killed).is_err();
+        }
+        if failed {
+            return Err(Error::Cleanup);
+        }
         Ok(())
     }
     pub fn finish(&mut self, id: ProcessId) -> Result<(), Error> {
-        let p = self.process_mut(id)?;
-        if p.state != State::Stopping {
+        if self.process(id)?.state != State::Stopping {
             return Err(Error::InvalidState);
         }
+        let children: Vec<_> = self
+            .processes
+            .iter()
+            .filter(|p| p.parent == Some(id))
+            .map(|p| p.id)
+            .collect();
+        for child in children {
+            if self.process(child)?.state != State::Exited {
+                self.finish(child)?;
+            }
+            self.retire(child)?;
+        }
+        let p = self.process_mut(id)?;
+        if let Some(vm) = &mut p.vm {
+            if vm.shutdown().is_err() {
+                p.state = State::Quarantined;
+                return Err(Error::Cleanup);
+            }
+        }
+        p.vm = None;
+        self.close_grant(id)?;
+        let p = self.process_mut(id)?;
         if let Some((slot, _)) = p.lifecycle {
             p.allocator
                 .root()
@@ -354,8 +443,8 @@ impl Caller<'_> {
         self.manager
             .processes
             .iter()
-            .position(|p| p.lifecycle.is_some_and(|(_, badge)| badge == self.badge))
-            .map(ProcessId)
+            .find(|p| p.lifecycle.is_some_and(|(_, badge)| badge == self.badge))
+            .map(|p| p.id)
             .ok_or(protocol::ProcessError::Denied)
     }
 }

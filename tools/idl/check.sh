@@ -73,4 +73,12 @@ cc -std=c11 -Wall -Wextra -Werror \
   "$ROOT/platform/runtime/c/horn-ipc/src/horn_ipc.c" -o "$TMP/vm-c"
 "$TMP/vm-c"
 
+echo "== process schema C bindings =="
+PYTHONPATH="$ROOT/tools/idl:$ROOT/platform/core/vm/idl" python3 -m horn_idl \
+  "$ROOT/platform/core/procd/idl/horn_process.py" \
+  --header "$TMP/protocol.h" --c "$TMP/protocol.c"
+cc -std=c11 -Wall -Wextra -Werror \
+  -I "$ROOT/platform/runtime/c/horn-ipc/include" -I "$TMP" \
+  -c "$TMP/protocol.c" -o "$TMP/process.o"
+
 echo "ok"

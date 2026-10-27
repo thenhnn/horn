@@ -88,8 +88,10 @@ memfd can be represented by adding SEAL at creation.
 
 An immutable ELF source needs WRITE, not merely FUTURE_WRITE or moving a cap.
 Sealing does not consume ownership: close/revoke still work, and readers must
-retain backing for their entire read. Launch from a memory capability is not
-implemented yet; the existing trusted procd loader still accepts a byte slice.
+retain backing for their entire read. Procd's scoped launch API borrows sealed
+pages through a temporary read-only NX root view, removes that view after loading,
+and charges the independent loaded image to the new process's own account. Source ownership
+and quota do not transfer to the launched process.
 
 The single VM server serializes sealing with mapping changes, even for remote
 CPU clients. It never forcibly removes mappings during seal. No raw managed
@@ -113,7 +115,11 @@ backing, ELF pages, process kernel objects and whole delegated Untypeds share
 that budget. Physical allocations use at least a page-sized, independently
 revocable Untyped; small kernel objects are conservatively charged a whole page.
 Retype inside a delegated lease is not charged again. Child account charges also
-consume their parent budget; limits do not reserve RAM.
+consume their parent budget; limits do not reserve RAM. This account hierarchy
+is not the process tree: procd creates peer process accounts under the system
+allocator, so launching children does not spend the launcher's quota. Virtual
+reservations do not charge backing. Future DMA buffers must count as physical
+RAM; MMIO/BAR ranges must not. No DMA allocation/pinning API exists yet.
 
 RAM is acquired lazily from the non-device BootInfo Untypeds. Release revokes
 all descendants before returning the unit to the common allocator; free buddy
@@ -126,8 +132,8 @@ Object counts, cap slots and the virtual window still have explicit finite
 bounds. Metadata allocation can still abort. This is not complete resource
 prepayment, DMA lifetime management or a hardened untrusted-RPC server.
 
-Explicit single-threaded exit cleanup is wired through procd: stop the thread,
-clear VM objects, then revoke remaining process resources. Automatic fault/death
+Exit cleanup is owned by procd: revoke execution-cap copies, stop the owned
+subtree, clear VM objects, then revoke remaining process resources. Automatic fault/death
 cleanup, malformed-request recovery, untrusted CNode recovery, SMP scheduling
 and failure-injected kernel cleanup remain unfinished. seL4 does not notify the
 service when the last endpoint-cap alias disappears. This service must not be used as a
