@@ -43,6 +43,36 @@ rec {
   # You can override the features with
   # workspaceMembers."${crateName}".build.override { features = [ "default" "feature1" ... ]; }.
   workspaceMembers = {
+    "devmgr-demo-root" = rec {
+      packageId = "devmgr-demo-root";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "devmgr-demo-root";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "horn-devmgr" = rec {
+      packageId = "horn-devmgr";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-devmgr";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "horn-devmgr-task" = rec {
+      packageId = "horn-devmgr-task";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-devmgr-task";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-ipc" = rec {
       packageId = "horn-ipc";
       build = internal.buildRustCrateWithFeatures {
@@ -161,6 +191,33 @@ rec {
     #   inject test dependencies into the build
 
     crates = {
+      "acpi" = rec {
+        crateName = "acpi";
+        version = "5.2.0";
+        edition = "2021";
+        sha256 = "1dps3qgqs55g1chfv03wsnm12lhxn30j5x5kk3cw9x3sz5z6qiwl";
+        authors = [
+          "Isaac Woods"
+        ];
+        dependencies = [
+          {
+            name = "bit_field";
+            packageId = "bit_field";
+          }
+          {
+            name = "bitflags";
+            packageId = "bitflags";
+          }
+          {
+            name = "log";
+            packageId = "log";
+          }
+        ];
+        features = {
+          "alloc" = [ "allocator_api" ];
+          "default" = [ "allocator_api" "alloc" ];
+        };
+      };
       "aho-corasick" = rec {
         crateName = "aho-corasick";
         version = "1.1.5";
@@ -267,6 +324,16 @@ rec {
           "static" = [ "clang-sys/static" ];
         };
         resolvedDefaultFeatures = [ "default" "logging" "prettyplease" "runtime" ];
+      };
+      "bit_field" = rec {
+        crateName = "bit_field";
+        version = "0.10.3";
+        edition = "2015";
+        sha256 = "1ikhbph4ap4w692c33r8bbv6yd2qxm1q3f64845grp1s6b3l0jqy";
+        authors = [
+          "Philipp Oppermann <dev@phil-opp.com>"
+        ];
+
       };
       "bitflags" = rec {
         crateName = "bitflags";
@@ -399,6 +466,48 @@ rec {
         };
         resolvedDefaultFeatures = [ "clang_10_0" "clang_11_0" "clang_3_5" "clang_3_6" "clang_3_7" "clang_3_8" "clang_3_9" "clang_4_0" "clang_5_0" "clang_6_0" "clang_7_0" "clang_8_0" "clang_9_0" "libloading" "runtime" ];
       };
+      "devmgr-demo-root" = rec {
+        crateName = "devmgr-demo-root";
+        version = "0.1.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "task";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./examples/devmgr/root; };
+        dependencies = [
+          {
+            name = "horn-devmgr";
+            packageId = "horn-devmgr";
+          }
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "horn-procd";
+            packageId = "horn-procd";
+          }
+          {
+            name = "horn-vm";
+            packageId = "horn-vm";
+            features = [ "rpc" ];
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+          }
+          {
+            name = "sel4-root-task";
+            packageId = "sel4-root-task";
+          }
+        ];
+
+      };
       "dlmalloc" = rec {
         crateName = "dlmalloc";
         version = "0.2.14";
@@ -488,6 +597,81 @@ rec {
         sha256 = "02zby4rsidb2ksrnysyrsaap7rk6wpp7vl5chflndafhl5gaisz4";
         authors = [
           "The Rust Project Developers"
+        ];
+
+      };
+      "horn-devmgr" = rec {
+        crateName = "horn-devmgr";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/core/devmgr; };
+        libName = "horn_devmgr";
+        dependencies = [
+          {
+            name = "acpi";
+            packageId = "acpi";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+          }
+        ];
+
+      };
+      "horn-devmgr-task" = rec {
+        crateName = "horn-devmgr-task";
+        version = "0.1.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "devmgr";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/core/devmgr/task; };
+        dependencies = [
+          {
+            name = "acpi";
+            packageId = "acpi";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "horn-devmgr";
+            packageId = "horn-devmgr";
+          }
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "one-shot-mutex";
+            packageId = "one-shot-mutex";
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+          }
+          {
+            name = "sel4-dlmalloc";
+            packageId = "sel4-dlmalloc";
+          }
+          {
+            name = "sel4-panicking";
+            packageId = "sel4-panicking";
+            features = [ "personality" "panic-handler" "alloc" ];
+          }
+          {
+            name = "sel4-panicking-env";
+            packageId = "sel4-panicking-env";
+          }
+          {
+            name = "sel4-runtime-common";
+            packageId = "sel4-runtime-common";
+            features = [ "sel4" ];
+          }
         ];
 
       };

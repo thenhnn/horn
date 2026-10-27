@@ -3,6 +3,17 @@
 version = 4
 
 [[package]]
+name = "acpi"
+version = "5.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94476c7ef97af4c4d998b3f422c1b01d5211aad57c80ed200baf148d1f1efab6"
+dependencies = [
+ "bit_field",
+ "bitflags",
+ "log",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -30,6 +41,12 @@ dependencies = [
  "shlex 1.3.0",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "bit_field"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e4b40c7323adcfc0a41c4b88143ed58346ff65a288fc144329c5c45e05d70c6"
 
 [[package]]
 name = "bitflags"
@@ -74,6 +91,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "devmgr-demo-root"
+version = "0.1.0"
+dependencies = [
+ "horn-devmgr",
+ "horn-ipc",
+ "horn-procd",
+ "horn-vm",
+ "sel4",
+ "sel4-root-task",
+]
+
+[[package]]
 name = "dlmalloc"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -113,6 +142,29 @@ name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
+
+[[package]]
+name = "horn-devmgr"
+version = "0.1.0"
+dependencies = [
+ "acpi",
+ "horn-ipc",
+]
+
+[[package]]
+name = "horn-devmgr-task"
+version = "0.1.0"
+dependencies = [
+ "acpi",
+ "horn-devmgr",
+ "horn-ipc",
+ "one-shot-mutex",
+ "sel4",
+ "sel4-dlmalloc",
+ "sel4-panicking",
+ "sel4-panicking-env",
+ "sel4-runtime-common",
+]
 
 [[package]]
 name = "horn-ipc"

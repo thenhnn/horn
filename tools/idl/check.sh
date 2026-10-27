@@ -81,4 +81,15 @@ cc -std=c11 -Wall -Wextra -Werror \
   -I "$ROOT/platform/runtime/c/horn-ipc/include" -I "$TMP" \
   -c "$TMP/protocol.c" -o "$TMP/process.o"
 
+echo "== device discovery schema and C round trips =="
+PYTHONPATH="$ROOT/tools/idl" python3 -m horn_idl \
+  "$ROOT/platform/core/devmgr/idl/horn_device.py" \
+  --header "$TMP/protocol.h" --c "$TMP/protocol.c"
+cc -std=c11 -Wall -Wextra -Werror \
+  -I "$ROOT/platform/runtime/c/horn-ipc/include" -I "$TMP" \
+  "$TMP/protocol.c" "$ROOT/tests/idl/device.c" \
+  "$ROOT/platform/runtime/c/horn-ipc/src/horn_ipc.c" -o "$TMP/device-c"
+"$TMP/device-c"
+cargo test --quiet --offline -p horn-devmgr
+
 echo "ok"

@@ -1,0 +1,8 @@
+[package]
+name = "horn-devmgr"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+horn-ipc = { path = "../../runtime/rust/horn-ipc" }
+acpi = { version = "=5.2.0", default-features = false }
