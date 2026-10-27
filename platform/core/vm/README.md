@@ -10,7 +10,7 @@ ASID authority. Untyped is available explicitly through quota-backed leases.
 
 - `VmFactory`: account information, backing, Untyped leases, address spaces, pagers, subaccounts.
 - `VmUntyped`: get the kernel capability plus its size bits; close revokes all descendants.
-- `VmMemory`: backing information, duplicate, close, revoke.
+- `VmMemory` v2: backing information including seals, add seals, duplicate, close, revoke.
 - `VmAddressSpace`: region reservation and destruction.
 - `VmRegion`: information, prepared mapping batches, pager binding, destruction.
 - `VmPager`: notification-driven fault draining and resolution batches.
@@ -19,7 +19,7 @@ ASID authority. Untyped is available explicitly through quota-backed leases.
 state authorize operations; interface casts do not grant authority. Badge values
 never wrap or get reused. An account cannot be selected using a client integer.
 
-The implementation advertises RESIDENT, PROTECTION and UNTYPED. It supports Anywhere
+The implementation advertises RESIDENT, PROTECTION, UNTYPED and SEALS. It supports Anywhere
 reservations inside one loader-provisioned window, prepared maps, aliases,
 read/write protection changes, acknowledged unmaps, close/revoke and region
 teardown. The loader installs translation tables before adopting the VSpace.
@@ -61,6 +61,44 @@ is safe. Cleanup can be retried through retained authority. Batches are not
 transactions or pipelined calls. Empty batches with valid authority succeed.
 Parcels are inline; the 16-entry limit fits the 960-byte payload and needs at most
 one borrowed capability.
+
+## Backing seals
+
+`VmMemory.add_seals(VmSeals)` irreversibly adds backing-wide restrictions;
+`info().seals` reads the shared set. Kernel-cap copies observe the same state.
+New allocations start with no seals. Unknown bits return Invalid. Additions are
+atomic: an error installs none of the requested bits.
+
+- WRITE returns Busy while any mapping retains write authority, including an
+  initially read-only mapping under RW ceilings or one downgraded with Protect.
+  Unmap/Destroy removes that authority only after acknowledged native cleanup.
+  Once installed, WRITE prevents writable maps and protection upgrades.
+- FUTURE_WRITE blocks new writable maps without changing old mappings' rights.
+  Old mappings may still upgrade through Protect; new read-only mappings cannot.
+  **FUTURE_WRITE alone does not make bytes immutable.**
+- SEAL forbids further additions (including an empty request), not writes.
+- GROW and SHRINK record size restrictions. Backing is already fixed-size and
+  there is no resize API; any future resizing must honor these restrictions.
+
+Flag values match the corresponding Linux memfd seals. There is no file/FD
+layer, private COW mapping or write/pwrite API here. A Linux adapter must enforce
+FD permissions and prevent all non-mapping writes after WRITE or FUTURE_WRITE;
+these seals are not a complete memfd implementation. A default non-sealable
+memfd can be represented by adding SEAL at creation.
+
+An immutable ELF source needs WRITE, not merely FUTURE_WRITE or moving a cap.
+Sealing does not consume ownership: close/revoke still work, and readers must
+retain backing for their entire read. Launch from a memory capability is not
+implemented yet; the existing trusted procd loader still accepts a byte slice.
+
+The single VM server serializes sealing with mapping changes, even for remote
+CPU clients. It never forcibly removes mappings during seal. No raw managed
+frame caps are exported, and every managed alias is tracked here. This invariant
+must also cover future address spaces and non-mapping writers; arbitrary private
+Untyped frames and DMA are not sealable through this API. Poisoned backing cannot
+be sealed. Debug/release QEMU boots run the server on CPU 0 and the client on CPU 1,
+checking aliases, MAYWRITE preservation, future-write denial and reclamation.
+This is not yet a same-process multi-thread or concurrent-writer stress test.
 
 ## Lifetimes and accounting
 

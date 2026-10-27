@@ -82,6 +82,7 @@ struct Memory {
     authority: Option<usize>,
     backing: MemoryObject<Frame>,
     ceiling: VmProtection,
+    seals: VmSeals,
     references: usize,
     poisoned: bool,
 }
@@ -90,6 +91,8 @@ struct Memory {
 struct Page {
     slot: Option<usize>,
     memory: Option<usize>,
+    // Like VM_MAYWRITE: survives protect(READ), but not Unmap then Map.
+    may_write: bool,
     mapped: bool,
     protection: VmProtection,
     previous: VmProtection,
@@ -363,6 +366,7 @@ impl Service {
             authority: Some(authority),
             backing: object,
             ceiling,
+            seals: VmSeals::default(),
             references: 0,
             poisoned: false,
         });
@@ -445,6 +449,25 @@ impl Service {
         self.allocator.release_slot(authority).map_err(error)?;
         self.memories[index].as_mut().unwrap().authority = None;
         self.collect(index)
+    }
+
+    fn add_seals(&mut self, index: usize, requested: VmSeals) -> Result<(), VmError> {
+        let memory = self.memory(index);
+        if memory.poisoned {
+            return Err(VmError::Quarantined);
+        }
+        // All aliases are mediated here. Requests are serialized with Map,
+        // Protect and Unmap; may_write is cleared only after native cleanup.
+        // WRITE never silently downgrades mappings or races a remote writer.
+        let may_write = self.regions.iter().flatten().any(|region| {
+            region
+                .pages
+                .iter()
+                .any(|page| page.memory == Some(index) && page.may_write)
+        });
+        let seals = memory.seals.adding(requested, may_write)?;
+        self.memories[index].as_mut().unwrap().seals = seals;
+        Ok(())
     }
 
     fn prepare(&mut self, region: usize, range: Range<usize>) -> Result<(), VmError> {
@@ -557,6 +580,15 @@ impl Service {
         {
             return Err(VmError::Denied);
         }
+        if protection.0 & VmProtection::WRITE.0 != 0
+            && self.memory(memory).seals.blocks_new_writes()
+        {
+            return Err(VmError::Denied);
+        }
+        let may_write =
+            self.region(region).ceiling.0 & self.memory(memory).ceiling.0 & VmProtection::WRITE.0
+                != 0
+                && !self.memory(memory).seals.blocks_new_writes();
         if source
             .checked_add(range.len())
             .is_none_or(|end| end > self.memory(memory).backing.page_count())
@@ -589,6 +621,7 @@ impl Service {
                 self.memories[memory].as_mut().unwrap().references += 1;
                 let state = self.page_mut(region, page);
                 state.memory = Some(memory);
+                state.may_write = may_write;
             }
             if result.is_err() || self.map_page(region, page, protection).is_err() {
                 for rollback in range.start..=page {
@@ -621,7 +654,10 @@ impl Service {
             if !state.mapped {
                 return Err(VmError::Invalid);
             }
-            if protection.0 & !self.memory(memory).ceiling.0 != 0 {
+            if protection.0 & !self.memory(memory).ceiling.0 != 0
+                || (protection.0 & VmProtection::WRITE.0 != 0
+                    && (!state.may_write || self.memory(memory).seals.0 & VmSeals::WRITE.0 != 0))
+            {
                 return Err(VmError::Denied);
             }
             self.page_mut(region, page).previous = state.protection;
@@ -787,7 +823,10 @@ impl VmFactory for Caller<'_> {
         }
         Ok(VmInfo {
             features: VmFeatures(
-                VmFeatures::RESIDENT.0 | VmFeatures::PROTECTION.0 | VmFeatures::UNTYPED.0,
+                VmFeatures::RESIDENT.0
+                    | VmFeatures::PROTECTION.0
+                    | VmFeatures::UNTYPED.0
+                    | VmFeatures::SEALS.0,
             ),
             page_size: PAGE_SIZE as u64,
             batch_limit: 16,
@@ -901,7 +940,12 @@ impl VmMemory for Caller<'_> {
             size: memory.backing.size(),
             resident_size: memory.backing.resident_size(),
             ceiling: memory.ceiling,
+            seals: memory.seals,
         })
+    }
+    fn add_seals(&mut self, seals: VmSeals) -> Result<(), VmError> {
+        let index = self.service.memory_index(self.badge)?;
+        self.service.add_seals(index, seals)
     }
     fn duplicate(&mut self, _: VmProtection) -> Result<Cap<VmMemoryObjectTag>, VmError> {
         self.service.memory_index(self.badge)?;

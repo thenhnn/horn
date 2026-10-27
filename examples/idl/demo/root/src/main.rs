@@ -46,6 +46,9 @@ enum Request {
 #[root_task(stack_size = 1024 * 256, heap_size = 1024 * 1024 * 4)]
 fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
     ::sel4::debug_println!("idl demo root: start");
+    ::sel4::debug_println!("VM_SERVICE_CPU id={}", unsafe {
+        core::arch::x86_64::__cpuid(1).ebx >> 24
+    });
     let empty = bootinfo.empty().range();
     let split = empty.start + empty.len() / 2;
     let root = ::sel4::init_thread::slot::CNODE.cap();
@@ -87,7 +90,11 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
         ::sel4::init_thread::slot::VSPACE.cap(),
         scratch,
         ::sel4::init_thread::slot::ASID_POOL.cap(),
-        bootinfo.sched_control().index(0).cap(),
+        // Exercise remote-CPU mappings when more than one CPU is available.
+        bootinfo
+            .sched_control()
+            .index(bootinfo.inner().numNodes as usize - 1)
+            .cap(),
     );
 
     // Independent accounts share physical RAM, not their individual quotas.
@@ -205,8 +212,8 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
             )
             .unwrap();
     }
-    processes.start(child).unwrap();
     ::sel4::debug_println!("idl demo root: child Horn ABI verified at runtime");
+    processes.start(child).unwrap();
 
     let target =
         Cap::<CounterTag>::from_ref(space.register(counter).unwrap().with_mode(CapMode::COPY));

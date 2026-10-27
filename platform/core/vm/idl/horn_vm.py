@@ -48,6 +48,15 @@ class VmProtection:
 
 
 @flags(base=U32)
+class VmSeals:
+    SEAL = 1
+    SHRINK = 2
+    GROW = 4
+    WRITE = 8
+    FUTURE_WRITE = 16
+
+
+@flags(base=U32)
 class VmFeatures:
     RESIDENT = 1
     DEMAND_ZERO = 2
@@ -57,6 +66,7 @@ class VmFeatures:
     DERIVE_ACCOUNT = 32
     DUPLICATE_MEMORY = 64
     UNTYPED = 128
+    SEALS = 256
 
 
 @enum(base=U32)
@@ -86,6 +96,7 @@ class VmMemoryInfo:
     size: U64
     resident_size: U64
     ceiling: VmProtection
+    seals: VmSeals
 
 
 @record
@@ -183,7 +194,7 @@ class VmFaultReply:
     def Reject(): ...
 
 
-@iface("net.nhnn.horn.vm.memory", version=(1, 0))
+@iface("net.nhnn.horn.vm.memory", version=(2, 0))
 class VmMemory:
     @method
     def info(self) -> Result[VmMemoryInfo, VmError]: ...
@@ -198,6 +209,9 @@ class VmMemory:
 
     @method
     def revoke(self) -> Result[None, VmError]: ...
+
+    @method
+    def add_seals(self, seals: VmSeals) -> Result[None, VmError]: ...
 
 
 @object(implements=(VmMemory,))

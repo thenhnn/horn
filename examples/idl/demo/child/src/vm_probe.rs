@@ -54,6 +54,10 @@ pub fn run(root: ::sel4::cap::CNode, recv: ::sel4::AbsoluteCPtr, space: Sel4CapS
         .info()
         .unwrap()
         .charged_bytes;
+    // The first synchronous call also orders this marker after root's marker.
+    ::sel4::debug_println!("VM_CLIENT_CPU id={}", unsafe {
+        core::arch::x86_64::__cpuid(1).ebx >> 24
+    });
     // A whole Untyped is charged once, independent of the objects retyped inside it.
     let lease = VmFactoryClient::new(&mut transport, factory)
         .delegate(13)
@@ -140,12 +144,13 @@ pub fn run(root: ::sel4::cap::CNode, recv: ::sel4::AbsoluteCPtr, space: Sel4CapS
     let alias_info = VmRegionClient::new(&mut transport, Cap::from_ref(alias.as_ref()))
         .info()
         .unwrap();
-    let update = VmUpdate::Map(VmMap {
+    let mapping = VmMap {
         offset: 0,
         length: 8192,
         memory_offset: 0,
         protection: rw,
-    });
+    };
+    let update = VmUpdate::Map(mapping);
     for region in [first, alias] {
         VmRegionClient::new(&mut transport, Cap::from_ref(region.as_ref()))
             .apply(Some(memory), batch(&[VmUpdate::Prepare(range), update]))
@@ -157,6 +162,41 @@ pub fn run(root: ::sel4::cap::CNode, recv: ::sel4::AbsoluteCPtr, space: Sel4CapS
         bytes.fill(0xa5);
         let alias = core::slice::from_raw_parts(alias_info.address as *const u8, 8192);
         assert!(alias.iter().all(|byte| *byte == 0xa5));
+    }
+    let write_and_lock = VmSeals(VmSeals::WRITE.0 | VmSeals::SEAL.0);
+    assert_eq!(
+        VmMemoryClient::new(&mut transport, Cap::from_ref(memory.as_ref()))
+            .add_seals(write_and_lock),
+        Err(CallError::Remote(VmError::Busy))
+    );
+    assert_eq!(
+        VmMemoryClient::new(&mut transport, Cap::from_ref(memory.as_ref()))
+            .info()
+            .unwrap()
+            .seals,
+        VmSeals(0)
+    );
+    // A kernel-cap copy must see and change the same backing-wide seals.
+    let copied_slot = transport.space.reserve_slot().unwrap();
+    let endpoint = transport
+        .space
+        .cap::<::sel4::cap_type::Endpoint>(memory.as_ref())
+        .unwrap();
+    copied_slot
+        .copy(
+            &root.absolute_cptr(endpoint.cptr()),
+            ::sel4::CapRights::all(),
+        )
+        .unwrap();
+    let copied = transport
+        .space
+        .register(::sel4::cap::Endpoint::from_bits(copied_slot.path().bits()))
+        .unwrap();
+    VmMemoryClient::new(&mut transport, Cap::from_ref(copied))
+        .add_seals(VmSeals::FUTURE_WRITE)
+        .unwrap();
+    unsafe {
+        core::ptr::write_volatile(alias_info.address as *mut u8, 0xa5);
     }
     // A non-service capability must not be interpreted as a memory identity.
     let fake = target::<VmMemoryObjectTag>(root, crate::protocol::CHILD_CAPS_WAKE_SLOT);
@@ -184,11 +224,39 @@ pub fn run(root: ::sel4::cap::CNode, recv: ::sel4::AbsoluteCPtr, space: Sel4CapS
             error: VmError::Invalid
         }))
     );
-    VmMemoryClient::new(&mut transport, Cap::from_ref(memory.as_ref()))
-        .close()
-        .unwrap();
-    transport.space.delete(memory.as_ref()).unwrap();
     destroy(&mut transport, first);
+    // New mappings after FUTURE_WRITE cannot acquire write authority, even
+    // with an RW region ceiling. Failed Map leaves the completed Prepare.
+    let first = reserve(&mut transport, address_space, 8192);
+    let readonly = VmMap {
+        protection: VmProtection::READ,
+        ..mapping
+    };
+    assert_eq!(
+        VmRegionClient::new(&mut transport, Cap::from_ref(first.as_ref()))
+            .apply(Some(memory), batch(&[VmUpdate::Prepare(range), update])),
+        Err(CallError::Remote(VmBatchError {
+            completed: 1,
+            error: VmError::Denied
+        }))
+    );
+    VmRegionClient::new(&mut transport, Cap::from_ref(first.as_ref()))
+        .apply(Some(memory), batch(&[VmUpdate::Map(readonly)]))
+        .unwrap();
+    assert_eq!(
+        VmRegionClient::new(&mut transport, Cap::from_ref(first.as_ref())).apply(
+            None,
+            batch(&[VmUpdate::Protect(VmProtect {
+                offset: 0,
+                length: 8192,
+                protection: rw
+            })])
+        ),
+        Err(CallError::Remote(VmBatchError {
+            completed: 0,
+            error: VmError::Denied
+        }))
+    );
     assert_eq!(
         VmFactoryClient::new(&mut transport, factory)
             .info()
@@ -196,16 +264,31 @@ pub fn run(root: ::sel4::cap::CNode, recv: ::sel4::AbsoluteCPtr, space: Sel4CapS
             .charged_bytes,
         initial_charge + 8192
     );
-    VmRegionClient::new(&mut transport, Cap::from_ref(alias.as_ref()))
-        .apply(
-            None,
-            batch(&[VmUpdate::Protect(VmProtect {
-                offset: 0,
-                length: 8192,
-                protection: VmProtection::READ,
-            })]),
-        )
-        .unwrap();
+    // Old mappings keep MAYWRITE across protect(READ), just like memfd.
+    for protection in [VmProtection::READ, rw, VmProtection::READ] {
+        VmRegionClient::new(&mut transport, Cap::from_ref(alias.as_ref()))
+            .apply(
+                None,
+                batch(&[VmUpdate::Protect(VmProtect {
+                    offset: 0,
+                    length: 8192,
+                    protection,
+                })]),
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        VmMemoryClient::new(&mut transport, Cap::from_ref(memory.as_ref()))
+            .add_seals(write_and_lock),
+        Err(CallError::Remote(VmError::Busy))
+    );
+    assert_eq!(
+        VmMemoryClient::new(&mut transport, Cap::from_ref(memory.as_ref()))
+            .info()
+            .unwrap()
+            .seals,
+        VmSeals::FUTURE_WRITE
+    );
     unsafe {
         assert_eq!(
             core::ptr::read_volatile(alias_info.address as *const u8),
@@ -227,12 +310,60 @@ pub fn run(root: ::sel4::cap::CNode, recv: ::sel4::AbsoluteCPtr, space: Sel4CapS
         }))
     );
     destroy(&mut transport, alias);
+    VmMemoryClient::new(&mut transport, Cap::from_ref(memory.as_ref()))
+        .add_seals(VmSeals(
+            write_and_lock.0 | VmSeals::GROW.0 | VmSeals::SHRINK.0,
+        ))
+        .unwrap();
+    let sealed = VmMemoryClient::new(&mut transport, Cap::from_ref(copied))
+        .info()
+        .unwrap();
+    assert_eq!(sealed.seals.0, 31);
+    assert_eq!(sealed.size, 8192);
+    assert_eq!(
+        VmMemoryClient::new(&mut transport, Cap::from_ref(copied)).add_seals(VmSeals(0)),
+        Err(CallError::Remote(VmError::Denied))
+    );
+    assert_eq!(
+        VmMemoryClient::new(&mut transport, Cap::from_ref(copied)).add_seals(VmSeals(32)),
+        Err(CallError::Remote(VmError::Invalid))
+    );
+    assert_eq!(
+        VmRegionClient::new(&mut transport, Cap::from_ref(first.as_ref())).apply(
+            None,
+            batch(&[VmUpdate::Protect(VmProtect {
+                offset: 0,
+                length: 8192,
+                protection: rw
+            })])
+        ),
+        Err(CallError::Remote(VmBatchError {
+            completed: 0,
+            error: VmError::Denied
+        }))
+    );
+    VmMemoryClient::new(&mut transport, Cap::from_ref(memory.as_ref()))
+        .close()
+        .unwrap();
+    transport.space.delete(memory.as_ref()).unwrap();
+    transport.space.delete(copied).unwrap();
+    let address = VmRegionClient::new(&mut transport, Cap::from_ref(first.as_ref()))
+        .info()
+        .unwrap()
+        .address;
+    unsafe {
+        assert_eq!(core::ptr::read_volatile(address as *const u8), 0xa5);
+    }
+    destroy(&mut transport, first);
     assert_eq!(
         VmFactoryClient::new(&mut transport, factory)
             .info()
             .unwrap()
             .charged_bytes,
         initial_charge
+    );
+    ::sel4::debug_println!(
+        "VM_SEALS_PASS aliases=true future_write=true immutable=true cleanup=true"
     );
     let revoked = VmFactoryClient::new(&mut transport, factory)
         .allocate(4096, VmBacking::Resident, rw)

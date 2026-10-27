@@ -602,7 +602,7 @@ def test_vm_schema_has_bounded_batches_and_scoped_faults():
 def test_object_dispatch_keeps_interface_qualified_method_names():
     schema = compile_path(ROOT / "platform/core/vm/idl/horn_vm.py")
     host = next(value for value in schema.objects if value.python_name == "VmHost")
-    assert len(list(host.methods())) == 21
+    assert len(list(host.methods())) == 22
     rust = emit_rust(schema)
     for interface in ("VmFactory", "VmMemory", "VmRegion"):
         assert f"{interface}::info(handler)" in rust

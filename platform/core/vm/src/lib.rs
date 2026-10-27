@@ -13,6 +13,9 @@ pub mod sel4;
 #[cfg(feature = "rpc")]
 pub mod service;
 
+#[cfg(feature = "rpc")]
+mod seals;
+
 #[cfg(feature = "protocol")]
 #[allow(dead_code, unused_imports, non_camel_case_types)]
 pub mod protocol {
