@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "name": "mimalloc",
+  "repository": "https://github.com/microsoft/mimalloc.git",
+  "destination": "src",
+  "revision": "b18ab4eef383f655e760881b02eff8af02800879",
+  "tree": "300cd425f454b3c38c24494db90d1622d79b599e"
+}
