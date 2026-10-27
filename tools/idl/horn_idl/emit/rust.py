@@ -42,8 +42,9 @@ def rust_str(value: str) -> str:
 
 
 def snake(name: str) -> str:
-    name = re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
-    return re.sub(r"[^a-z0-9_]", "_", name)
+    if not name.isupper():
+        name = re.sub(r"(?<!^)(?=[A-Z])", "_", name)
+    return re.sub(r"[^a-z0-9_]", "_", name.lower())
 
 
 def upper(name: str) -> str:
@@ -919,8 +920,13 @@ class RustEmitter:
             self.add(f"            Self::{variant}(_value) => {{ {body} }},")
         self.add("        }")
         self.add("    }")
+        caps_arg = (
+            "out"
+            if any(method.result_caps() for _, method in self._object_methods(object_))
+            else "_out"
+        )
         self.add(
-            "    pub fn caps(&self, out: &mut dyn CapSink) -> Result<(), RpcError> {"
+            f"    pub fn caps(&self, {caps_arg}: &mut dyn CapSink) -> Result<(), RpcError> {{"
         )
         self.add("        match self {")
         for interface, method in self._object_methods(object_):

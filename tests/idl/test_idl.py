@@ -523,3 +523,69 @@ class Spawn:
     assert layout.root_count == 1
     rust = emit_rust(schema)
     assert "Cap<CNode>" in rust
+
+
+def test_vm_schema_has_bounded_batches_and_scoped_faults():
+    schema = compile_path(ROOT / "platform/core/vm/idl/horn_vm.py")
+    interfaces = {interface.python_name: interface for interface in schema.interfaces}
+    assert set(interfaces) == {
+        "VmMemory",
+        "VmAddressSpace",
+        "VmRegion",
+        "VmPager",
+        "VmFactory",
+    }
+    assert all(
+        interface.fqn.startswith("net.nhnn.horn.vm.") for interface in schema.interfaces
+    )
+    methods = {
+        (interface.python_name, method.name): method
+        for interface, method in schema.methods()
+    }
+    for key in [("VmRegion", "apply"), ("VmPager", "resolve")]:
+        method = methods[key]
+        parcel = method.params[0].type
+        assert parcel.inner.capacity == 16
+        assert parcel.size <= 960
+        layout = method.request_layout()
+        assert layout.variable
+        assert layout.cnode.size_bits == 4
+        assert len(layout.cnode.slots) == 16
+        assert all(slot.cap.mode is Borrow for slot in method.request_caps())
+        assert method.result.error.name == "VmBatchError"
+    drain = methods["VmPager", "drain"]
+    assert drain.result_caps() == []
+    assert drain.result.ok.inner.capacity == 16
+    errors = next(value for value in schema.enums if value.name == "VmError")
+    assert ("Unsupported", 8) in errors.variants
+    assert ("Quarantined", 10) in errors.variants
+
+
+def test_object_dispatch_keeps_interface_qualified_method_names():
+    schema = compile_path(ROOT / "platform/core/vm/idl/horn_vm.py")
+    host = next(value for value in schema.objects if value.python_name == "VmHost")
+    assert len(list(host.methods())) == 18
+    rust = emit_rust(schema)
+    for interface in ("VmFactory", "VmMemory", "VmRegion"):
+        assert f"{interface}::info(handler)" in rust
+    header, _ = emit_c(schema)
+    for interface in ("vm_factory", "vm_memory", "vm_region"):
+        assert f"horn_{interface}_vtable_t {interface};" in header
+
+
+def test_object_rejects_repeated_interface_method(tmp_path):
+    with pytest.raises(DeclarationError, match="duplicate method"):
+        load_source(
+            tmp_path,
+            "repeated_interface",
+            """
+from horn_idl import iface, method, object
+@iface("test.repeat")
+class Service:
+    @method
+    def ping(self) -> None: ...
+@object(implements=(Service, Service))
+class Host:
+    pass
+""",
+        )

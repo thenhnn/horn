@@ -592,14 +592,14 @@ class _Resolver:
         if not implements:
             raise DeclarationError(f"{obj.fqn}: object implements no interfaces")
         obj.implements = implements
-        seen: set[str] = set()
+        seen: set[int] = set()
         for interface in implements:
             for method in interface.all_methods():
-                if method.name in seen:
+                if id(method) in seen:
                     raise DeclarationError(
-                        f"{obj.fqn}: method name {method.name} is ambiguous across interfaces"
+                        f"{obj.fqn}: duplicate method {interface.fqn}.{method.name}"
                     )
-                seen.add(method.name)
+                seen.add(id(method))
         return obj
 
     # -- validation -------------------------------------------------------------

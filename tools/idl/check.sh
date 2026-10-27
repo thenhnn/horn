@@ -62,4 +62,15 @@ cc -std=c11 -Wall -Wextra -Werror \
   "$ROOT/runtime/c/horn-ipc/src/horn_ipc.c" -o "$TMP/tagged-c"
 "$TMP/tagged-c"
 
+echo "== vm schema and batch round trips =="
+PYTHONPATH="$ROOT/tools/idl" python3 -m horn_idl "$ROOT/platform/core/vm/idl/horn_vm.py" \
+  --rust "$TMP/src/protocol.rs" --header "$TMP/protocol.h" --c "$TMP/protocol.c"
+cp "$ROOT/tests/idl/vm.rs" "$TMP/src/lib.rs"
+cargo test --quiet --offline --manifest-path "$TMP/Cargo.toml"
+cc -std=c11 -Wall -Wextra -Werror \
+  -I "$ROOT/runtime/c/horn-ipc/include" -I "$TMP" \
+  "$TMP/protocol.c" "$ROOT/tests/idl/vm.c" \
+  "$ROOT/runtime/c/horn-ipc/src/horn_ipc.c" -o "$TMP/vm-c"
+"$TMP/vm-c"
+
 echo "ok"

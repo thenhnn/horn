@@ -97,11 +97,11 @@ class Object:
     doc: str | None = None
 
     def methods(self) -> Iterator[Method]:
-        seen: set[str] = set()
+        seen: set[int] = set()
         for interface in self.implements:
             for method in interface.all_methods():
-                if method.name not in seen:
-                    seen.add(method.name)
+                if id(method) not in seen:
+                    seen.add(id(method))
                     yield method
 
 

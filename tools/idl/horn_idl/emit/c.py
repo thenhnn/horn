@@ -114,7 +114,9 @@ class CTypeCollector:
         self.types: dict[str, Type] = {}
 
     def add(self, type_: Type) -> None:
-        if isinstance(type_, (ListType, ArrayType, OptionType, TupleType)):
+        if isinstance(type_, ParcelType):
+            self.add(type_.inner)
+        elif isinstance(type_, (ListType, ArrayType, OptionType, TupleType)):
             name = c_typedef(type_)
             if name in self.types:
                 return
