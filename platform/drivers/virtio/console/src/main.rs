@@ -3,12 +3,13 @@
 #![no_main]
 extern crate alloc;
 mod hal;
+mod service;
 use core::ptr::NonNull;
+use horn_console::protocol as c;
 use horn_devmgr::protocol::*;
-#[cfg(feature = "dma-probe")]
-use horn_ipc::CallError;
+use horn_ipc::*;
 use horn_virtio::{
-    IommuPciTransport, VirtIOConsole,
+    IommuPciTransport,
     config::ConfigSnapshot,
     virtio_drivers::transport::{
         DeviceType, Transport,
@@ -107,8 +108,11 @@ fn main() -> ! {
     // The first provisioning profile supplies MSI-X table entry zero.
     let transport = unsafe { IommuPciTransport::new(transport, common, length, 0) }
         .expect("IOMMU virtio transport");
-    let notification = hal::with(|state| {
-        let notification = state.session.interrupt_on(&hal::target(DEVICE_DRIVER_CAPS_IRQ_SIGNAL_SLOT),hal::target(DEVICE_DRIVER_CAPS_WAKE_SLOT));
+    hal::with(|state| {
+        let notification = state.session.interrupt_on(
+            &hal::target(DEVICE_DRIVER_CAPS_IRQ_SIGNAL_SLOT),
+            hal::target(DEVICE_DRIVER_CAPS_WAKE_SLOT),
+        );
         #[cfg(feature = "dma-probe")]
         {
             state.fault_wait = Some(notification);
@@ -116,63 +120,117 @@ fn main() -> ! {
         state.session.activate();
         notification
     });
-    let mut console =
-        VirtIOConsole::<hal::CapabilityHal, _>::new(transport).expect("console queues");
-    #[cfg(feature="lifecycle-test")]
+    let mut console = Some(
+        horn_virtio::console::Console::<hal::CapabilityHal, _>::new(transport)
+            .expect("console queues"),
+    );
+    let mut service = service::Service::new();
+    #[cfg(feature = "lifecycle-test")]
     hal::probe_for_test(); // Must pass before the host sees a readiness banner.
-    console
-        .send_bytes(b"HORN_VIRTIO_CONSOLE_READY\n")
-        .expect("console transmit");
+
     sel4::debug_println!(
         "VIRTIO_CONSOLE_READY allocator=mimalloc transport=upstream dma=iova irq=msix"
     );
     horn_runtime::notify_ready(DEVICE_DRIVER_CAPS_READY_SLOT);
     #[cfg(feature = "lifecycle-test")]
     match option_env!("HORN_DRIVER_TEST") {
-        Some("fault") => unsafe {core::arch::asm!("ud2",options(noreturn));},
-        Some("exit") => { hal::exit_for_test(); }
-        Some(mode @ ("orderly" | "ignore" | "force")) => { hal::stop_for_test(mode=="force"); }
-        _=>{}
+        Some("fault") => unsafe {
+            core::arch::asm!("ud2", options(noreturn));
+        },
+        Some("exit") => {
+            hal::exit_for_test();
+        }
+        Some(mode @ ("orderly" | "ignore" | "force")) => {
+            hal::stop_for_test(mode == "force");
+        }
+        _ => {}
     }
-    #[cfg(feature = "dma-probe")]
-    if option_env!("HORN_DMA_PROBE") == Some("stale") {
-        // The readiness TX warmed a real translation; HAL has since acknowledged
-        // its unmap/drain and released that backing. Reuse ONLY its stale IOVA.
-        console
-            .send_bytes(b"THIS_STALE_DMA_MUST_NOT_REACH_HOST")
-            .expect("stale probe submit");
-    }
+    let endpoint = sel4::cap::Endpoint::from_bits(DEVICE_DRIVER_CAPS_SERVICE_SLOT as _);
+    let reply = sel4::cap::Reply::from_bits(DEVICE_DRIVER_CAPS_REPLY_SLOT as _);
+    let receive = root.absolute_cptr(sel4::CPtr::from_bits(SLOTS.public_receive() as _));
     let mut irq_reported = false;
     loop {
-        let (_,badge) = notification.wait();
-        if badge & horn_supervisor::STOP != 0 {
-            #[cfg(feature = "lifecycle-test")]
-            if option_env!("HORN_DRIVER_TEST") == Some("ignore") { continue; }
-            // queue_unset in upstream PCI is a no-op. Explicit protocol reset
-            // and status-zero acknowledgment must precede all upstream drops.
-            let status=unsafe {common.as_ptr().add(20)};
-            unsafe {status.write_volatile(0);}
-            let mut reset=false;
-            for _ in 0..1_000_000 {
-                if unsafe {status.read_volatile()}==0 {reset=true;break;}
-                core::hint::spin_loop();
+        if let Some(hw) = &mut console {
+            pump(hw, &mut service);
+        }
+        service.notify();
+        sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&receive));
+        let (info, badge) = endpoint.recv(reply);
+        if badge & (horn_supervisor::IRQ | horn_supervisor::STOP) != 0
+            && badge < horn_console::CLIENT_BADGE
+        {
+            receive.delete().unwrap();
+            let ignore = cfg!(feature = "lifecycle-test")
+                && option_env!("HORN_DRIVER_TEST") == Some("ignore");
+            if badge & horn_supervisor::STOP != 0 && !ignore {
+                service.console.close();
+                service.notify();
+                if let Some(hw) = console.take() {
+                    unsafe {
+                        hw.shutdown(|| hal::with(|s| s.session.discard_shared()));
+                    }
+                    sel4::debug_println!("VIRTIO_CONSOLE_STOPPED reset=true dma_closed=true");
+                    sel4::cap::Notification::from_bits(DEVICE_DRIVER_CAPS_STOPPED_SLOT as _)
+                        .signal();
+                }
             }
-            assert!(reset,"virtio reset timeout: retain backing");
-            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-            drop(console);
-            unsafe {hal::with(|state|state.session.discard_shared());}
-            sel4::debug_println!("VIRTIO_CONSOLE_STOPPED reset=true dma_closed=true");
-            sel4::cap::Notification::from_bits(DEVICE_DRIVER_CAPS_STOPPED_SLOT as _).signal();
-            loop {notification.wait();}
+            if badge & horn_supervisor::IRQ != 0 && console.is_some() {
+                console.as_mut().unwrap().interrupt().expect("console IRQ");
+                hal::with(|s| s.session.ack_interrupt());
+                if !irq_reported {
+                    sel4::debug_println!("VIRTIO_CONSOLE_IRQ delivered=true");
+                    irq_reported = true;
+                }
+            }
+            continue;
         }
-        console.ack_interrupt().expect("console interrupt");
-        while let Some(byte) = console.recv(true).expect("console receive") {
-            console.send(byte).expect("console echo");
+        if badge != horn_console::CLIENT_BADGE {
+            receive.delete().unwrap();
+            continue;
         }
-        hal::with(|state| state.session.ack_interrupt());
-        if !irq_reported {
-            sel4::debug_println!("VIRTIO_CONSOLE_IRQ delivered=true");
-            irq_reported = true;
+        let request = hal::with(|s| {
+            let mut server =
+                Sel4Server::new(root, endpoint, receive, &mut s.session.transport().space);
+            server.decode_received_dynamic(
+                info,
+                badge,
+                reply,
+                c::console_object_request_layout,
+                c::ConsoleObjectRequest::decode,
+            )
+        });
+        if let Ok((_, request, reply)) = request {
+            let response = c::console_object_dispatch(request, &mut service);
+            hal::with(|s| {
+                c::console_object_reply(reply, &mut s.session.transport().space, &response).unwrap()
+            });
+        }
+        receive.delete().unwrap();
+    }
+}
+fn pump(
+    hw: &mut horn_virtio::console::Console<hal::CapabilityHal, IommuPciTransport<PciTransport>>,
+    service: &mut service::Service,
+) {
+    hw.poll().expect("console completions");
+    let size = hw
+        .size()
+        .expect("console geometry")
+        .map(|(rows, columns)| c::ConsoleSize { rows, columns });
+    service.console.set_size(size).expect("console size");
+    let mut bytes = [0u8; 256];
+    while service.console.rx_space() != 0 {
+        let limit = service.console.rx_space().min(bytes.len());
+        let count = hw.receive(&mut bytes[..limit]).expect("console receive");
+        if count == 0 {
+            break;
+        }
+        assert_eq!(service.console.receive(&bytes[..count]), count);
+    }
+    if hw.writable() {
+        let count = service.console.transmit(&mut bytes);
+        if count != 0 {
+            hw.send(&bytes[..count]).expect("console transmit");
         }
     }
 }

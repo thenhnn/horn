@@ -1,7 +1,7 @@
 from horn_idl import *
 from horn_idl import sel4
-from horn_vm import VmFactory, VmAddressSpaceObject
-from horn_device import DeviceDiscovery
+# Imported record annotations need the complete dependency namespace.
+from horn_device import *
 
 
 @capset(capacity=256)

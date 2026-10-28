@@ -26,6 +26,8 @@ struct Managed {
     process: Cap<s::ProcessObjectTag>,
     device: u64,
     device_id: u64,
+    service: Cap<Endpoint>,
+    client: Option<crate::clients::Client>,
     ready: bool,
     finished: bool,
 }
@@ -59,7 +61,9 @@ impl Drivers {
         self.records.is_empty()
     }
     pub fn ready(&self) -> bool {
-        self.records.iter().all(|r| r.ready || r.finished)
+        self.records.iter().all(|r| {
+            (r.ready || r.finished) && r.client.as_ref().is_none_or(|c| c.ready || c.finished)
+        })
     }
     fn spawn(&mut self, service: &mut Service, cfg: &DriverConfig) {
         let (device, badge) = service
@@ -105,6 +109,25 @@ impl Drivers {
             Rights::ALL,
         );
         io.space.delete(device.as_ref()).unwrap();
+        let endpoint = s::ProcessControlClient::new(&mut *io, Cap::from_ref(process.as_ref()))
+            .kernel_object(s::ProcessKernelObject::Endpoint)
+            .unwrap();
+        BOOT.install(
+            io,
+            process,
+            d::DEVICE_DRIVER_CAPS_SERVICE_SLOT,
+            endpoint,
+            None,
+            Rights::ALL,
+        );
+        let service = mint(
+            io,
+            sel4::cap::CNode::from_bits(d::DEVICE_CAPS_SELF_SLOT as _),
+            Cap::<Endpoint>::from_ref(endpoint.as_ref()),
+            horn_console::CLIENT_BADGE,
+            Rights(Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0),
+        );
+        io.space.delete(endpoint.as_ref()).unwrap();
         let wake = s::ProcessControlClient::new(&mut *io, Cap::from_ref(process.as_ref()))
             .kernel_object(s::ProcessKernelObject::Notification)
             .unwrap();
@@ -143,6 +166,9 @@ impl Drivers {
             .stop_signal(&stop)
             .unwrap();
         io.space.delete(stop.as_ref()).unwrap();
+        s::ProcessControlClient::new(&mut *io, Cap::from_ref(process.as_ref()))
+            .bind_notification(&Cap::from_ref(wake.as_ref()))
+            .unwrap();
         io.space.delete(wake.as_ref()).unwrap();
         let stopped = s::SupervisorJobClient::new(&mut *io, Cap::from_ref(managed.as_ref()))
             .signal(s::ServiceSignal::Stopped)
@@ -177,6 +203,8 @@ impl Drivers {
             process,
             device: badge,
             device_id: cfg.device,
+            service,
+            client: None,
             ready: false,
             finished: false,
         });
@@ -203,11 +231,27 @@ impl Drivers {
             if record.finished {
                 continue;
             }
+            if let Some(client) = &mut record.client {
+                client.changed(&mut service.io().platform.transport);
+            }
             let state = job(service, record.job).status().unwrap();
-            if state == s::ServiceStatus::Active {
+            if state == s::ServiceStatus::Active && !record.ready {
                 record.ready = true;
+                if crate::clients::Client::configured() {
+                    record.client = Some(crate::clients::Client::start(
+                        &mut service.io().platform.transport,
+                        record.service,
+                    ));
+                }
             }
             if state == s::ServiceStatus::AwaitingCleanup {
+                if let Some(client) = &mut record.client {
+                    client.stop(&mut service.io().platform.transport);
+                    client.changed(&mut service.io().platform.transport);
+                    if !client.finished {
+                        continue;
+                    }
+                }
                 let info = s::ProcessControlClient::new(
                     &mut service.io().platform.transport,
                     Cap::from_ref(record.process.as_ref()),
@@ -241,6 +285,11 @@ impl Drivers {
                     .delete(record.process.as_ref())
                     .unwrap();
                 service.io().space().delete(record.job.as_ref()).unwrap();
+                service
+                    .io()
+                    .space()
+                    .delete(record.service.as_ref())
+                    .unwrap();
                 record.finished = true;
                 sel4::debug_println!("DEVMGR_DRIVER_STOPPED device={}", record.device_id);
             }

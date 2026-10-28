@@ -13,6 +13,7 @@ dma-probe = []
 lifecycle-test = []
 
 [dependencies]
+horn-console = { path = "../../../core/console" }
 horn-virtio = { path = ".." }
 horn-supervisor = { path = "../../../core/supervisor" }
 horn-procd = { path = "../../../core/procd" }

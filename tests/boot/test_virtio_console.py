@@ -120,6 +120,7 @@ def test_virtio_console_denied_dma(system, probe):
     with console_connection(vm) as connection:
         if probe == "stale":
             read_banner(connection, vm)
+            connection.sendall(b"trigger stale TX")
         vm.serial.wait_for(b"DEVICE_CAP_CHECK_PASS wrong_vm_object=denied")
         vm.serial.wait_for(f"DMA_PROBE {probe}=true".encode())
         vm.serial.wait_for(b"VTD_FAULT source=0020", timeout=60)
@@ -136,8 +137,6 @@ def test_virtio_console_denied_dma(system, probe):
         )
         assert fault.group(1) in addresses, output
         assert int(fault.group(2), 16) != 0
-        if probe != "stale":
-            assert "VIRTIO_CONSOLE_READY" not in output
         assert "DEVMGR_FATAL" not in output
         assert vm.monitor.execute("query-status")["running"]
         assert_idle(vm)

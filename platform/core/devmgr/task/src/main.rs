@@ -4,6 +4,7 @@
 extern crate alloc;
 #[cfg(feature = "boot-tests")]
 mod boot_tests;
+mod clients;
 mod drivers;
 mod native;
 mod service;

@@ -302,6 +302,7 @@ class DeviceDriverCaps:
     lifecycle: Cap[sel4.Endpoint, Copy]
     reply: Cap[sel4.Reply, Move]
     supervisor: Cap[sel4.Endpoint, Copy]
+    service: Cap[sel4.Endpoint, Copy]
 
 
 @capset(capacity=256)

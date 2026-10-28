@@ -30,6 +30,13 @@ fn main() {
     }
     drivers.push_str("];");
     fs::write(out.join("drivers.rs"), drivers).unwrap();
+    println!("cargo:rerun-if-env-changed=DEVMGR_CONSOLE_CLIENT_ELF");
+    if let Some(path) = env::var_os("DEVMGR_CONSOLE_CLIENT_ELF").filter(|p| !p.is_empty()) {
+        println!("cargo:rerun-if-changed={}", PathBuf::from(&path).display());
+        fs::copy(path, out.join("console_client.elf")).unwrap();
+    } else {
+        fs::write(out.join("console_client.elf"), []).unwrap();
+    }
     if env::var_os("CARGO_FEATURE_BOOT_TESTS").is_none() {
         return;
     }

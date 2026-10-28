@@ -21,6 +21,7 @@ in
         HORN_DMA_PROBE = probe;
       };
       horn-devmgr = protocol;
+      horn-console = protocol;
       horn-procd = protocol;
       memchr = old: {features = ["alloc"];};
       horn-supervisor = protocol;

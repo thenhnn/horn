@@ -1,7 +1,9 @@
-//! Horn's small adapter around upstream virtio-drivers. PCI discovery,
-//! virtqueues and the console implementation are not duplicated here.
+//! Narrow adapters around upstream virtio-drivers: IOMMU/MSI-X transport and
+//! a nonblocking single-port console frontend using upstream VirtQueue.
 #![no_std]
+extern crate alloc;
 pub mod config;
+pub mod console;
 use core::ptr::NonNull;
 pub use virtio_drivers;
 use virtio_drivers::transport::{DeviceStatus, DeviceType, InterruptStatus, Transport};

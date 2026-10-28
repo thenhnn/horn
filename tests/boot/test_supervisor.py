@@ -1,5 +1,5 @@
 import pytest
-from test_virtio_console import assert_idle, console_connection, read_banner
+from test_virtio_console import assert_idle, console_connection
 
 
 @pytest.mark.parametrize("scenario", ["no_ready", "early_fault"])
@@ -43,7 +43,6 @@ def test_supervisor_driver_revoke(system, mode, release, cpus):
         modules += ("tests/boot/rust_release.nix",)
     vm = system(modules=modules, cpus=cpus)
     with console_connection(vm) as connection:
-        read_banner(connection, vm)
         vm.serial.wait_for(
             b"SUPERVISOR_RELEASE_PASS job=0 ram_returned=true owner_ack=true",
             timeout=60,

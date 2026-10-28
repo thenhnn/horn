@@ -35,6 +35,10 @@
       horn-supervisor = protocol;
       horn-vm = protocol;
       memchr = old: {features = ["alloc"];};
+      horn-console = protocol;
+      horn-console-greeting = old: {
+        features = (old.features or []) ++ lib.optional config.devmgr-demo.boot-tests "echo-test";
+      };
       horn-devmgr-probe = protocol;
       horn-devmgr-task = old:
         (protocol old)
@@ -59,6 +63,10 @@
           DEVMGR_DRIVER_ELF =
             if config.devmgr-demo.console
             then "${runtimeElf console "virtio_console"}"
+            else "";
+          DEVMGR_CONSOLE_CLIENT_ELF =
+            if config.devmgr-demo.console
+            then "${runtimeElf childWorkspace.members.horn-console-greeting "console_greeting"}"
             else "";
           DEVMGR_DRIVER_DEVICE = "33";
           DEVMGR_DRIVER_NAME = "virtio-console";

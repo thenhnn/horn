@@ -1,0 +1,18 @@
+[package]
+name = "horn-console-greeting"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "console_greeting"
+path = "src/main.rs"
+
+[features]
+echo-test = []
+
+[dependencies]
+horn-console = { path = "../../../platform/core/console" }
+horn-procd = { path = "../../../platform/core/procd" }
+horn-runtime = { path = "../../../platform/runtime/rust/horn-runtime" }
+horn-ipc = { path = "../../../platform/runtime/rust/horn-ipc", features = ["sel4"] }
+sel4 = { path = "../../../vendor/rust-sel4/src/crates/sel4" }

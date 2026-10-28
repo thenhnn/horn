@@ -1,5 +1,5 @@
 import pytest
-from test_virtio_console import assert_idle, console_connection, read_banner
+from test_virtio_console import assert_idle, console_connection
 
 
 @pytest.mark.parametrize("console", [False, True], ids=["discovery", "console"])
@@ -10,14 +10,13 @@ def test_devmgr_ordinary_boot_has_no_probes(system, console):
     vm = system(modules=modules, cpus=1)
     if console:
         with console_connection(vm) as connection:
-            read_banner(connection, vm)
-            connection.sendall(b"clean boot\n")
-            echo = b""
-            while len(echo) < len(b"clean boot\n"):
+            greeting = b"\x1b[1;36mHorn v0.1 started\x1b[0m\r\n"
+            received = b""
+            while len(received) < len(greeting):
                 chunk = connection.recv(4096)
                 assert chunk
-                echo += chunk
-            assert echo == b"clean boot\n"
+                received += chunk
+            assert received == greeting
             vm.serial.wait_for(b"SUPERVISOR_READY policy=userspace", timeout=60)
             assert_idle(vm)
     else:

@@ -53,6 +53,26 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-console" = rec {
+      packageId = "horn-console";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-console";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "horn-console-greeting" = rec {
+      packageId = "horn-console-greeting";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-console-greeting";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-devmgr" = rec {
       packageId = "horn-devmgr";
       build = internal.buildRustCrateWithFeatures {
@@ -701,6 +721,59 @@ rec {
         ];
 
       };
+      "horn-console" = rec {
+        crateName = "horn-console";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/core/console; };
+        libName = "horn_console";
+        dependencies = [
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+          }
+        ];
+
+      };
+      "horn-console-greeting" = rec {
+        crateName = "horn-console-greeting";
+        version = "0.1.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "console_greeting";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./examples/devmgr/greeting; };
+        dependencies = [
+          {
+            name = "horn-console";
+            packageId = "horn-console";
+          }
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "horn-procd";
+            packageId = "horn-procd";
+          }
+          {
+            name = "horn-runtime";
+            packageId = "horn-runtime";
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+          }
+        ];
+        features = {
+        };
+        resolvedDefaultFeatures = [ "echo-test" ];
+      };
       "horn-devmgr" = rec {
         crateName = "horn-devmgr";
         version = "0.1.0";
@@ -774,6 +847,10 @@ rec {
             name = "acpi";
             packageId = "acpi";
             usesDefaultFeatures = false;
+          }
+          {
+            name = "horn-console";
+            packageId = "horn-console";
           }
           {
             name = "horn-devmgr";
@@ -1034,6 +1111,11 @@ rec {
         libName = "horn_virtio";
         dependencies = [
           {
+            name = "bitflags";
+            packageId = "bitflags";
+            usesDefaultFeatures = false;
+          }
+          {
             name = "virtio-drivers";
             packageId = "virtio-drivers";
             usesDefaultFeatures = false;
@@ -1060,6 +1142,10 @@ rec {
         ];
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/drivers/virtio/console; };
         dependencies = [
+          {
+            name = "horn-console";
+            packageId = "horn-console";
+          }
           {
             name = "horn-devmgr";
             packageId = "horn-devmgr";
