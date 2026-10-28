@@ -175,6 +175,11 @@ class DeviceControl:
     def interrupt(self) -> Result[Cap[sel4.Notification, Move], DeviceError]: ...
 
     @method
+    def interrupt_to(
+        self, notification: Cap[sel4.Notification, Borrow]
+    ) -> Result[None, DeviceError]: ...
+
+    @method
     def ack(self) -> Result[None, DeviceError]: ...
 
     @method
@@ -209,8 +214,6 @@ class DeviceHost:
 class PlatformInfo:
     vtd: BOOL
     ticks_per_us: U64
-    # Optional trusted bootstrap assignment: inventory ID or zero.
-    assignment: U64
 
 
 @record
@@ -245,11 +248,6 @@ class DevicePlatform:
 
     @method
     def policy(self) -> Result[PlatformInfo, DeviceError]: ...
-
-    @method
-    def assigned(
-        self, device: Cap[DeviceObject, Move]
-    ) -> Result[None, DeviceError]: ...
 
     @method
     def write(
@@ -297,6 +295,23 @@ class DeviceDriverCaps:
     vm: Cap[VmFactory, Copy]
     address_space: Cap[VmAddressSpaceObject, Copy]
     device: Cap[DeviceObject, Copy]
+    wake: Cap[sel4.Notification, Copy]
+    irq_signal: Cap[sel4.Notification, Copy]
+    ready: Cap[sel4.Notification, Copy]
+    stopped: Cap[sel4.Notification, Copy]
+    lifecycle: Cap[sel4.Endpoint, Copy]
+    reply: Cap[sel4.Reply, Move]
+    supervisor: Cap[sel4.Endpoint, Copy]
+
+
+@capset(capacity=256)
+class DeviceProbeCaps:
+    vm: Cap[VmFactory, Copy]
+    address_space: Cap[VmAddressSpaceObject, Copy]
+    observer: Cap[DeviceDiscovery, Copy]
+    lifecycle: Cap[sel4.Endpoint, Copy]
+    reply: Cap[sel4.Reply, Move]
+    ready: Cap[sel4.Notification, Copy]
 
 
 @capset(capacity=256)
@@ -308,3 +323,7 @@ class DeviceCaps:
     fault: Cap[sel4.Notification, Copy]
     vm: Cap[VmFactory, Copy]
     address_space: Cap[VmAddressSpaceObject, Copy]
+    lifecycle: Cap[sel4.Endpoint, Copy]
+    ready: Cap[sel4.Notification, Copy]
+    events: Cap[sel4.Notification, Copy]
+    supervisor: Cap[sel4.Endpoint, Copy]

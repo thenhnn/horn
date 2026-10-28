@@ -108,7 +108,7 @@ fn main() -> ! {
     let transport = unsafe { IommuPciTransport::new(transport, common, length, 0) }
         .expect("IOMMU virtio transport");
     let notification = hal::with(|state| {
-        let notification = state.session.interrupt();
+        let notification = state.session.interrupt_on(&hal::target(DEVICE_DRIVER_CAPS_IRQ_SIGNAL_SLOT),hal::target(DEVICE_DRIVER_CAPS_WAKE_SLOT));
         #[cfg(feature = "dma-probe")]
         {
             state.fault_wait = Some(notification);
@@ -118,12 +118,22 @@ fn main() -> ! {
     });
     let mut console =
         VirtIOConsole::<hal::CapabilityHal, _>::new(transport).expect("console queues");
+    #[cfg(feature="lifecycle-test")]
+    hal::probe_for_test(); // Must pass before the host sees a readiness banner.
     console
         .send_bytes(b"HORN_VIRTIO_CONSOLE_READY\n")
         .expect("console transmit");
     sel4::debug_println!(
         "VIRTIO_CONSOLE_READY allocator=mimalloc transport=upstream dma=iova irq=msix"
     );
+    horn_runtime::notify_ready(DEVICE_DRIVER_CAPS_READY_SLOT);
+    #[cfg(feature = "lifecycle-test")]
+    match option_env!("HORN_DRIVER_TEST") {
+        Some("fault") => unsafe {core::arch::asm!("ud2",options(noreturn));},
+        Some("exit") => { hal::exit_for_test(); }
+        Some(mode @ ("orderly" | "ignore" | "force")) => { hal::stop_for_test(mode=="force"); }
+        _=>{}
+    }
     #[cfg(feature = "dma-probe")]
     if option_env!("HORN_DMA_PROBE") == Some("stale") {
         // The readiness TX warmed a real translation; HAL has since acknowledged
@@ -134,7 +144,27 @@ fn main() -> ! {
     }
     let mut irq_reported = false;
     loop {
-        let _ = notification.wait();
+        let (_,badge) = notification.wait();
+        if badge & horn_supervisor::STOP != 0 {
+            #[cfg(feature = "lifecycle-test")]
+            if option_env!("HORN_DRIVER_TEST") == Some("ignore") { continue; }
+            // queue_unset in upstream PCI is a no-op. Explicit protocol reset
+            // and status-zero acknowledgment must precede all upstream drops.
+            let status=unsafe {common.as_ptr().add(20)};
+            unsafe {status.write_volatile(0);}
+            let mut reset=false;
+            for _ in 0..1_000_000 {
+                if unsafe {status.read_volatile()}==0 {reset=true;break;}
+                core::hint::spin_loop();
+            }
+            assert!(reset,"virtio reset timeout: retain backing");
+            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+            drop(console);
+            unsafe {hal::with(|state|state.session.discard_shared());}
+            sel4::debug_println!("VIRTIO_CONSOLE_STOPPED reset=true dma_closed=true");
+            sel4::cap::Notification::from_bits(DEVICE_DRIVER_CAPS_STOPPED_SLOT as _).signal();
+            loop {notification.wait();}
+        }
         console.ack_interrupt().expect("console interrupt");
         while let Some(byte) = console.recv(true).expect("console receive") {
             console.send(byte).expect("console echo");

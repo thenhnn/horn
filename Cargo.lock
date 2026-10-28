@@ -97,6 +97,7 @@ dependencies = [
  "horn-devmgr",
  "horn-ipc",
  "horn-procd",
+ "horn-supervisor",
  "horn-vm",
  "sel4",
  "sel4-root-task",
@@ -163,6 +164,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "horn-devmgr-probe"
+version = "0.1.0"
+dependencies = [
+ "horn-devmgr",
+ "horn-ipc",
+ "horn-runtime",
+ "horn-supervisor",
+ "sel4",
+]
+
+[[package]]
 name = "horn-devmgr-task"
 version = "0.1.0"
 dependencies = [
@@ -170,6 +182,7 @@ dependencies = [
  "horn-devmgr",
  "horn-ipc",
  "horn-runtime",
+ "horn-supervisor",
  "sel4",
 ]
 
@@ -226,6 +239,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "horn-supervisor"
+version = "0.1.0"
+dependencies = [
+ "horn-ipc",
+ "sel4",
+]
+
+[[package]]
+name = "horn-supervisor-task"
+version = "0.1.0"
+dependencies = [
+ "horn-devmgr",
+ "horn-ipc",
+ "horn-procd",
+ "horn-runtime",
+ "horn-supervisor",
+ "horn-vm",
+ "sel4",
+]
+
+[[package]]
 name = "horn-virtio"
 version = "0.1.0"
 dependencies = [
@@ -240,7 +274,9 @@ dependencies = [
  "horn-devmgr",
  "horn-driver",
  "horn-ipc",
+ "horn-procd",
  "horn-runtime",
+ "horn-supervisor",
  "horn-virtio",
  "sel4",
 ]

@@ -90,6 +90,8 @@ struct Process {
     loaded: loader::Loaded,
     entry: usize,
     lifecycle: Option<(usize, sel4::Word)>,
+    exit_signal: Option<usize>,
+    fault_endpoint: Option<usize>,
 }
 pub struct Info<'a> {
     pub id: ProcessId,
@@ -260,6 +262,8 @@ impl Manager {
             loaded,
             entry: image.entry,
             lifecycle: None,
+            exit_signal: None,
+            fault_endpoint: None,
         });
         Ok(id)
     }
@@ -520,6 +524,9 @@ impl Manager {
             }
         }
         p.vm = None;
+        for slot in [p.exit_signal.take(), p.fault_endpoint.take()].into_iter().flatten() {
+            p.allocator.release_slot(slot)?;
+        }
         self.close_grant(id)?;
         let p = self.process_mut(id)?;
         if let Some((slot, _)) = p.lifecycle {

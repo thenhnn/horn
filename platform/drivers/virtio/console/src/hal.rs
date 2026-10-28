@@ -75,6 +75,29 @@ pub fn install(state: State) {
     assert!(slot.is_none());
     *slot = Some(state);
 }
+#[cfg(feature="lifecycle-test")]
+pub fn probe_for_test() {
+    use horn_supervisor::protocol::*;
+    with(|state|assert!(matches!(SupervisorJobClient::new(state.session.transport(),target(DEVICE_DRIVER_CAPS_SUPERVISOR_SLOT)).cleanup_done(),Err(CallError::Remote(SupervisorError::Denied)))));
+}
+#[cfg(feature="lifecycle-test")]
+pub fn stop_for_test(force:bool) {
+    use horn_supervisor::protocol::*;
+    with(|state| {
+        let mut client=SupervisorRuntimeClient::new(state.session.transport(),target(DEVICE_DRIVER_CAPS_SUPERVISOR_SLOT));
+        // READY is asynchronous; request_stop is legal during startup as well.
+        assert!(matches!(client.status().unwrap(),ServiceStatus::Starting|ServiceStatus::Active));
+        client.request_stop(if force {StopMode::Force}else{StopMode::Graceful}).unwrap();
+
+    });
+}
+#[cfg(feature="lifecycle-test")]
+pub fn exit_for_test() -> ! {
+    with(|state| {
+        let _=horn_procd::protocol::ProcessLifecycleClient::new(state.session.transport(),target(DEVICE_DRIVER_CAPS_LIFECYCLE_SLOT)).exit(0);
+        panic!("exit unexpectedly returned");
+    })
+}
 pub struct CapabilityHal;
 // SAFETY: horn-driver owns fresh resident backing, directional independent
 // bounces and IOVA mappings. Unshare closes/drains before copy-back or release;

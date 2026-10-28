@@ -21,7 +21,10 @@ def test_devmgr_discovery(system, release, fault, cpus):
         output = vm.serial.path.read_text()
         assert "DEVMGR_ALLOCATOR allocator=mimalloc" in output
         assert "DEVMGR_RPC_PASS" in output
-        assert "DEVMGR_FATAL reboot=true reason=devmgr stopped or faulted" in output
+        assert (
+            "DEVMGR_FATAL reboot=true reason=critical service stopped or faulted"
+            in output
+        )
         return
     vm.serial.wait_for(
         b"DEVMGR_BANK_PASS retained=true shared=true coalesced=true mmio_charge=0",

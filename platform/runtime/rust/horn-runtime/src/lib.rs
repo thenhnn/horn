@@ -13,6 +13,13 @@ pub use horn_ipc::TaskSlots;
 pub use horn_mimalloc as allocator;
 pub use horn_mimalloc::Error;
 
+/// Signal READY=1 using a generated, local bootstrap notification slot.
+/// The supervisor supplies a per-instance write-only capability and owns the
+/// deadline/dependency policy. This does not allocate or discover authority.
+pub fn notify_ready(slot: u32) {
+    sel4::cap::Notification::from_bits(slot as _).signal();
+}
+
 /// Named bootstrap capabilities and an exclusive CSpace range for heap callbacks.
 /// The checked layout keeps bootstrap, public receive, application RPC and heap
 /// callbacks disjoint. It must match the CNode installed by the trusted loader.

@@ -3,6 +3,7 @@
 #![no_main]
 extern crate alloc;
 mod native;
+mod drivers;
 mod service;
 
 use acpi::{AcpiHandler, AcpiTables, PhysicalMapping, rsdp::Rsdp};
@@ -161,25 +162,10 @@ fn main() -> ! {
         count,
         policy.vtd
     );
-    if policy.assignment != 0 {
-        let device = DeviceAssignment::claim(
-            &mut service::Caller {
-                service: &mut service,
-                badge: horn_devmgr::ASSIGNMENT_BADGE,
-            },
-            policy.assignment,
-        )
-        .expect("bootstrap device assignment");
-        let exported = device.as_ref();
-        service
-            .io()
-            .platform
-            .assigned(device)
-            .expect("assigned capability delivery");
-        service.io().space().delete(exported).unwrap();
-    }
     let fault_irq = service.arm_fault_irq();
-    service.io().platform.ready().expect("bootstrap ready");
+    service.io().platform.ready().expect("platform preparation");
+    if option_env!("DEVMGR_TEST_EARLY_FAULT")==Some("1"){unsafe{core::arch::asm!("ud2",options(noreturn));}}
+    let mut drivers=drivers::Drivers::start(&mut service);
     let reply = sel4::cap::Reply::from_bits(DEVICE_CAPS_REPLY_SLOT as _);
     loop {
         let request = {
@@ -191,10 +177,13 @@ fn main() -> ! {
             );
             sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&server.recv_slot));
             let (info, badge) = server.endpoint.recv(reply);
-            if badge == horn_devmgr::FAULT_NOTIFICATION_BADGE {
-                drop(server);
-                receive.delete().unwrap();
-                service.handle_fault_irq(fault_irq.expect("unexpected fault notification"));
+            if badge & (horn_devmgr::FAULT_NOTIFICATION_BADGE | horn_supervisor::OWNER_CHANGED) != 0 {
+                drop(server);receive.delete().unwrap();
+                if badge & horn_devmgr::FAULT_NOTIFICATION_BADGE != 0 {
+                    let faults=service.handle_fault_irq(fault_irq.expect("unexpected fault notification"));
+                    drivers.faulted(&mut service,faults);
+                }
+                if badge & horn_supervisor::OWNER_CHANGED != 0 {drivers.changed(&mut service);}
                 continue;
             }
             if badge == 0 {

@@ -10,9 +10,12 @@ path = "src/main.rs"
 [features]
 # Deliberate invalid device addresses, only for isolated QEMU negative tests.
 dma-probe = []
+lifecycle-test = []
 
 [dependencies]
 horn-virtio = { path = ".." }
+horn-supervisor = { path = "../../../core/supervisor" }
+horn-procd = { path = "../../../core/procd" }
 horn-driver = { path = "../../horn-driver" }
 horn-runtime = { path = "../../../runtime/rust/horn-runtime" }
 horn-devmgr = { path = "../../../core/devmgr" }

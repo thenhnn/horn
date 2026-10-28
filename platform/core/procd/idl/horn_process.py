@@ -106,6 +106,20 @@ class ProcessLaunch:
     ram_limit: U64
 
 
+@enum(base=U32)
+class ProcessKernelObject:
+    Endpoint = 1
+    Notification = 2
+
+
+@record
+class ProcessBootstrap:
+    vm: U32
+    address_space: U32
+    lifecycle: U32
+    reply: U32
+
+
 @iface("net.nhnn.horn.process.control", version=(1, 0))
 class ProcessControl:
     @method
@@ -116,6 +130,42 @@ class ProcessControl:
 
     @method
     def set_limit(self, limit: U64) -> Result[None, ProcessError]: ...
+
+    # Stop execution without reclaiming VM/backing; device revocation comes next.
+    @method
+    def suspend(self) -> Result[None, ProcessError]: ...
+
+    @method
+    def kernel_object(
+        self, kind: ProcessKernelObject
+    ) -> Result[Cap[sel4.AnyCap, Move], ProcessError]: ...
+
+    # Only Created children. Source authority is the borrowed CNode, not its index.
+    @method
+    def install(
+        self,
+        source: Cap[sel4.CNode, Borrow],
+        source_bits: U32,
+        source_slot: U32,
+        target_slot: U32,
+        badge: Option[U64],
+        rights: U32,
+    ) -> Result[None, ProcessError]: ...
+
+    @method
+    def fault_handler(
+        self, source: Cap[sel4.CNode, Borrow], source_bits: U32, source_slot: U32
+    ) -> Result[None, ProcessError]: ...
+
+    @method
+    def exit_signal(
+        self, notification: Cap[sel4.Notification, Borrow]
+    ) -> Result[None, ProcessError]: ...
+
+    @method
+    def bind_notification(
+        self, notification: Cap[sel4.Notification, Borrow]
+    ) -> Result[None, ProcessError]: ...
 
     @method
     def terminate(self) -> Result[None, ProcessError]: ...
@@ -137,7 +187,20 @@ class ProcessFactory:
         self, elf: Cap[VmMemoryObject, Borrow], request: ProcessLaunch
     ) -> Result[Cap[ProcessObject, Move], ProcessError]: ...
 
+    @method
+    def prepare(
+        self,
+        elf: Cap[VmMemoryObject, Borrow],
+        request: ProcessLaunch,
+        bootstrap: ProcessBootstrap,
+    ) -> Result[Cap[ProcessObject, Move], ProcessError]: ...
+
     # The factory already controls its own children; IDs select within that scope.
+    @method
+    def watch(
+        self, notification: Cap[sel4.Notification, Borrow]
+    ) -> Result[None, ProcessError]: ...
+
     @method
     def open(self, id: U64) -> Result[Cap[ProcessObject, Move], ProcessError]: ...
 

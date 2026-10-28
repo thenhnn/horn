@@ -63,6 +63,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-devmgr-probe" = rec {
+      packageId = "horn-devmgr-probe";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-devmgr-probe";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-devmgr-task" = rec {
       packageId = "horn-devmgr-task";
       build = internal.buildRustCrateWithFeatures {
@@ -117,6 +127,26 @@ rec {
       packageId = "horn-runtime";
       build = internal.buildRustCrateWithFeatures {
         packageId = "horn-runtime";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "horn-supervisor" = rec {
+      packageId = "horn-supervisor";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-supervisor";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "horn-supervisor-task" = rec {
+      packageId = "horn-supervisor-task";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-supervisor-task";
       };
 
       # Debug support which might change between releases.
@@ -533,6 +563,10 @@ rec {
             packageId = "horn-procd";
           }
           {
+            name = "horn-supervisor";
+            packageId = "horn-supervisor";
+          }
+          {
             name = "horn-vm";
             packageId = "horn-vm";
             features = [ "rpc" ];
@@ -684,6 +718,43 @@ rec {
         ];
 
       };
+      "horn-devmgr-probe" = rec {
+        crateName = "horn-devmgr-probe";
+        version = "0.1.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "devmgr_probe";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./examples/devmgr/probe; };
+        dependencies = [
+          {
+            name = "horn-devmgr";
+            packageId = "horn-devmgr";
+          }
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "horn-runtime";
+            packageId = "horn-runtime";
+          }
+          {
+            name = "horn-supervisor";
+            packageId = "horn-supervisor";
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+          }
+        ];
+
+      };
       "horn-devmgr-task" = rec {
         crateName = "horn-devmgr-task";
         version = "0.1.0";
@@ -714,6 +785,11 @@ rec {
           {
             name = "horn-runtime";
             packageId = "horn-runtime";
+          }
+          {
+            name = "horn-supervisor";
+            packageId = "horn-supervisor";
+            features = [ "client" ];
           }
           {
             name = "sel4";
@@ -876,6 +952,74 @@ rec {
         ];
 
       };
+      "horn-supervisor" = rec {
+        crateName = "horn-supervisor";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/core/supervisor; };
+        libName = "horn_supervisor";
+        dependencies = [
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+            optional = true;
+          }
+        ];
+        features = {
+          "client" = [ "horn-ipc/sel4" "dep:sel4" ];
+        };
+        resolvedDefaultFeatures = [ "client" ];
+      };
+      "horn-supervisor-task" = rec {
+        crateName = "horn-supervisor-task";
+        version = "0.1.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "supervisor";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/core/supervisor/task; };
+        dependencies = [
+          {
+            name = "horn-devmgr";
+            packageId = "horn-devmgr";
+          }
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "horn-procd";
+            packageId = "horn-procd";
+          }
+          {
+            name = "horn-runtime";
+            packageId = "horn-runtime";
+          }
+          {
+            name = "horn-supervisor";
+            packageId = "horn-supervisor";
+            features = [ "client" ];
+          }
+          {
+            name = "horn-vm";
+            packageId = "horn-vm";
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+          }
+        ];
+
+      };
       "horn-virtio" = rec {
         crateName = "horn-virtio";
         version = "0.1.0";
@@ -924,8 +1068,16 @@ rec {
             features = [ "sel4" ];
           }
           {
+            name = "horn-procd";
+            packageId = "horn-procd";
+          }
+          {
             name = "horn-runtime";
             packageId = "horn-runtime";
+          }
+          {
+            name = "horn-supervisor";
+            packageId = "horn-supervisor";
           }
           {
             name = "horn-virtio";
@@ -938,7 +1090,7 @@ rec {
         ];
         features = {
         };
-        resolvedDefaultFeatures = [ "dma-probe" ];
+        resolvedDefaultFeatures = [ "dma-probe" "lifecycle-test" ];
       };
       "horn-vm" = rec {
         crateName = "horn-vm";

@@ -8,6 +8,7 @@ name = "task"
 path = "src/main.rs"
 
 [dependencies]
+horn-supervisor = { path = "../../../platform/core/supervisor" }
 horn-devmgr = { path = "../../../platform/core/devmgr" }
 horn-procd = { path = "../../../platform/core/procd" }
 horn-vm = { path = "../../../platform/core/vm", features = ["rpc"] }

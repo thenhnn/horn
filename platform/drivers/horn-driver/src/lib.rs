@@ -76,6 +76,8 @@ impl DeviceSession {
             irq: None,
         }
     }
+    /// Caller-owned application IPC transport for additional scoped protocols.
+    pub fn transport(&mut self) -> &mut Sel4Transport<Sel4CapSpace> { &mut self.transport }
     /// Scoped control only; never assignment, writable ECAM or RAM paddr access.
     pub fn control(&mut self) -> DeviceControlClient<&mut Sel4Transport<Sel4CapSpace>> {
         DeviceControlClient::new(&mut self.transport, Cap::from_ref(self.device.as_ref()))
@@ -171,6 +173,22 @@ impl DeviceSession {
             .space
             .cap(self.irq.unwrap().as_ref())
             .expect("IRQ notification")
+    }
+    /// Use a caller-owned notification; signal and receive rights may be split.
+    pub fn interrupt_on(&mut self, signal: &Cap<Notification>, receive: Cap<Notification>) -> sel4::cap::Notification {
+        assert!(self.irq.is_none());
+        self.control().interrupt_to(signal).expect("remapped IRQ binding");
+        self.irq = Some(receive);
+        self.interrupt()
+    }
+    /// # Safety
+    /// Device-specific reset/quiescence must have completed. Discard outstanding
+    /// bounce output without dereferencing possibly retired source buffers.
+    pub unsafe fn discard_shared(&mut self) {
+        while let Some(index) = self.buffers.iter().position(|b| b.source.is_some()) {
+            self.release(index, false);
+        }
+        assert!(self.buffers.is_empty(), "driver still owns DMA allocations");
     }
     pub fn activate(&mut self) {
         self.control().activate().expect("bus mastering");
