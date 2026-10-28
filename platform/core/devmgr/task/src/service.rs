@@ -100,6 +100,21 @@ impl Service {
             Hardware::Remapping(unit) => unit.hardware(),
         }
     }
+    pub fn poll_fault(&mut self) {
+        if let Hardware::Remapping(unit) = &mut self.hardware {
+            let report = unit.poll_fault().expect("VT-d fault polling");
+            if let Some(fault) = report.fault {
+                sel4::debug_println!(
+                    "VTD_FAULT source={:04x} address={:x} reason={:x} read={} overflow={}",
+                    fault.source,
+                    fault.address,
+                    fault.reason,
+                    fault.read,
+                    report.overflow
+                );
+            }
+        }
+    }
     fn unit(&mut self) -> &mut Vtd<Io> {
         match &mut self.hardware {
             Hardware::Remapping(unit) => unit,
@@ -332,6 +347,9 @@ impl DeviceControl for Caller<'_> {
         space: Cap<VmAddressSpaceObjectTag>,
     ) -> Result<Cap<VmMemoryObjectTag>, DeviceError> {
         let d = self.service.device(self.badge)?;
+        if space.as_ref().unwrapped_badge().is_some() {
+            return Err(DeviceError::Denied);
+        }
         let bar = self.service.devices[d]
             .bars
             .iter()
@@ -358,6 +376,12 @@ impl DeviceControl for Caller<'_> {
         access: u32,
     ) -> Result<DeviceDma, DeviceError> {
         let d = self.service.device(self.badge)?;
+        // A cap unwrapped by OUR endpoint is not VM authority. It cannot be
+        // forwarded to the root VM broker; reject it before minting resources
+        // instead of turning a caller-supplied wrong object into a fatal RPC.
+        if memory.as_ref().unwrapped_badge().is_some() {
+            return Err(DeviceError::Denied);
+        }
         if self.service.maps.iter().flatten().count() >= 8 {
             return Err(DeviceError::Exhausted);
         }

@@ -151,6 +151,7 @@ fn start(mock: Mock) -> Result<Vtd<Mock>> {
             dmar::Dmar {
                 registers: BASE,
                 host_width: 48,
+                requesters: [u64::MAX; 4],
             },
             100,
         )
@@ -228,7 +229,7 @@ fn invalid_requests_do_not_poison_but_failed_invalidation_does() {
 fn unsupported_or_preowned_units_never_enable_translation() {
     for (reg, value) in [
         (BASE + 16, 3),
-        (BASE + 16, 0xa),
+        (BASE + 16, 9),
         (BASE + 8, 0x700),
         (BASE + 0x1c, TE as u64),
     ] {
@@ -239,6 +240,15 @@ fn unsupported_or_preowned_units_never_enable_translation() {
     let mut mock = Mock::new();
     mock.stall = true;
     assert!(matches!(start(mock), Err(Error::Timeout)));
+}
+#[test]
+fn non_snooping_tables_use_the_hardware_visibility_contract() {
+    let mut mock = Mock::new();
+    mock.registers.insert(BASE + 16, 0xa);
+    let mut unit = start(mock).unwrap();
+    let domain = unit.attach(0x20).unwrap();
+    unit.map(domain, 0x10000, &[0x900000], 3).unwrap();
+    unit.unmap(domain, 0x10000, 1).unwrap();
 }
 #[test]
 fn queue_wrap_and_domain_id_capability_bounds() {
@@ -317,4 +327,25 @@ fn dmar_is_bounded_and_reserved_memory_is_not_silently_ignored() {
         dmar::Dmar::parse(&dmar(&reserved)),
         Err(crate::protocol::DeviceError::Unsupported)
     ));
+}
+#[test]
+fn explicit_drhd_scopes_limit_requester_coverage() {
+    let mut drhd = vec![0, 0, 32, 0, 0, 0, 0, 0];
+    drhd.extend_from_slice(&BASE.to_le_bytes());
+    drhd.extend_from_slice(&[3, 8, 0, 0, 0, 255, 0, 0]); // IOAPIC is NOT a DMA grant.
+    drhd.extend_from_slice(&[1, 8, 0, 0, 0, 0, 4, 0]);
+    let parsed = dmar::Dmar::parse(&dmar(&drhd)).unwrap();
+    assert_eq!(parsed.requesters, [1 << 32, 0, 0, 0]);
+    let mut unit = unsafe { Vtd::enable(Mock::new(), parsed, 100) }.unwrap();
+    assert!(matches!(unit.attach(0), Err(Error::Unsupported)));
+    assert!(matches!(unit.attach(0x28), Err(Error::Unsupported)));
+    assert!(unit.attach(0x20).is_ok());
+    for (offset, value) in [(24, 2), (29, 1), (30, 32), (31, 8), (4, 2)] {
+        let mut bad = drhd.clone();
+        bad[offset] = value;
+        assert!(dmar::Dmar::parse(&dmar(&bad)).is_err());
+    }
+    drhd[2] = 24;
+    drhd.truncate(24); // Interrupt-only unit is not PCI coverage.
+    assert!(dmar::Dmar::parse(&dmar(&drhd)).is_err());
 }

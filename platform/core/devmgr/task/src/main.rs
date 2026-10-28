@@ -164,9 +164,27 @@ fn main() -> ! {
         count,
         policy.vtd
     );
+    if policy.assignment != 0 {
+        let device = DeviceAssignment::claim(
+            &mut service::Caller {
+                service: &mut service,
+                badge: horn_devmgr::ASSIGNMENT_BADGE,
+            },
+            policy.assignment,
+        )
+        .expect("bootstrap device assignment");
+        let exported = device.as_ref();
+        service
+            .io()
+            .platform
+            .assigned(device)
+            .expect("assigned capability delivery");
+        service.io().space().delete(exported).unwrap();
+    }
     service.io().platform.ready().expect("bootstrap ready");
     let reply = sel4::cap::Reply::from_bits(DEVICE_CAPS_REPLY_SLOT as _);
     loop {
+        service.poll_fault();
         let request = {
             let mut server = Sel4Server::new(
                 root,
@@ -174,9 +192,21 @@ fn main() -> ! {
                 receive,
                 service.io().space(),
             );
-            server.recv_request_dynamic(
-                device_host_request_layout,
+            sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&server.recv_slot));
+            let (info, badge) = server.endpoint.nb_recv(reply);
+            if badge == 0 {
+                // Zero is not an exported client role. NBRecv also uses zero
+                // for no sender, but an unbadged unsolicited Send may deliver
+                // a cap: always clear the disposable receive slot.
+                receive.delete().unwrap();
+                sel4::r#yield();
+                continue;
+            }
+            server.decode_received_dynamic(
+                info,
+                badge,
                 reply,
+                device_host_request_layout,
                 DeviceHostRequest::decode,
             )
         };

@@ -1,4 +1,4 @@
-//! Legacy VT-d backend for coherent Q35, owned by devmgr, not by seL4/root.
+//! Legacy VT-d backend owned by devmgr, not by seL4/root.
 //! No passthrough domains, device TLBs, ATS/PASID, RMRRs or compatibility MSI.
 //! Hardware operations are deliberately independent of bootstrap RPC/VM transport.
 pub mod dmar;
@@ -22,10 +22,12 @@ pub struct Page {
     pub physical: u64,
 }
 /// # Safety
-/// Pages are zeroed, coherent, aligned, exclusive resident RAM and remain pinned
+/// Pages are zeroed, aligned, exclusive resident RAM and remain pinned
 /// until reboot (including on error/drop). MMIO and page accesses are volatile.
 /// No driver can access these pages or register authority. MMIO writes publish
 /// preceding page writes; completed page reads acquire hardware status writes.
+/// Cache maintenance must make zeroing/writes visible to a non-snooping IOMMU
+/// and invalidate cached hardware completion words before reads.
 pub unsafe trait Hardware {
     fn read32(&mut self, address: u64) -> Result<u32>;
     fn read64(&mut self, address: u64) -> Result<u64>;
@@ -82,6 +84,7 @@ pub struct Vtd<H> {
     base: u64,
     control: u32,
     width: u8,
+    requesters: [u64; 4],
     levels: u8,
     drain: u64,
     fault_offset: u64,
@@ -126,13 +129,13 @@ impl<H: Hardware> Vtd<H> {
         let version = io.read32(base)?;
         let cap = io.read64(base + 8)?;
         let ecap = io.read64(base + 16)?;
-        // Coherent legacy tables, queued invalidation and interrupt remapping.
+        // Legacy tables with backend cache maintenance, QI and interrupt remap.
         // Reject extended interrupt mode requirements and active firmware state.
         if cap == u64::MAX
             || ecap == u64::MAX
             || cap & 7 == 7
             || cap & (1 << 4) != 0
-            || ecap & 0x0b != 0x0b
+            || ecap & 0x0a != 0x0a
             || ecap & (1 << 61) != 0
             || io.read32(base + 0x1c)? & (TE | QIE | IRE | CFI) != 0
         {
@@ -178,6 +181,7 @@ impl<H: Hardware> Vtd<H> {
         let mut this = Self {
             io,
             base,
+            requesters: dmar.requesters,
             control: 0,
             width,
             levels,
@@ -327,7 +331,7 @@ impl<H: Hardware> Vtd<H> {
     /// Flat root-bus endpoints only. Bridges/aliases need requester-group support.
     /// The caller must validate topology; a numeric SID is not public authority.
     pub fn attach(&mut self, sid: u16) -> Result<Domain> {
-        if sid >> 8 != 0 {
+        if sid >> 8 != 0 || self.requesters[sid as usize / 64] & (1 << (sid % 64)) == 0 {
             return Err(Error::Unsupported);
         }
         if self.assigned.contains(&sid) {

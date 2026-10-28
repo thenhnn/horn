@@ -73,7 +73,9 @@ impl ConfigurationAccess for ConfigSnapshot {
             // PciRoot::bar_info temporarily clears address decoding. Its writes
             // affect ONLY this shadow, never the real PCI command/status bits.
             assert_eq!(offset, 4);
-            self.words[1] = data;
+            // Status is immutable snapshot data, not a writable command half.
+            // PciRoot writes zero to the W1C status half when changing command.
+            self.words[1] = (self.words[1] & 0xffff_0000) | (data & 0xffff);
         }
     }
     unsafe fn unsafe_clone(&self) -> Self {
@@ -123,6 +125,7 @@ mod tests {
         );
         assert_eq!(root.bar_info(device, 3).unwrap(), None);
         assert_eq!(root.get_status_command(device).1.bits(), 6);
+        assert_eq!(root.get_status_command(device).0.bits(), 0x10);
         assert_eq!(snapshot.read_word(device, 0x10), words[4]);
         assert_eq!(
             snapshot.read_word(

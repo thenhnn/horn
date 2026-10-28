@@ -113,6 +113,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-virtio-console" = rec {
+      packageId = "horn-virtio-console";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-virtio-console";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-vm" = rec {
       packageId = "horn-vm";
       build = internal.buildRustCrateWithFeatures {
@@ -751,8 +761,16 @@ rec {
             features = [ "protocol" ];
           }
           {
+            name = "one-shot-mutex";
+            packageId = "one-shot-mutex";
+          }
+          {
             name = "sel4";
             packageId = "sel4";
+          }
+          {
+            name = "sel4-dlmalloc";
+            packageId = "sel4-dlmalloc";
           }
         ];
 
@@ -807,6 +825,63 @@ rec {
           }
         ];
 
+      };
+      "horn-virtio-console" = rec {
+        crateName = "horn-virtio-console";
+        version = "0.1.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "virtio_console";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/drivers/virtio/console; };
+        dependencies = [
+          {
+            name = "horn-devmgr";
+            packageId = "horn-devmgr";
+          }
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "horn-mimalloc";
+            packageId = "horn-mimalloc";
+          }
+          {
+            name = "horn-virtio";
+            packageId = "horn-virtio";
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+          }
+          {
+            name = "sel4-dlmalloc";
+            packageId = "sel4-dlmalloc";
+          }
+          {
+            name = "sel4-panicking";
+            packageId = "sel4-panicking";
+            features = [ "personality" "panic-handler" "alloc" ];
+          }
+          {
+            name = "sel4-panicking-env";
+            packageId = "sel4-panicking-env";
+          }
+          {
+            name = "sel4-runtime-common";
+            packageId = "sel4-runtime-common";
+            features = [ "sel4" ];
+          }
+        ];
+        features = {
+        };
+        resolvedDefaultFeatures = [ "dma-probe" ];
       };
       "horn-vm" = rec {
         crateName = "horn-vm";

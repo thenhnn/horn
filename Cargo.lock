@@ -191,7 +191,9 @@ version = "0.1.0"
 dependencies = [
  "horn-ipc",
  "horn-vm",
+ "one-shot-mutex",
  "sel4",
+ "sel4-dlmalloc",
 ]
 
 [[package]]
@@ -210,6 +212,21 @@ version = "0.1.0"
 dependencies = [
  "virtio-drivers",
  "zerocopy",
+]
+
+[[package]]
+name = "horn-virtio-console"
+version = "0.1.0"
+dependencies = [
+ "horn-devmgr",
+ "horn-ipc",
+ "horn-mimalloc",
+ "horn-virtio",
+ "sel4",
+ "sel4-dlmalloc",
+ "sel4-panicking",
+ "sel4-panicking-env",
+ "sel4-runtime-common",
 ]
 
 [[package]]

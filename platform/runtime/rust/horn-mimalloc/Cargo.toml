@@ -7,3 +7,5 @@ edition = "2024"
 horn-ipc = { path = "../horn-ipc", features = ["sel4"] }
 horn-vm = { path = "../../../core/vm", features = ["protocol"] }
 sel4 = { path = "../../../../vendor/rust-sel4/src/crates/sel4" }
+sel4-dlmalloc = { path = "../../../../vendor/rust-sel4/src/crates/sel4-dlmalloc" }
+one-shot-mutex = "0.2.1"

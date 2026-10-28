@@ -22,9 +22,10 @@ The mapped common-config region must remain live until the upstream transport
 has been dropped. Driver initialization, reset and Drop run in the driver
 process. Do not revoke its BARs first and then run transport Drop on stale MMIO.
 
-## DMA integration contract (not wired yet)
+## Console task and DMA integration
 
-A Horn `Hal` must implement all five upstream hooks using VM/device authority:
+`console/` now builds a separate `virtio_console.elf` with a capability HAL
+implementing all five upstream hooks using VM/device authority:
 `dma_alloc`, `dma_dealloc`, `mmio_phys_to_virt`, `share`, `unshare`.
 The crate's `PhysAddr` is a **device-visible IOVA**, not an exported RAM paddr.
 Contiguous IOVA mappings do not require contiguous physical RAM.
@@ -38,6 +39,23 @@ Contiguous IOVA mappings do not require contiguous physical RAM.
   releasing or reusing backing, and copy bounce output back only when complete.
   A failed close must retain/quarantine backing, not return it to the allocator.
 
-The separate console ELF, capability-backed HAL and QEMU DMA/IRQ end-to-end test
-remain implementation work. Unit tests of these adapters are not DMA isolation
-validation.
+The task installs VM-backed mimalloc as its default Rust allocator before
+constructing upstream transport/console objects. Bootstrap and internal allocator
+RPC metadata use separate bounded control storage; the heap callback transport
+and device HAL use disjoint CSpace pools to avoid reentrant slot allocation.
+
+The optional Q35 harness now assigns `00:04.0` in devmgr, passes only its scoped
+device capability plus the driver's own VM authority, and launches this ELF.
+`tests/boot/test_virtio_console.py` validates real host TX/RX echo and remapped
+MSI-X on one/two CPUs in debug/release, including thousands of DMA map/unmap
+operations. Negative builds deliberately issue an unmapped IOVA and a previously
+used IOVA after its completed unmap/drain; devmgr polls and reports the actual
+VT-d source/address/reason. Fault injections require the `dma-probe` feature and
+a separate Nix profile; the normal driver has no injection path. Test tasks
+retain remaining backing and stop after injecting a failure, rather than trying
+to consume device error completions as successful data.
+
+The task sends a readiness line and echoes input. It does not yet expose a
+console IPC/TTY service or implement orderly shutdown. The HAL's error policy
+retains backing and faults rather than claiming recovery. Native physical
+hardware, device reassignment and general driver-death cleanup are unvalidated.

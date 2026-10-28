@@ -406,6 +406,13 @@ pub fn run(root: ::sel4::cap::CNode, recv: ::sel4::AbsoluteCPtr, space: Sel4CapS
     let _unclosed = VmFactoryClient::new(&mut transport, factory)
         .delegate(12)
         .unwrap();
+    let mut bootstrap = Vec::with_capacity(4);
+    bootstrap.extend_from_slice(&[11u8, 22, 33, 44]);
+    assert!(crate::runtime::is_control(bootstrap.as_ptr()));
+    let bootstrap_box = alloc::boxed::Box::new(0x1234_5678u64);
+    assert!(crate::runtime::is_control(
+        (&*bootstrap_box as *const u64).cast()
+    ));
     let mut heap = VmHeap::new(transport, factory.as_ref(), address_space.as_ref()).unwrap();
     // Recycled physical backing must not disclose the previous dirty contents.
     let pointer = heap.allocate(8192, 4096).unwrap();
@@ -420,6 +427,15 @@ pub fn run(root: ::sel4::cap::CNode, recv: ::sel4::AbsoluteCPtr, space: Sel4CapS
     unsafe {
         horn_mimalloc::install(heap).unwrap();
     }
+    // An ordinary Vec reallocates from bootstrap storage into mimalloc. Its
+    // old control allocation must be freed by provenance, not the new mode.
+    bootstrap.reserve_exact(8192);
+    assert_eq!(&bootstrap[..], &[11, 22, 33, 44]);
+    assert!(!crate::runtime::is_control(bootstrap.as_ptr()));
+    assert_eq!(*bootstrap_box, 0x1234_5678);
+    drop(bootstrap_box); // Still owned by the control heap after installation.
+    drop(bootstrap);
+    horn_mimalloc::collect();
     let baseline = horn_mimalloc::info().unwrap();
     let peak;
     {
@@ -455,5 +471,52 @@ pub fn run(root: ::sel4::cap::CNode, recv: ::sel4::AbsoluteCPtr, space: Sel4CapS
     assert!(small.iter().all(|byte| *byte == 42));
     ::sel4::debug_println!(
         "MIMALLOC_VM_PASS allocation=true alignment=true exhaustion=true pages_returned=true"
+    );
+    let before_default = horn_mimalloc::info().unwrap();
+    let default_peak;
+    {
+        let mut values = alloc::vec![0u64; 256 * 1024];
+        assert!(values.iter().all(|v| *v == 0));
+        assert!(!crate::runtime::is_control(values.as_ptr().cast()));
+        for (index, value) in values.iter_mut().enumerate() {
+            *value = index as u64;
+        }
+        values.reserve_exact(256 * 1024);
+        assert!(values.iter().enumerate().all(|(i, v)| *v == i as u64));
+        let boxed = alloc::boxed::Box::new([42u8; 8192]);
+        assert!(!crate::runtime::is_control(boxed.as_ptr()));
+        assert!(boxed.iter().all(|v| *v == 42));
+        let layout = Layout::from_size_align(8192, 65536).unwrap();
+        let aligned = unsafe { alloc::alloc::alloc_zeroed(layout) };
+        assert!(!aligned.is_null());
+        assert_eq!(aligned as usize % 65536, 0);
+        assert!(!crate::runtime::is_control(aligned));
+        unsafe {
+            assert!(
+                core::slice::from_raw_parts(aligned, layout.size())
+                    .iter()
+                    .all(|v| *v == 0)
+            );
+            alloc::alloc::dealloc(aligned, layout);
+        }
+        let mut impossible = alloc::vec![7u8; 128];
+        let original = impossible.as_ptr();
+        assert!(
+            impossible
+                .try_reserve_exact(before_default.limit_bytes as usize * 2)
+                .is_err()
+        );
+        assert_eq!(impossible.as_ptr(), original);
+        assert_eq!(impossible.len(), 128);
+        assert!(impossible.iter().all(|value| *value == 7));
+        default_peak = horn_mimalloc::info().unwrap().charged_bytes;
+        assert!(default_peak > before_default.charged_bytes);
+    }
+    horn_mimalloc::collect();
+    assert!(horn_mimalloc::info().unwrap().charged_bytes < default_peak);
+    // Control storage remains reusable; there is no post-install dlmalloc leak
+    // from moving or freeing the bootstrap objects above.
+    ::sel4::debug_println!(
+        "MIMALLOC_GLOBAL_PASS vec=true box=true realloc=true zeroed=true alignment=true bootstrap_free=true exhaustion=true pages_returned=true"
     );
 }

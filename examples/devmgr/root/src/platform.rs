@@ -26,6 +26,8 @@ pub struct Platform {
     scratch: usize,
     rsdp: List<u8, 36>,
     pub ready: bool,
+    pub driver: Option<horn_procd::ProcessId>,
+    pub driver_granted: bool,
 }
 impl Platform {
     /// # Safety
@@ -111,6 +113,8 @@ impl Platform {
             scratch,
             rsdp,
             ready: false,
+            driver: None,
+            driver_granted: false,
         };
         this.verify_shared_bank(test_page, allocator);
         this
@@ -279,7 +283,29 @@ impl DevicePlatform for Platform {
         Ok(PlatformInfo {
             vtd: self.enabled,
             ticks_per_us: self.frequency,
+            assignment: if self.driver.is_some() { 33 } else { 0 }, // Q35 test root: 00:04.0
         })
+    }
+    fn assigned(&mut self, device: horn_ipc::Cap<DeviceObjectTag>) -> Result<(), DeviceError> {
+        let driver = self.driver.ok_or(DeviceError::Denied)?;
+        if self.driver_granted {
+            return Err(DeviceError::Denied);
+        }
+        let root = sel4::init_thread::slot::CNODE.cap();
+        self.manager
+            .cnode(driver)
+            .map_err(|_| DeviceError::Backend)?
+            .absolute_cptr_from_bits_with_depth(
+                DEVICE_DRIVER_CAPS_DEVICE_SLOT as _,
+                DEVICE_DRIVER_CAPS_SIZE_BITS as _,
+            )
+            .copy(
+                &root.absolute_cptr(sel4::CPtr::from_bits(device.as_ref().slot as _)),
+                sel4::CapRights::all(),
+            )
+            .map_err(|_| DeviceError::Backend)?;
+        self.driver_granted = true;
+        Ok(())
     }
     fn write(&mut self, address: u64, width: u32, value: u64) -> Result<(), DeviceError> {
         if !self.enabled || !matches!(width, 1 | 2 | 4 | 8) || address & (width as u64 - 1) != 0 {

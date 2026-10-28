@@ -31,6 +31,10 @@ def test_idl_child_process_demo(system, release):
         timeout=60,
     )
     vm.serial.wait_for(
+        b"MIMALLOC_GLOBAL_PASS vec=true box=true realloc=true zeroed=true alignment=true bootstrap_free=true exhaustion=true pages_returned=true",
+        timeout=60,
+    )
+    vm.serial.wait_for(
         b"PROCD_PASS elf=true quota=true untyped=true cleanup=true", timeout=30
     )
     assert vm.monitor.execute("query-status")["running"]

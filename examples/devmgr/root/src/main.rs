@@ -16,6 +16,8 @@ static ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/devmgr.elf"));
 
 const PLATFORM_BADGE: u64 = 1 << 48;
 const FAULT_BADGE: u64 = PLATFORM_BADGE + 1;
+const DRIVER_FAULT_BADGE: u64 = PLATFORM_BADGE + 2;
+static DRIVER_ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/virtio_console.elf"));
 enum Request {
     Platform(DevicePlatformObjectRequest),
     Vm(horn_vm::protocol::VmHostRequest),
@@ -50,8 +52,12 @@ fn serve(
     sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&server.recv_slot));
     let (info, badge) = server.endpoint.nb_recv(authority);
     if badge == 0 {
+        server.recv_slot.delete().unwrap();
         sel4::r#yield();
         return;
+    }
+    if badge == DRIVER_FAULT_BADGE {
+        fatal(reset, "console stopped or faulted");
     }
     if badge == FAULT_BADGE {
         fatal(reset, "devmgr stopped or faulted");
@@ -222,11 +228,68 @@ fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
     let mhz = u32::from_le_bytes(frequency.content()[..4].try_into().unwrap()) as u64;
     let started = unsafe { core::arch::x86_64::_rdtsc() };
     let enabled = option_env!("DEVMGR_TEST_VTD") == Some("1");
+    let driver = if enabled {
+        let id = manager
+            .create(
+                DRIVER_ELF,
+                Config {
+                    name: "virtio-console",
+                    ram_limit: 32 * 1024 * 1024,
+                    cnode_bits: DEVICE_DRIVER_CAPS_SIZE_BITS as _,
+                    vm_window: 0x4000_0000..0x4400_0000,
+                    cpu_budget_us: 1000,
+                    cpu_period_us: 1000,
+                },
+            )
+            .unwrap();
+        let allocator = manager.allocator(id).unwrap();
+        let vm = horn_vm::service::Service::new(
+            allocator.clone(),
+            horn_vm::sel4::FramePool::for_account(allocator),
+            bootstrap,
+            manager.vspace(id).unwrap(),
+            0x4000_0000..0x4400_0000,
+            128,
+        )
+        .unwrap();
+        let factory = vm.factory();
+        let space = vm.address_space();
+        let child = manager.cnode(id).unwrap();
+        for (slot, source) in [
+            (DEVICE_DRIVER_CAPS_SELF_SLOT, child.bits()),
+            (DEVICE_DRIVER_CAPS_VM_SLOT, factory.bits()),
+            (DEVICE_DRIVER_CAPS_ADDRESS_SPACE_SLOT, space.bits()),
+        ] {
+            child
+                .absolute_cptr_from_bits_with_depth(slot as _, DEVICE_DRIVER_CAPS_SIZE_BITS as _)
+                .copy(
+                    &root.absolute_cptr(sel4::CPtr::from_bits(source)),
+                    sel4::CapRights::all(),
+                )
+                .unwrap();
+        }
+        manager.attach_vm(id, vm).unwrap();
+        let fault = driver_fault_endpoint(&manager, id, root, bootstrap);
+        manager
+            .tcb(id)
+            .unwrap()
+            .tcb_set_space(
+                fault,
+                child,
+                sel4::CNodeCapData::new(0, sel4::WORD_SIZE - DEVICE_DRIVER_CAPS_SIZE_BITS as usize),
+                manager.vspace(id).unwrap(),
+            )
+            .unwrap();
+        Some(id)
+    } else {
+        None
+    };
     let mut platform = unsafe {
         platform::Platform::new(
             boot, allocator, scratch, split, manager, process, enabled, mhz,
         )
     };
+    platform.driver = driver;
     let receive = root.absolute_cptr(sel4::CPtr::from_bits((split + platform::TEMP_SLOTS) as _));
     let space = Sel4CapSpace::new_local(
         root,
@@ -250,6 +313,8 @@ fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
         serve(&mut platform, &mut server, bootstrap_reply, reset);
     }
     if enabled {
+        assert!(platform.driver_granted);
+        platform.manager.start(driver.unwrap()).unwrap();
         loop {
             serve(&mut platform, &mut server, bootstrap_reply, reset);
         }
@@ -338,6 +403,23 @@ fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
         let _ = bootstrap.recv(bootstrap_reply);
         fatal(reset, "devmgr stopped or faulted");
     }
+}
+
+fn driver_fault_endpoint(
+    manager: &Manager,
+    process: horn_procd::ProcessId,
+    root: sel4::cap::CNode,
+    endpoint: sel4::cap::Endpoint,
+) -> sel4::CPtr {
+    let slot = manager.allocator(process).unwrap().reserve_slot().unwrap();
+    root.absolute_cptr(sel4::CPtr::from_bits(slot as _))
+        .mint(
+            &root.absolute_cptr(endpoint.cptr()),
+            sel4::CapRights::all(),
+            DRIVER_FAULT_BADGE,
+        )
+        .unwrap();
+    sel4::CPtr::from_bits(slot as _)
 }
 
 fn fatal(reset: usize, reason: &str) -> ! {

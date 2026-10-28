@@ -7,6 +7,9 @@ use core::ptr::NonNull;
 use horn_ipc::*;
 use horn_vm::protocol::*;
 
+mod global;
+pub use global::GlobalAllocator;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Error {
     Vm(VmError),
@@ -257,6 +260,9 @@ mod native {
                 mi_collect(true);
             }
         }
+    }
+    pub(super) fn control_required() -> bool {
+        !READY.load(Ordering::Acquire) || BUSY.load(Ordering::Acquire)
     }
     pub(super) fn allocate(layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         if !READY.load(Ordering::Acquire) {

@@ -5,10 +5,12 @@ userspace VT-d backend. `task/` builds a separate `devmgr.elf`, using the ordina
 procd ELF loader, Horn ABI tag and independent RAM account. Root supplies kernel
 mechanics; device/IOMMU policy runs in devmgr, with `KernelIOMMU` disabled.
 
-**Status:** read-only discovery is boot-tested. Resource provisioning and native
-VT-d wiring are in progress; there is not yet a validated virtio-console DMA/IRQ
-end-to-end path. The default Q35 harness still publishes observer authority only
-and reports `iommu = NotInitialized`. That state never means DMA is safe.
+**Status:** read-only discovery and the optional Q35 virtio-console DMA/IRQ path
+are boot-tested. The default harness still publishes observer authority only and
+reports `iommu = NotInitialized`; that state never means DMA is safe. The console
+profile enables userspace VT-d and interrupt remapping, launches a separate
+capability-restricted driver, and exercises real host TX/RX plus rejected DMA.
+This remains a narrow experimental QEMU profile, not physical-hardware support.
 
 ## Authority and API
 
@@ -89,16 +91,21 @@ allocation, ARI, SR-IOV, ATS/PASID, AER, hotplug or driver matching.
 
 ## VT-d profile
 
-The backend uses coherent legacy tables, queued invalidation, full-SID checked
+The backend uses cache-maintained legacy tables, queued invalidation, full-SID checked
 interrupt remapping and deny-by-default contexts. Compatibility interrupts stay
 blocked. Mapping permissions are device READ/WRITE, and IOVAs are monotonic even
 after unmap. Fault records are polled; device faults do not themselves poison
 the controller, but queue failures/timeouts do.
 
 DMAR parsing uses `acpi` table lookup/checksums plus a bounded DRHD parser. The
-first profile requires one segment-0 INCLUDE_PCI_ALL unit and interrupt remapping;
+profile requires one segment-0 unit and interrupt remapping, with either
+INCLUDE_PCI_ALL or explicit single-hop root-bus endpoint scopes. Only covered
+requester IDs may be attached; IOAPIC/HPET scopes grant no DMA permission.
 RMRRs, multiple units, unsupported scopes and active firmware ownership fail
-closed. No implicit identity maps or unprotected fallback are created.
+closed. No implicit identity maps or unprotected fallback are created. The x86
+backend publishes table zeroing/writes with CLFLUSH and fences, and invalidates
+cached completion words before reads: QEMU does not advertise table snooping.
+The current native backend requires 64-byte CLFLUSH support.
 
 Tables live in devmgr-owned resident VM memory with retained private physical
 pins. Root cannot reclaim DMA backing on process teardown while pins or MMIO
@@ -112,7 +119,10 @@ not a claim of automatic restart/cleanup.
 `DeviceCaps` names self/reply/service, private platform, VM factory and address
 space. The private platform supplies RSDP, bounded physical access, MMIO import/
 revocation, authenticated VM pin/unpin and kernel IRQ mechanics. Ordinary driver
-capabilities never include this endpoint.
+capabilities never include this endpoint. An optional trusted bootstrap
+assignment ID is consumed inside devmgr; its resulting scoped device capability
+is delivered to root and copied into the unstarted driver's named slot. The
+driver receives neither assignment authority nor the private platform endpoint.
 
 `examples/devmgr/` is a Q35 test root, not a production supervisor. Its device
 Untypeds belong exclusively to a shared `DeviceBank`. Temporary reads and
@@ -133,4 +143,11 @@ precedes resumed fault monitoring.
 Tests include ACPI/ECAM bounds, segments/start buses, multifunction, BARs,
 capability chains, ReBAR, pagination, codecs, model VT-d permissions/invalidation/
 interrupt-source validation/faults, VM seal/pin policy, and native discovery/
-slot-lifetime/fatal-reset regressions. **Model tests are not a QEMU DMA proof.**
+slot-lifetime/fatal-reset regressions. `tests/boot/test_virtio_console.py` additionally
+runs host TX/RX echo with thousands of map/unmap operations in debug/release on
+one/two CPUs, and isolated feature-gated negative drivers. An unmapped address
+and a previously used, then invalidated/drained IOVA produce real hardware fault
+records for the assigned requester. The latter first transmits valid data to
+warm translation caching before unmapping and deliberately trying its stale
+address again. Neither test relaxes IOMMU permissions or adds identity mappings.
+Model tests are not a substitute for these tests or physical-hardware validation.

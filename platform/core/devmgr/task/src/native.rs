@@ -105,6 +105,11 @@ impl Io {
         self.map_cpu(grant.memory, length, grant.token)
     }
     pub fn initialize(&mut self, base: u64) {
+        let cpu = unsafe { core::arch::x86_64::__cpuid(1) };
+        assert!(
+            cpu.edx & (1 << 19) != 0 && (cpu.ebx >> 8) & 255 == 8,
+            "64-byte CLFLUSH support"
+        );
         self.base = base;
         self.registers = Some(self.mmio(base, 65536).expect("IOMMU registers"));
     }
@@ -173,6 +178,14 @@ unsafe impl Hardware for Io {
             return Err(vtd::Error::Backend);
         }
         let map = self.map_cpu(memory, 4096, grant.token)?;
+        // The kernel zeroed RAM through a cached alias. Publish all cache lines
+        // before exposing even an initially empty table to non-snooping VT-d.
+        for offset in (0..4096).step_by(64) {
+            unsafe {
+                core::arch::x86_64::_mm_clflush((map.address + offset) as *const u8);
+            }
+        }
+        fence(Ordering::SeqCst);
         let page = Page {
             cookie: self.pages.len() as u32,
             physical: grant.pages.data[0],
@@ -188,6 +201,10 @@ unsafe impl Hardware for Io {
             .pages
             .get(page.cookie as usize)
             .ok_or(vtd::Error::Invalid)?;
+        unsafe {
+            core::arch::x86_64::_mm_clflush((map.address as *const u64).add(word).cast());
+        }
+        fence(Ordering::SeqCst);
         let value = unsafe { (map.address as *const u64).add(word).read_volatile() };
         fence(Ordering::Acquire);
         Ok(value)
@@ -200,7 +217,12 @@ unsafe impl Hardware for Io {
             .pages
             .get(page.cookie as usize)
             .ok_or(vtd::Error::Invalid)?;
-        unsafe { (map.address as *mut u64).add(word).write_volatile(value) };
+        unsafe {
+            let pointer = (map.address as *mut u64).add(word);
+            pointer.write_volatile(value);
+            core::arch::x86_64::_mm_clflush(pointer.cast());
+        }
+        fence(Ordering::SeqCst);
         Ok(())
     }
     fn now(&self) -> u64 {

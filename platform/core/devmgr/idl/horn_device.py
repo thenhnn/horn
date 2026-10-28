@@ -209,6 +209,8 @@ class DeviceHost:
 class PlatformInfo:
     vtd: BOOL
     ticks_per_us: U64
+    # Optional trusted bootstrap assignment: inventory ID or zero.
+    assignment: U64
 
 
 @record
@@ -243,6 +245,11 @@ class DevicePlatform:
 
     @method
     def policy(self) -> Result[PlatformInfo, DeviceError]: ...
+
+    @method
+    def assigned(
+        self, device: Cap[DeviceObject, Move]
+    ) -> Result[None, DeviceError]: ...
 
     @method
     def write(
@@ -283,6 +290,13 @@ class DevicePlatform:
 @object(implements=(DevicePlatform,))
 class DevicePlatformObject:
     pass
+
+
+@capset(capacity=256)
+class DeviceDriverCaps:
+    vm: Cap[VmFactory, Copy]
+    address_space: Cap[VmAddressSpaceObject, Copy]
+    device: Cap[DeviceObject, Copy]
 
 
 @capset(capacity=256)
