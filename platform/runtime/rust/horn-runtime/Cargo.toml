@@ -1,0 +1,18 @@
+[package]
+name = "horn-runtime"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+test = false
+doctest = false
+
+[dependencies]
+horn-ipc = { path = "../horn-ipc", features = ["sel4"] }
+horn-mimalloc = { path = "../horn-mimalloc" }
+horn-vm = { path = "../../../core/vm", features = ["protocol"] }
+sel4 = { path = "../../../../vendor/rust-sel4/src/crates/sel4" }
+sel4-dlmalloc = { path = "../../../../vendor/rust-sel4/src/crates/sel4-dlmalloc" }
+sel4-panicking = { path = "../../../../vendor/rust-sel4/src/crates/sel4-panicking", features = ["personality", "panic-handler", "alloc"] }
+sel4-panicking-env = { path = "../../../../vendor/rust-sel4/src/crates/sel4-panicking/env" }
+sel4-runtime-common = { path = "../../../../vendor/rust-sel4/src/crates/sel4-runtime-common", features = ["sel4"] }

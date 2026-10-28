@@ -5,10 +5,14 @@ freestanding archive without fetching sources. `horn/prim.c` implements its OS
 primitives through `platform/runtime/rust/horn-mimalloc`; `init.c` configures initialization.
 The Rust wrapper implements the standard allocator API, not a replacement heap.
 
-`horn-mimalloc::GlobalAllocator` is the default Rust heap in the console task and
-the IDL child test: ordinary `Box`, `Vec`, zeroed allocations and reallocations
-use mimalloc after `install(VmHeap)`. The explicit `Mimalloc` allocator API remains
-available. rust-sel4/procd provide native TLS, entrypoints, IPC and capabilities.
+[`horn-runtime`](../rust/horn-runtime/README.md) installs
+`horn-mimalloc::GlobalAllocator` as the default Rust heap in devmgr, console and
+the IDL child test, without executable-local runtime copies. Ordinary `Box`,
+`Vec`, zeroed allocations and reallocations use mimalloc after `install(VmHeap)`.
+Normal runtime entry installs the VM heap before application code; the IDL
+allocator probe deliberately defers installation to test the transition. The
+explicit `Mimalloc` allocator API remains available. rust-sel4/procd provide
+native TLS, entrypoints, IPC and capabilities.
 
 A fixed control heap serves bootstrap allocations before installation and
 metadata allocations inside mimalloc's own VM callbacks. Those callbacks must

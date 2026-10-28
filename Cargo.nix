@@ -103,6 +103,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-runtime" = rec {
+      packageId = "horn-runtime";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-runtime";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-virtio" = rec {
       packageId = "horn-virtio";
       build = internal.buildRustCrateWithFeatures {
@@ -692,30 +702,12 @@ rec {
             features = [ "sel4" ];
           }
           {
-            name = "one-shot-mutex";
-            packageId = "one-shot-mutex";
+            name = "horn-runtime";
+            packageId = "horn-runtime";
           }
           {
             name = "sel4";
             packageId = "sel4";
-          }
-          {
-            name = "sel4-dlmalloc";
-            packageId = "sel4-dlmalloc";
-          }
-          {
-            name = "sel4-panicking";
-            packageId = "sel4-panicking";
-            features = [ "personality" "panic-handler" "alloc" ];
-          }
-          {
-            name = "sel4-panicking-env";
-            packageId = "sel4-panicking-env";
-          }
-          {
-            name = "sel4-runtime-common";
-            packageId = "sel4-runtime-common";
-            features = [ "sel4" ];
           }
         ];
 
@@ -805,6 +797,52 @@ rec {
         ];
 
       };
+      "horn-runtime" = rec {
+        crateName = "horn-runtime";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/runtime/rust/horn-runtime; };
+        libName = "horn_runtime";
+        dependencies = [
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "horn-mimalloc";
+            packageId = "horn-mimalloc";
+          }
+          {
+            name = "horn-vm";
+            packageId = "horn-vm";
+            features = [ "protocol" ];
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+          }
+          {
+            name = "sel4-dlmalloc";
+            packageId = "sel4-dlmalloc";
+          }
+          {
+            name = "sel4-panicking";
+            packageId = "sel4-panicking";
+            features = [ "personality" "panic-handler" "alloc" ];
+          }
+          {
+            name = "sel4-panicking-env";
+            packageId = "sel4-panicking-env";
+          }
+          {
+            name = "sel4-runtime-common";
+            packageId = "sel4-runtime-common";
+            features = [ "sel4" ];
+          }
+        ];
+
+      };
       "horn-virtio" = rec {
         crateName = "horn-virtio";
         version = "0.1.0";
@@ -849,8 +887,8 @@ rec {
             features = [ "sel4" ];
           }
           {
-            name = "horn-mimalloc";
-            packageId = "horn-mimalloc";
+            name = "horn-runtime";
+            packageId = "horn-runtime";
           }
           {
             name = "horn-virtio";
@@ -859,24 +897,6 @@ rec {
           {
             name = "sel4";
             packageId = "sel4";
-          }
-          {
-            name = "sel4-dlmalloc";
-            packageId = "sel4-dlmalloc";
-          }
-          {
-            name = "sel4-panicking";
-            packageId = "sel4-panicking";
-            features = [ "personality" "panic-handler" "alloc" ];
-          }
-          {
-            name = "sel4-panicking-env";
-            packageId = "sel4-panicking-env";
-          }
-          {
-            name = "sel4-runtime-common";
-            packageId = "sel4-runtime-common";
-            features = [ "sel4" ];
           }
         ];
         features = {
@@ -949,35 +969,17 @@ rec {
             packageId = "horn-procd";
           }
           {
+            name = "horn-runtime";
+            packageId = "horn-runtime";
+          }
+          {
             name = "horn-vm";
             packageId = "horn-vm";
             features = [ "protocol" ];
           }
           {
-            name = "one-shot-mutex";
-            packageId = "one-shot-mutex";
-          }
-          {
             name = "sel4";
             packageId = "sel4";
-          }
-          {
-            name = "sel4-dlmalloc";
-            packageId = "sel4-dlmalloc";
-          }
-          {
-            name = "sel4-panicking";
-            packageId = "sel4-panicking";
-            features = [ "personality" "panic-handler" "alloc" ];
-          }
-          {
-            name = "sel4-panicking-env";
-            packageId = "sel4-panicking-env";
-          }
-          {
-            name = "sel4-runtime-common";
-            packageId = "sel4-runtime-common";
-            features = [ "sel4" ];
           }
         ];
 

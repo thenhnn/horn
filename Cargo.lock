@@ -169,12 +169,8 @@ dependencies = [
  "acpi",
  "horn-devmgr",
  "horn-ipc",
- "one-shot-mutex",
+ "horn-runtime",
  "sel4",
- "sel4-dlmalloc",
- "sel4-panicking",
- "sel4-panicking-env",
- "sel4-runtime-common",
 ]
 
 [[package]]
@@ -207,6 +203,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "horn-runtime"
+version = "0.1.0"
+dependencies = [
+ "horn-ipc",
+ "horn-mimalloc",
+ "horn-vm",
+ "sel4",
+ "sel4-dlmalloc",
+ "sel4-panicking",
+ "sel4-panicking-env",
+ "sel4-runtime-common",
+]
+
+[[package]]
 name = "horn-virtio"
 version = "0.1.0"
 dependencies = [
@@ -220,13 +230,9 @@ version = "0.1.0"
 dependencies = [
  "horn-devmgr",
  "horn-ipc",
- "horn-mimalloc",
+ "horn-runtime",
  "horn-virtio",
  "sel4",
- "sel4-dlmalloc",
- "sel4-panicking",
- "sel4-panicking-env",
- "sel4-runtime-common",
 ]
 
 [[package]]
@@ -246,13 +252,9 @@ dependencies = [
  "horn-ipc",
  "horn-mimalloc",
  "horn-procd",
+ "horn-runtime",
  "horn-vm",
- "one-shot-mutex",
  "sel4",
- "sel4-dlmalloc",
- "sel4-panicking",
- "sel4-panicking-env",
- "sel4-runtime-common",
 ]
 
 [[package]]

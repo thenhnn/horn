@@ -85,6 +85,7 @@ def test_virtio_console_dma_irq(system, release, cpus):
             echoed += part
         assert echoed == payload
         (vm.directory / "console.log").write_bytes(received + echoed)
+        vm.serial.wait_for(b"DEVMGR_ALLOCATOR allocator=mimalloc")
         vm.serial.wait_for(
             b"VTD_ACTIVE translation=true interrupt_remap=true compatibility=false"
         )

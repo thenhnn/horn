@@ -21,13 +21,9 @@ pub struct Io {
     pages: Vec<Mapping>,
 }
 pub fn target<T: CapType>(slot: u32) -> Cap<T> {
-    Cap::new(
-        DEVICE_CAPS_SELF_SLOT as _,
+    horn_runtime::bootstrap_cap(
+        sel4::cap::CNode::from_bits(DEVICE_CAPS_SELF_SLOT as _),
         slot,
-        sel4::WORD_SIZE as _,
-        0,
-        CapMode::COPY,
-        Rights::ALL,
     )
 }
 fn vm_error(error: CallError<VmError>) -> vtd::Error {

@@ -3,7 +3,6 @@
 #![no_main]
 extern crate alloc;
 mod native;
-mod runtime;
 mod service;
 
 use acpi::{AcpiHandler, AcpiTables, PhysicalMapping, rsdp::Rsdp};
@@ -11,7 +10,12 @@ use alloc::alloc::{alloc, dealloc, handle_alloc_error};
 use core::{alloc::Layout, cell::RefCell, mem, ptr::NonNull};
 use horn_devmgr::{Inventory, firmware, pci::ConfigRead, protocol::*};
 use horn_ipc::*;
-horn_ipc::horn_tag!();
+horn_runtime::task!(main, vm: horn_runtime::VmBootstrap {
+    cnode: DEVICE_CAPS_SELF_SLOT,
+    factory: DEVICE_CAPS_VM_SLOT,
+    address_space: DEVICE_CAPS_ADDRESS_SPACE_SLOT,
+    slots: 128..256,
+});
 
 use native::PlatformClient;
 
@@ -73,24 +77,17 @@ impl ConfigRead for Firmware<'_> {
 fn main() -> ! {
     let root = sel4::cap::CNode::from_bits(DEVICE_CAPS_SELF_SLOT as _);
     let receive = root.absolute_cptr(sel4::CPtr::from_bits(DEVICE_CAPS_FIRST_FREE_SLOT as _));
-    let space = Sel4CapSpace::new_local(
-        root,
-        (DEVICE_CAPS_FIRST_FREE_SLOT + 2) as _,
-        1 << DEVICE_CAPS_SIZE_BITS,
-    );
-    let target = Cap::new(
-        root.bits() as _,
-        DEVICE_CAPS_PLATFORM_SLOT,
-        sel4::WORD_SIZE as _,
-        0,
-        CapMode::COPY,
-        Rights::ALL,
-    );
-    let private_receive = root.absolute_cptr(sel4::CPtr::from_bits(
-        (DEVICE_CAPS_FIRST_FREE_SLOT + 1) as _,
+    // Public receive, private RPC and heap callbacks have disjoint slots.
+    let transport = horn_runtime::transport(root, (DEVICE_CAPS_FIRST_FREE_SLOT + 1)..128)
+        .expect("devmgr transport");
+    let target = horn_runtime::bootstrap_cap(root, DEVICE_CAPS_PLATFORM_SLOT);
+    let mut platform = DevicePlatformClient::new(transport, target);
+    let allocation = alloc::boxed::Box::new(42u64);
+    assert!(!horn_runtime::is_control(
+        (&*allocation as *const u64).cast()
     ));
-    let mut platform =
-        DevicePlatformClient::new(Sel4Transport::new(root, private_receive, space), target);
+    drop(allocation);
+    sel4::debug_println!("DEVMGR_ALLOCATOR allocator=mimalloc");
     let policy = platform.policy().expect("bootstrap policy");
     let supplied = platform.rsdp().expect("bootstrap RSDP");
     let mut bytes = [0u8; 36];

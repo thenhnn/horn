@@ -3,10 +3,10 @@
 #![no_main]
 extern crate alloc;
 mod hal;
-mod runtime;
 use core::ptr::NonNull;
 use horn_devmgr::protocol::*;
-use horn_ipc::*;
+#[cfg(feature = "dma-probe")]
+use horn_ipc::CallError;
 use horn_virtio::{
     IommuPciTransport, VirtIOConsole,
     config::ConfigSnapshot,
@@ -18,39 +18,17 @@ use horn_virtio::{
         },
     },
 };
-horn_ipc::horn_tag!();
-
-static CONTROL: sel4_dlmalloc::StaticHeap<{ 256 * 1024 }> = sel4_dlmalloc::StaticHeap::new();
-// One thread per driver; bootstrap and internal heap RPC bookkeeping alone use
-// CONTROL. All ordinary Rust allocations, including upstream Box/Vec, use mi.
-#[global_allocator]
-static ALLOCATOR: horn_mimalloc::GlobalAllocator =
-    unsafe { horn_mimalloc::GlobalAllocator::new(CONTROL.bounds()) };
+horn_runtime::task!(main, vm: horn_runtime::VmBootstrap {
+    cnode: DEVICE_DRIVER_CAPS_SELF_SLOT,
+    factory: DEVICE_DRIVER_CAPS_VM_SLOT,
+    address_space: DEVICE_DRIVER_CAPS_ADDRESS_SPACE_SLOT,
+    slots: 128..256,
+});
 
 fn main() -> ! {
     let root = sel4::cap::CNode::from_bits(DEVICE_DRIVER_CAPS_SELF_SLOT as _);
-    // Independent CSpace pools: mimalloc callbacks cannot mutate the HAL's
-    // in-flight capability allocator. Both pools communicate with our own VM.
-    let heap = horn_mimalloc::VmHeap::new(
-        Sel4Transport::new(
-            root,
-            root.absolute_cptr(sel4::CPtr::from_bits(128)),
-            Sel4CapSpace::new_local(root, 129, 256),
-        ),
-        hal::target::<VmFactoryTag>(DEVICE_DRIVER_CAPS_VM_SLOT).as_ref(),
-        hal::target::<VmAddressSpaceObjectTag>(DEVICE_DRIVER_CAPS_ADDRESS_SPACE_SLOT).as_ref(),
-    )
-    .expect("mimalloc VM");
-    unsafe {
-        horn_mimalloc::install(heap).expect("mimalloc install");
-    }
-    let transport = Sel4Transport::new(
-        root,
-        root.absolute_cptr(sel4::CPtr::from_bits(
-            DEVICE_DRIVER_CAPS_FIRST_FREE_SLOT as _,
-        )),
-        Sel4CapSpace::new_local(root, (DEVICE_DRIVER_CAPS_FIRST_FREE_SLOT + 1) as _, 128),
-    );
+    let transport = horn_runtime::transport(root, DEVICE_DRIVER_CAPS_FIRST_FREE_SLOT..128)
+        .expect("driver transport");
     hal::install(hal::State::new(transport));
     #[cfg(feature = "dma-probe")]
     hal::with(|state| {

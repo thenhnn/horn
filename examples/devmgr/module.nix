@@ -4,6 +4,7 @@
   pkgs,
   ...
 }: let
+  mimalloc = import ../../platform/runtime/mimalloc {pkgs = pkgs.pkgsBuildBuild;};
   protocol = old: {
     HORN_IDL = "${../../tools/idl}";
     HORN_VM_IDL = "${../../platform/core/vm/idl}";
@@ -11,7 +12,11 @@
   };
   childWorkspace = config.rust.workspace.override {
     target = "sel4";
-    crateOverrides.horn-devmgr = protocol;
+    crateOverrides = {
+      horn-devmgr = protocol;
+      horn-vm = protocol;
+      horn-mimalloc = old: {MIMALLOC_LIB = "${mimalloc}/lib";};
+    };
   };
   task = childWorkspace.members.horn-devmgr-task;
   console = import ../../platform/drivers/virtio/console {

@@ -37,13 +37,9 @@ pub struct State {
     pub fault_wait: Option<sel4::cap::Notification>,
 }
 pub fn target<T: CapType>(slot: u32) -> Cap<T> {
-    Cap::new(
-        DEVICE_DRIVER_CAPS_SELF_SLOT as _,
+    horn_runtime::bootstrap_cap(
+        sel4::cap::CNode::from_bits(DEVICE_DRIVER_CAPS_SELF_SLOT as _),
         slot,
-        sel4::WORD_SIZE as _,
-        0,
-        CapMode::COPY,
-        Rights::ALL,
     )
 }
 impl State {

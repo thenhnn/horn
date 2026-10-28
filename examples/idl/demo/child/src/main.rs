@@ -4,10 +4,9 @@
 
 extern crate alloc;
 
-horn_ipc::horn_tag!();
+horn_runtime::task!(main, deferred);
 
 mod launch_probe;
-mod runtime;
 mod vm_probe;
 
 #[allow(dead_code, unused_imports, non_camel_case_types)]

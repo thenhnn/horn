@@ -2,11 +2,10 @@
 #![no_std]
 #![no_main]
 extern crate alloc;
-mod runtime;
 
 use horn_ipc::*;
 use horn_procd::protocol::*;
-horn_ipc::horn_tag!();
+horn_runtime::task!(main, deferred);
 
 fn main() -> ! {
     let root = sel4::cap::CNode::from_bits(PROCESS_CAPS_SELF_SLOT as _);

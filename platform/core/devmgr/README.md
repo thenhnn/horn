@@ -4,6 +4,11 @@
 userspace VT-d backend. `task/` builds a separate `devmgr.elf`, using the ordinary
 procd ELF loader, Horn ABI tag and independent RAM account. Root supplies kernel
 mechanics; device/IOMMU policy runs in devmgr, with `KernelIOMMU` disabled.
+The task uses [`horn-runtime`](../../runtime/rust/horn-runtime/README.md): its
+VM-backed global mimalloc heap is installed before discovery/application code.
+Heap callbacks have a separate CSpace pool from public/private service IPC.
+A native startup provenance probe checks an ordinary Box is not on the control
+heap (`DEVMGR_ALLOCATOR allocator=mimalloc`).
 
 **Status:** read-only discovery and the optional Q35 virtio-console DMA/IRQ path
 are boot-tested. The default harness still publishes observer authority only and
