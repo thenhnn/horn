@@ -3,6 +3,7 @@ fn main() {
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     for key in [
         "DEVMGR_DRIVER_CATALOG",
+        "HORN_CLOCK_ROUTE",
         "DEVMGR_PROBE_ELF",
         "DEVMGR_TEST_FAULT",
         "DEVMGR_TEST_EARLY_FAULT",
@@ -28,6 +29,7 @@ fn main() {
         ("HORN_IDL", "../../../../tools/idl"),
         ("HORN_VM_IDL", "../../vm/idl"),
         ("HORN_DEVICE_IDL", "../idl"),
+        ("HORN_CLOCK_IDL", "../../clock/idl"),
     ]
     .map(|(key, fallback)| {
         println!("cargo:rerun-if-env-changed={key}");

@@ -62,6 +62,7 @@ pub struct Service {
     devices: Vec<Device>,
     maps: Vec<Option<Dma>>,
     next_badge: u64,
+    clock: Option<crate::clock::Clock>,
 }
 pub struct Caller<'a> {
     pub service: &'a mut Service,
@@ -102,6 +103,7 @@ impl Service {
             inventory,
             regions,
             hardware: Hardware::ReadOnly(io),
+            clock: None,
             devices: Vec::new(),
             maps: Vec::new(),
             next_badge: 3,
@@ -113,6 +115,7 @@ impl Service {
             inventory,
             regions,
             hardware: Hardware::Remapping(unit),
+            clock: None,
             devices: Vec::new(),
             maps: Vec::new(),
             next_badge: 3,
@@ -123,6 +126,38 @@ impl Service {
             Hardware::ReadOnly(io) => io,
             Hardware::Remapping(unit) => unit.hardware(),
         }
+    }
+    pub fn init_clock(&mut self, base: u64) {
+        let irq = self.io().platform.irq(0).expect("HPET kernel vector");
+        // QEMU HPET writes through the system address space (not PCI DMA),
+        // and Q35 supplies no HPET DMAR scope. This is explicit platform policy,
+        // not a compatibility-interrupt fallback for PCI devices.
+        let (address, data) = if option_env!("HORN_CLOCK_ROUTE") == Some("qemu-system-msi") {
+            (0xfee0_0000, irq.vector)
+        } else {
+            match &mut self.hardware {
+                Hardware::Remapping(unit) => {
+                    let route = unit
+                        .timer_interrupt(irq.vector.try_into().unwrap(), 0)
+                        .expect("HPET interrupt source from DMAR");
+                    (route.address(), route.data())
+                }
+                Hardware::ReadOnly(_) => (0xfee0_0000, irq.vector),
+            }
+        };
+        self.io()
+            .platform
+            .bind_irq(irq.token, &target(DEVICE_CAPS_TIMER_SLOT))
+            .expect("HPET IRQ bind");
+        let map = self.io().mmio(base, 4096).expect("HPET registers");
+        self.clock = Some(crate::clock::Clock::new(map, irq.token, address, data));
+        self.io().platform.ack_irq(irq.token).expect("HPET IRQ arm");
+    }
+    pub fn clock_irq(&mut self) {
+        let mut clock = self.clock.take().expect("HPET IRQ without clock");
+        clock.poll(self.io());
+        self.io().platform.ack_irq(clock.irq).expect("HPET IRQ ack");
+        self.clock = Some(clock);
     }
     pub fn arm_fault_irq(&mut self) -> Option<u64> {
         if matches!(self.hardware, Hardware::ReadOnly(_)) {
@@ -186,7 +221,7 @@ impl Service {
     }
     fn mint(&mut self) -> Result<(u64, CapRef, CapRef), DeviceError> {
         let badge = self.next_badge;
-        if badge >= horn_supervisor::OWNER_CHANGED {
+        if badge >= horn_devmgr::CLOCK_SOURCE_BADGE {
             return Err(DeviceError::Exhausted);
         }
         self.next_badge = badge.checked_add(1).ok_or(DeviceError::Exhausted)?;
@@ -251,6 +286,40 @@ impl Service {
         self.retire(map.authority);
     }
 }
+impl ClockSource for Caller<'_> {
+    fn source_now(&mut self) -> Result<u64, ClockError> {
+        if self.badge != horn_devmgr::CLOCK_SOURCE_BADGE {
+            return Err(ClockError::Denied);
+        }
+        self.service
+            .clock
+            .as_ref()
+            .map(|c| c.now())
+            .ok_or(ClockError::Unavailable)
+    }
+    fn source_arm(
+        &mut self,
+        deadline_us: u64,
+        signal: Cap<Notification>,
+    ) -> Result<(), ClockError> {
+        if self.badge != horn_devmgr::CLOCK_SOURCE_BADGE {
+            return Err(ClockError::Denied);
+        }
+        let mut clock = self.service.clock.take().ok_or(ClockError::Unavailable)?;
+        let result = clock.arm(self.service.io(), deadline_us, signal);
+        self.service.clock = Some(clock);
+        result
+    }
+    fn source_cancel(&mut self) -> Result<(), ClockError> {
+        if self.badge != horn_devmgr::CLOCK_SOURCE_BADGE {
+            return Err(ClockError::Denied);
+        }
+        let mut clock = self.service.clock.take().ok_or(ClockError::Unavailable)?;
+        clock.cancel(self.service.io());
+        self.service.clock = Some(clock);
+        Ok(())
+    }
+}
 impl DeviceObserver for Caller<'_> {
     fn status(&mut self) -> Result<DeviceStatus, DeviceError> {
         self.service.inventory.status()
@@ -269,9 +338,9 @@ impl DeviceAssignment for Caller<'_> {
         {
             return Err(DeviceError::Denied);
         }
-        // A bounded single-assignment profile until requester groups and
-        // per-assignment resource admission are implemented.
-        if !self.service.devices.is_empty() {
+        // Two independent bus-0/function-0 endpoints (the Q35 demo profile).
+        // No bridges, multifunction requester groups, restart or reassignment.
+        if self.service.devices.len() >= 2 {
             return Err(DeviceError::Exhausted);
         }
         let info = self.service.inventory.info(id)?;
@@ -284,6 +353,9 @@ impl DeviceAssignment for Caller<'_> {
             return Err(DeviceError::Unsupported);
         }
         let sid = ((d.address.device << 3) | d.address.function) as u16;
+        if self.service.devices.iter().any(|device| device.sid == sid) {
+            return Err(DeviceError::Denied);
+        }
         let config = self
             .service
             .regions
@@ -448,7 +520,17 @@ impl DeviceControl for Caller<'_> {
         if memory.as_ref().unwrapped_badge().is_some() {
             return Err(DeviceError::Denied);
         }
-        if self.service.maps.iter().flatten().count() >= 8 {
+        // Admit twelve active mappings per assignment; one driver cannot consume
+        // the other endpoint's allowance. Device RAM remains account-limited.
+        if self
+            .service
+            .maps
+            .iter()
+            .flatten()
+            .filter(|map| map.device == d)
+            .count()
+            >= 12
+        {
             return Err(DeviceError::Exhausted);
         }
         let index = if let Some(index) = self.service.maps.iter().position(Option::is_none) {

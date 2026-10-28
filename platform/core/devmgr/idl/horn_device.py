@@ -1,5 +1,6 @@
 """Read-only discovery. IDs select snapshot records, never device authority."""
 
+from horn_clock import *
 from horn_idl import (
     BOOL,
     U8,
@@ -205,7 +206,15 @@ class DeviceMappingObject:
     pass
 
 
-@object(implements=(DeviceObserver, DeviceAssignment, DeviceControl, DeviceMapping))
+@object(
+    implements=(
+        DeviceObserver,
+        DeviceAssignment,
+        DeviceControl,
+        DeviceMapping,
+        ClockSource,
+    )
+)
 class DeviceHost:
     pass
 
@@ -318,3 +327,4 @@ class DeviceCaps:
     ready: Cap[sel4.Notification, Copy]
     events: Cap[sel4.Notification, Copy]
     supervisor: Cap[sel4.Endpoint, Copy]
+    timer: Cap[sel4.Notification, Copy]

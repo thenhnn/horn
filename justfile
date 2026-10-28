@@ -30,7 +30,7 @@ shell accel="kvm":
           exit 1
         fi
         machine=q35,kernel-irqchip=split
-        cpu=host
+        cpu=host,migratable=off
         ;;
       tcg) machine=q35; cpu=max ;;
       *) echo 'Usage: just shell [kvm|tcg]' >&2; exit 1 ;;
@@ -42,6 +42,9 @@ shell accel="kvm":
     [[ ${#images[@]} == 2 ]]
     exec qemu-system-x86_64 -machine "$machine" -accel '{{ accel }}' -cpu "$cpu" -m 512 -smp 1 \
       -nodefaults -no-user-config -nic none -display none -monitor none -no-reboot \
+      -global hpet.msi=on \
+      -netdev user,id=net0,restrict=on,hostfwd=tcp:127.0.0.1:8080-:80 \
+      -device virtio-net-pci,netdev=net0,addr=05.0,disable-legacy=on,iommu_platform=on,mac=52:54:00:12:34:56 \
       -serial file:work/horn-debug.log \
       -kernel "${images[0]}/bin/kernel-multiboot.elf" \
       -initrd "${images[1]}/bin/task.elf" \

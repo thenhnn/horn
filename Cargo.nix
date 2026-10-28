@@ -53,6 +53,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-clock" = rec {
+      packageId = "horn-clock";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-clock";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-console" = rec {
       packageId = "horn-console";
       build = internal.buildRustCrateWithFeatures {
@@ -103,6 +113,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-http-demo" = rec {
+      packageId = "horn-http-demo";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-http-demo";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-ipc" = rec {
       packageId = "horn-ipc";
       build = internal.buildRustCrateWithFeatures {
@@ -117,6 +137,26 @@ rec {
       packageId = "horn-mimalloc";
       build = internal.buildRustCrateWithFeatures {
         packageId = "horn-mimalloc";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "horn-net" = rec {
+      packageId = "horn-net";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-net";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "horn-netd" = rec {
+      packageId = "horn-netd";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-netd";
       };
 
       # Debug support which might change between releases.
@@ -183,6 +223,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-timerd" = rec {
+      packageId = "horn-timerd";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-timerd";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-virtio" = rec {
       packageId = "horn-virtio";
       build = internal.buildRustCrateWithFeatures {
@@ -197,6 +247,16 @@ rec {
       packageId = "horn-virtio-console";
       build = internal.buildRustCrateWithFeatures {
         packageId = "horn-virtio-console";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "horn-virtio-net" = rec {
+      packageId = "horn-virtio-net";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-virtio-net";
       };
 
       # Debug support which might change between releases.
@@ -306,7 +366,7 @@ rec {
           }
           {
             name = "bitflags";
-            packageId = "bitflags";
+            packageId = "bitflags 2.13.2";
           }
           {
             name = "log";
@@ -358,7 +418,7 @@ rec {
         dependencies = [
           {
             name = "bitflags";
-            packageId = "bitflags";
+            packageId = "bitflags 2.13.2";
           }
           {
             name = "cexpr";
@@ -435,7 +495,22 @@ rec {
         ];
 
       };
-      "bitflags" = rec {
+      "bitflags 1.3.2" = rec {
+        crateName = "bitflags";
+        version = "1.3.2";
+        edition = "2018";
+        sha256 = "12ki6w8gn1ldq7yz9y680llwk5gmrhrzszaa17g1sbrw2r2qvwxy";
+        authors = [
+          "The Rust Project Developers"
+        ];
+        features = {
+          "compiler_builtins" = [ "dep:compiler_builtins" ];
+          "core" = [ "dep:core" ];
+          "rustc-dep-of-std" = [ "core" "compiler_builtins" ];
+        };
+        resolvedDefaultFeatures = [ "default" ];
+      };
+      "bitflags 2.13.2" = rec {
         crateName = "bitflags";
         version = "2.13.2";
         edition = "2021";
@@ -448,6 +523,18 @@ rec {
           "bytemuck" = [ "dep:bytemuck" ];
           "serde" = [ "serde_core" ];
           "serde_core" = [ "dep:serde_core" ];
+        };
+      };
+      "byteorder" = rec {
+        crateName = "byteorder";
+        version = "1.5.0";
+        edition = "2021";
+        sha256 = "0jzncxyf404mwqdbspihyzpkndfgda450l0893pz5xj685cg5l0z";
+        authors = [
+          "Andrew Gallant <jamslam@gmail.com>"
+        ];
+        features = {
+          "default" = [ "std" ];
         };
       };
       "cc" = rec {
@@ -565,6 +652,105 @@ rec {
           "runtime" = [ "libloading" ];
         };
         resolvedDefaultFeatures = [ "clang_10_0" "clang_11_0" "clang_3_5" "clang_3_6" "clang_3_7" "clang_3_8" "clang_3_9" "clang_4_0" "clang_5_0" "clang_6_0" "clang_7_0" "clang_8_0" "clang_9_0" "libloading" "runtime" ];
+      };
+      "defmt 0.3.101" = rec {
+        crateName = "defmt";
+        version = "0.3.101";
+        edition = "2021";
+        sha256 = "0lyvrlvpvzvdjzb1m3firjq1s4mbsh9sj1gnim2kqdqfcrvzkvjd";
+        authors = [
+          "The Knurling-rs developers"
+        ];
+        dependencies = [
+          {
+            name = "defmt";
+            packageId = "defmt 1.2.0";
+            rename = "defmt10";
+          }
+        ];
+        features = {
+          "alloc" = [ "defmt10/alloc" ];
+          "avoid-default-panic" = [ "defmt10/avoid-default-panic" ];
+          "encoding-raw" = [ "defmt10/encoding-raw" ];
+          "encoding-rzcobs" = [ "defmt10/encoding-rzcobs" ];
+          "ip_in_core" = [ "defmt10/ip_in_core" ];
+          "unstable-test" = [ "defmt10/unstable-test" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" "ip_in_core" ];
+      };
+      "defmt 1.2.0" = rec {
+        crateName = "defmt";
+        version = "1.2.0";
+        edition = "2021";
+        links = "defmt";
+        sha256 = "1qg3w0w7f0fn74xp60aci37swsjz6hbrqp3pngbm9js0qxd7k874";
+        authors = [
+          "The Knurling-rs developers"
+        ];
+        dependencies = [
+          {
+            name = "bitflags";
+            packageId = "bitflags 1.3.2";
+          }
+          {
+            name = "defmt-macros";
+            packageId = "defmt-macros";
+          }
+        ];
+        features = {
+          "unstable-test" = [ "defmt-macros/unstable-test" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" "ip_in_core" ];
+      };
+      "defmt-macros" = rec {
+        crateName = "defmt-macros";
+        version = "1.2.0";
+        edition = "2021";
+        sha256 = "0rl3dlnl8lc4dqzdnr6q0vrpjz3qmdca5641334rbi4rpmbb02w4";
+        procMacro = true;
+        libName = "defmt_macros";
+        authors = [
+          "The Knurling-rs developers"
+        ];
+        dependencies = [
+          {
+            name = "defmt-parser";
+            packageId = "defmt-parser";
+          }
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+          }
+          {
+            name = "syn";
+            packageId = "syn 3.0.9";
+            features = [ "full" "extra-traits" ];
+          }
+        ];
+        features = {
+        };
+      };
+      "defmt-parser" = rec {
+        crateName = "defmt-parser";
+        version = "1.1.0";
+        edition = "2021";
+        sha256 = "1849z1vp502s77sip4wzj6jimjl6x5vr7b2ivp2mds1dzdlqz5bi";
+        libName = "defmt_parser";
+        authors = [
+          "The Knurling-rs developers"
+        ];
+        dependencies = [
+          {
+            name = "thiserror";
+            packageId = "thiserror";
+          }
+        ];
+        features = {
+        };
       };
       "devmgr-demo-root" = rec {
         crateName = "devmgr-demo-root";
@@ -731,6 +917,67 @@ rec {
         ];
 
       };
+      "hash32" = rec {
+        crateName = "hash32";
+        version = "0.3.1";
+        edition = "2015";
+        sha256 = "01h68z8qi5gl9lnr17nz10lay8wjiidyjdyd60kqx8ibj090pmj7";
+        authors = [
+          "Jorge Aparicio <jorge@japaric.io>"
+        ];
+        dependencies = [
+          {
+            name = "byteorder";
+            packageId = "byteorder";
+            usesDefaultFeatures = false;
+          }
+        ];
+
+      };
+      "heapless" = rec {
+        crateName = "heapless";
+        version = "0.8.0";
+        edition = "2021";
+        sha256 = "1b9zpdjv4qkl2511s2c80fz16fx9in4m9qkhbaa8j73032v9xyqb";
+        authors = [
+          "Jorge Aparicio <jorge@japaric.io>"
+          "Per Lindgren <per.lindgren@ltu.se>"
+          "Emil Fresk <emil.fresk@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "hash32";
+            packageId = "hash32";
+          }
+          {
+            name = "stable_deref_trait";
+            packageId = "stable_deref_trait";
+            usesDefaultFeatures = false;
+          }
+        ];
+        features = {
+          "defmt-03" = [ "dep:defmt" ];
+          "portable-atomic" = [ "dep:portable-atomic" ];
+          "portable-atomic-critical-section" = [ "dep:portable-atomic" "portable-atomic" "portable-atomic?/critical-section" ];
+          "portable-atomic-unsafe-assume-single-core" = [ "dep:portable-atomic" "portable-atomic" "portable-atomic?/unsafe-assume-single-core" ];
+          "serde" = [ "dep:serde" ];
+          "ufmt" = [ "dep:ufmt-write" ];
+        };
+      };
+      "horn-clock" = rec {
+        crateName = "horn-clock";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/core/clock; };
+        libName = "horn_clock";
+        dependencies = [
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+          }
+        ];
+
+      };
       "horn-console" = rec {
         crateName = "horn-console";
         version = "0.1.0";
@@ -863,6 +1110,47 @@ rec {
             features = [ "sel4" ];
           }
           {
+            name = "horn-virtio";
+            packageId = "horn-virtio";
+            optional = true;
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+          }
+        ];
+        features = {
+          "virtio" = [ "dep:horn-virtio" ];
+        };
+        resolvedDefaultFeatures = [ "virtio" ];
+      };
+      "horn-http-demo" = rec {
+        crateName = "horn-http-demo";
+        version = "0.1.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "http_demo";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/apps/http-demo; };
+        dependencies = [
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "horn-net";
+            packageId = "horn-net";
+          }
+          {
+            name = "horn-runtime";
+            packageId = "horn-runtime";
+          }
+          {
             name = "sel4";
             packageId = "sel4";
           }
@@ -920,6 +1208,72 @@ rec {
           {
             name = "sel4-dlmalloc";
             packageId = "sel4-dlmalloc";
+          }
+        ];
+
+      };
+      "horn-net" = rec {
+        crateName = "horn-net";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/core/net; };
+        libName = "horn_net";
+        dependencies = [
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+          }
+        ];
+
+      };
+      "horn-netd" = rec {
+        crateName = "horn-netd";
+        version = "0.1.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "netd";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/core/net/task; };
+        dependencies = [
+          {
+            name = "horn-clock";
+            packageId = "horn-clock";
+          }
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "horn-net";
+            packageId = "horn-net";
+          }
+          {
+            name = "horn-runtime";
+            packageId = "horn-runtime";
+          }
+          {
+            name = "horn-supervisor";
+            packageId = "horn-supervisor";
+            features = [ "client" ];
+          }
+          {
+            name = "horn-vm";
+            packageId = "horn-vm";
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+          }
+          {
+            name = "smoltcp";
+            packageId = "smoltcp";
+            usesDefaultFeatures = false;
+            features = [ "alloc" "medium-ethernet" "proto-ipv4" "proto-dhcpv4" "socket-tcp" "socket-dhcpv4" ];
           }
         ];
 
@@ -1126,6 +1480,44 @@ rec {
         };
         resolvedDefaultFeatures = [ "boot-tests" ];
       };
+      "horn-timerd" = rec {
+        crateName = "horn-timerd";
+        version = "0.1.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "timerd";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/core/clock/task; };
+        dependencies = [
+          {
+            name = "horn-clock";
+            packageId = "horn-clock";
+          }
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "horn-runtime";
+            packageId = "horn-runtime";
+          }
+          {
+            name = "horn-supervisor";
+            packageId = "horn-supervisor";
+            features = [ "client" ];
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+          }
+        ];
+
+      };
       "horn-virtio" = rec {
         crateName = "horn-virtio";
         version = "0.1.0";
@@ -1135,7 +1527,7 @@ rec {
         dependencies = [
           {
             name = "bitflags";
-            packageId = "bitflags";
+            packageId = "bitflags 2.13.2";
             usesDefaultFeatures = false;
           }
           {
@@ -1206,6 +1598,57 @@ rec {
         features = {
         };
         resolvedDefaultFeatures = [ "dma-probe" "lifecycle-test" ];
+      };
+      "horn-virtio-net" = rec {
+        crateName = "horn-virtio-net";
+        version = "0.1.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "virtio_net";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/drivers/virtio/net; };
+        dependencies = [
+          {
+            name = "horn-devmgr";
+            packageId = "horn-devmgr";
+          }
+          {
+            name = "horn-driver";
+            packageId = "horn-driver";
+            features = [ "virtio" ];
+          }
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "horn-net";
+            packageId = "horn-net";
+          }
+          {
+            name = "horn-runtime";
+            packageId = "horn-runtime";
+          }
+          {
+            name = "horn-supervisor";
+            packageId = "horn-supervisor";
+            features = [ "client" ];
+          }
+          {
+            name = "horn-virtio";
+            packageId = "horn-virtio";
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+          }
+        ];
+
       };
       "horn-vm" = rec {
         crateName = "horn-vm";
@@ -1438,6 +1881,19 @@ rec {
           "sval_ref" = [ "dep:sval_ref" ];
           "value-bag" = [ "dep:value-bag" ];
         };
+      };
+      "managed" = rec {
+        crateName = "managed";
+        version = "0.8.0";
+        edition = "2015";
+        sha256 = "13b1j5gpm55jxk24qrbpc25j0ds47bkk9g83d04kp50ab9r8va0c";
+        authors = [
+          "whitequark <whitequark@whitequark.org>"
+        ];
+        features = {
+          "default" = [ "std" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" "map" ];
       };
       "memchr" = rec {
         crateName = "memchr";
@@ -2987,6 +3443,90 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "std" ];
       };
+      "smoltcp" = rec {
+        crateName = "smoltcp";
+        version = "0.12.0";
+        edition = "2021";
+        sha256 = "1fzlyrxpxmmv0dnsrvf34cvxsa8k1bbyicfrcv1c2cqmkjc9bl6s";
+        authors = [
+          "whitequark <whitequark@whitequark.org>"
+        ];
+        dependencies = [
+          {
+            name = "bitflags";
+            packageId = "bitflags 1.3.2";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "byteorder";
+            packageId = "byteorder";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "cfg-if";
+            packageId = "cfg-if";
+          }
+          {
+            name = "defmt";
+            packageId = "defmt 0.3.101";
+            optional = true;
+            features = [ "ip_in_core" ];
+          }
+          {
+            name = "heapless";
+            packageId = "heapless";
+          }
+          {
+            name = "managed";
+            packageId = "managed";
+            usesDefaultFeatures = false;
+            features = [ "map" ];
+          }
+        ];
+        features = {
+          "alloc" = [ "managed/alloc" "defmt?/alloc" ];
+          "default" = [ "std" "log" "medium-ethernet" "medium-ip" "medium-ieee802154" "phy-raw_socket" "phy-tuntap_interface" "proto-ipv4" "proto-dhcpv4" "proto-ipv6" "proto-dns" "proto-ipv4-fragmentation" "proto-sixlowpan-fragmentation" "socket-raw" "socket-icmp" "socket-udp" "socket-tcp" "socket-dhcpv4" "socket-dns" "socket-mdns" "packetmeta-id" "async" "multicast" ];
+          "defmt" = [ "dep:defmt" "heapless/defmt-03" ];
+          "libc" = [ "dep:libc" ];
+          "log" = [ "dep:log" ];
+          "medium-ethernet" = [ "socket" ];
+          "medium-ieee802154" = [ "socket" "proto-sixlowpan" ];
+          "medium-ip" = [ "socket" ];
+          "phy-raw_socket" = [ "std" "libc" ];
+          "phy-tuntap_interface" = [ "std" "libc" "medium-ethernet" ];
+          "proto-dhcpv4" = [ "proto-ipv4" ];
+          "proto-ipsec" = [ "proto-ipsec-ah" "proto-ipsec-esp" ];
+          "proto-ipv4-fragmentation" = [ "proto-ipv4" "_proto-fragmentation" ];
+          "proto-ipv6-fragmentation" = [ "proto-ipv6" "_proto-fragmentation" ];
+          "proto-ipv6-hbh" = [ "proto-ipv6" ];
+          "proto-ipv6-routing" = [ "proto-ipv6" ];
+          "proto-rpl" = [ "proto-ipv6-hbh" "proto-ipv6-routing" ];
+          "proto-sixlowpan" = [ "proto-ipv6" ];
+          "proto-sixlowpan-fragmentation" = [ "proto-sixlowpan" "_proto-fragmentation" ];
+          "socket-dhcpv4" = [ "socket" "medium-ethernet" "proto-dhcpv4" ];
+          "socket-dns" = [ "socket" "proto-dns" ];
+          "socket-icmp" = [ "socket" ];
+          "socket-mdns" = [ "socket-dns" ];
+          "socket-raw" = [ "socket" ];
+          "socket-tcp" = [ "socket" ];
+          "socket-udp" = [ "socket" ];
+          "std" = [ "managed/std" "alloc" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" "medium-ethernet" "proto-dhcpv4" "proto-ipv4" "socket" "socket-dhcpv4" "socket-tcp" ];
+      };
+      "stable_deref_trait" = rec {
+        crateName = "stable_deref_trait";
+        version = "1.2.1";
+        edition = "2015";
+        sha256 = "15h5h73ppqyhdhx6ywxfj88azmrpml9gl6zp3pwy2malqa6vxqkc";
+        authors = [
+          "Robert Grosse <n210241048576@gmail.com>"
+        ];
+        features = {
+          "default" = [ "std" ];
+          "std" = [ "alloc" ];
+        };
+      };
       "stacker" = rec {
         crateName = "stacker";
         version = "0.1.25";
@@ -3094,7 +3634,7 @@ rec {
           "proc-macro" = [ "proc-macro2/proc-macro" "quote?/proc-macro" ];
           "test" = [ "syn-test-suite/all-features" ];
         };
-        resolvedDefaultFeatures = [ "clone-impls" "default" "derive" "full" "parsing" "printing" "proc-macro" ];
+        resolvedDefaultFeatures = [ "clone-impls" "default" "derive" "extra-traits" "full" "parsing" "printing" "proc-macro" ];
       };
       "thiserror" = rec {
         crateName = "thiserror";
@@ -3113,6 +3653,7 @@ rec {
         features = {
           "default" = [ "std" ];
         };
+        resolvedDefaultFeatures = [ "default" "std" ];
       };
       "thiserror-impl" = rec {
         crateName = "thiserror-impl";
@@ -3211,7 +3752,7 @@ rec {
         dependencies = [
           {
             name = "bitflags";
-            packageId = "bitflags";
+            packageId = "bitflags 2.13.2";
           }
           {
             name = "enumn";

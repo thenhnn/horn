@@ -7,6 +7,7 @@
   mimalloc = import ../../../runtime/mimalloc {inherit pkgs;};
   protocol = old: {
     HORN_IDL = "${../../../../tools/idl}";
+    HORN_CLOCK_IDL = "${../../../core/clock/idl}";
     HORN_VM_IDL = "${../../../core/vm/idl}";
     HORN_PROCESS_IDL = "${../../../core/procd/idl}";
     nativeBuildInputs = (old.nativeBuildInputs or []) ++ [pkgs.python3];

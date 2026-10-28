@@ -65,7 +65,15 @@ rather than spinning or consuming device error completions as successful data.
 The boot tests also measure QEMU host CPU during idle, including after a denied
 DMA, and verify a new echo wakes the sleeping system.
 
-The task sends a readiness line and echoes input. It does not yet expose a
-console IPC/TTY service or implement orderly shutdown. The HAL's error policy
-retains backing and faults rather than claiming recovery. Native physical
-hardware, device reassignment and general driver-death cleanup are unvalidated.
+The normal console task exports ConsoleInterface to the native shell; test
+probes remain separate. Orderly reset/drain precedes buffer release. Failed
+cleanup retains backing instead of claiming recovery. Native physical hardware
+and device reassignment remain unvalidated.
+
+## Network task
+
+`net/` builds `virtio_net.elf`, using upstream `VirtIONetRaw` and the optional
+`horn-driver::virtio` HAL/PCI helpers. It exports bounded Ethernet IPC to a
+separate smoltcp netd; neither IP nor HTTP runs in the hardware driver.
+See the [network demo](../../core/net/README.md) and
+[always-on clock](../../core/clock/README.md).

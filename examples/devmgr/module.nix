@@ -13,7 +13,7 @@
   bootstrap = schema:
     pkgs.pkgsBuildBuild.runCommand "horn-bootstrap.json" {
       nativeBuildInputs = [pkgs.pkgsBuildBuild.python3];
-      PYTHONPATH = lib.concatStringsSep ":" (map (p: "${p}") [../../tools/idl ../../platform/core/vm/idl ../../platform/core/procd/idl ../../platform/core/devmgr/idl ../../platform/core/console/idl]);
+      PYTHONPATH = lib.concatStringsSep ":" (map (p: "${p}") [../../tools/idl ../../platform/core/vm/idl ../../platform/core/procd/idl ../../platform/core/devmgr/idl ../../platform/core/console/idl ../../platform/core/clock/idl]);
     } ''python3 -B -m horn_idl ${schema} --capsets "$out"'';
   driverCatalog = pkgs.pkgsBuildBuild.writeText "horn-drivers.rs" (''      static DRIVERS: &[DriverConfig] = &[
     ''
@@ -32,6 +32,7 @@
     HORN_VM_IDL = "${../../platform/core/vm/idl}";
     HORN_PROCESS_IDL = "${../../platform/core/procd/idl}";
     HORN_DEVICE_IDL = "${../../platform/core/devmgr/idl}";
+    HORN_CLOCK_IDL = "${../../platform/core/clock/idl}";
     HORN_CONSOLE_IDL = "${../../platform/core/console/idl}";
     nativeBuildInputs = (old.nativeBuildInputs or []) ++ [pkgs.python3];
   };
@@ -54,6 +55,8 @@
       memchr = old: {features = ["alloc"];};
       horn-console = protocol;
       horn-registry = protocol;
+      horn-clock = protocol;
+      horn-net = protocol;
       horn-shell = protocol;
       horn-devmgr-probe = protocol;
       horn-devmgr-task = old:
@@ -76,6 +79,8 @@
             if config.devmgr-demo.withhold-ready
             then "1"
             else "0";
+          # QEMU HPET uses system-memory MSI, outside PCI DMA translation.
+          HORN_CLOCK_ROUTE = "qemu-system-msi";
           DEVMGR_DRIVER_CATALOG = "${driverCatalog}";
           DEVMGR_PROBE_ELF =
             if config.devmgr-demo.boot-tests
@@ -156,6 +161,10 @@ in {
     type = lib.types.enum ["none" "outside" "stale"];
     default = "none";
   };
+  options.devmgr-demo.net = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+  };
   options.devmgr-demo.console = lib.mkOption {
     type = lib.types.bool;
     default = false;
@@ -169,8 +178,8 @@ in {
     default = false;
   };
   config = {
-    devmgr.drivers = lib.mkIf config.devmgr-demo.console [
-      {
+    devmgr.drivers =
+      (lib.optional config.devmgr-demo.console {
         name = "virtio-console";
         elf = runtimeElf console "virtio_console";
         ram = 32 * 1024 * 1024;
@@ -183,8 +192,21 @@ in {
           badge = 16;
           rights = 14;
         };
-      }
-    ];
+      })
+      ++ (lib.optional config.devmgr-demo.net {
+        name = "virtio-net";
+        elf = runtimeElf childWorkspace.members.horn-virtio-net "virtio_net";
+        ram = 32 * 1024 * 1024;
+        pci = {
+          vendor = 6900;
+          device = 4161;
+        }; # 1af4:1041, modern virtio network
+        publish = {
+          namespace = "/net/ethernet/virtio";
+          badge = 16;
+          rights = 14;
+        };
+      });
     services.definitions = {
       devmgr = {
         elf = runtimeElf childWorkspace.members.horn-devmgr-task "devmgr";
@@ -202,7 +224,7 @@ in {
             rights = 15;
           };
         };
-        publish = ["/consoles"];
+        publish = ["/consoles"] ++ lib.optional config.devmgr-demo.net "/net/ethernet";
         objects = {
           service = {
             kind = "Endpoint";
@@ -214,6 +236,10 @@ in {
             bindings = {
               fault = {
                 badge = "0x8000000000000000";
+                rights = 2;
+              };
+              timer = {
+                badge = 2305843009213693952;
                 rights = 2;
               };
               events = {
@@ -230,7 +256,101 @@ in {
             badge = 1;
             rights = 10;
           }
+          {
+            object = "service";
+            path = "/devices/platform/clock";
+            badge = 1152921504606846976;
+            rights = 14;
+          }
         ];
+      };
+      timerd = {
+        elf = runtimeElf childWorkspace.members.horn-timerd "timerd";
+        bootstrap = bootstrap ../../platform/core/clock/idl/horn_clock.py;
+        capset = "TimerCaps";
+        ram = 8 * 1024 * 1024;
+        requires.source = {path = "/devices/platform/clock";};
+        objects = {
+          service = {
+            kind = "Endpoint";
+            bindings.service.rights = 15;
+          };
+          events = {
+            kind = "Notification";
+            bindNotification = true;
+            bindings = {
+              events.rights = 1;
+              signal = {
+                badge = 1;
+                rights = 2;
+              };
+            };
+          };
+        };
+        exports = [
+          {
+            object = "service";
+            path = "/services/clock";
+            badge = 16;
+            rights = 14;
+          }
+        ];
+      };
+      netd = lib.mkIf config.devmgr-demo.net {
+        elf = runtimeElf childWorkspace.members.horn-netd "netd";
+        bootstrap = bootstrap ../../platform/core/net/idl/horn_net.py;
+        capset = "NetdCaps";
+        ram = 32 * 1024 * 1024;
+        requires = {
+          ethernet = {
+            path = "/net/ethernet";
+            select = "first";
+          };
+          clock = {path = "/services/clock";};
+        };
+        objects = {
+          service = {
+            kind = "Endpoint";
+            bindings.service.rights = 15;
+          };
+          events = {
+            kind = "Notification";
+            bindNotification = true;
+            bindings = {
+              events.rights = 1;
+              ethernet_signal = {
+                badge = 1;
+                rights = 2;
+              };
+              timer_signal = {
+                badge = 2;
+                rights = 2;
+              };
+            };
+          };
+        };
+        exports = [
+          {
+            object = "service";
+            path = "/services/net/tcp";
+            badge = 16;
+            rights = 14;
+          }
+        ];
+      };
+      http-demo = lib.mkIf config.devmgr-demo.net {
+        elf = runtimeElf childWorkspace.members.horn-http-demo "http_demo";
+        bootstrap = bootstrap ../../platform/core/net/idl/horn_net.py;
+        capset = "HttpCaps";
+        ram = 8 * 1024 * 1024;
+        requires.tcp = {path = "/services/net/tcp";};
+        objects.events = {
+          kind = "Notification";
+          bindings = {
+            events.rights = 1;
+            signal.rights = 2;
+          };
+        };
       };
       horn-shell = lib.mkIf config.devmgr-demo.console {
         elf = runtimeElf childWorkspace.members.horn-shell "shell";

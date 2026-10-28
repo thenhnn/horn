@@ -5,6 +5,8 @@
 //! pins stay retained; shutdown/reassignment policy belongs to devmgr/the driver.
 #![no_std]
 extern crate alloc;
+#[cfg(feature="virtio")]
+pub mod virtio;
 
 use alloc::vec::Vec;
 use core::ptr::NonNull;

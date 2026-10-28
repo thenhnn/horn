@@ -6,6 +6,7 @@ fn main() {
         ("HORN_VM_IDL", "../../core/vm/idl"),
         ("HORN_PROCESS_IDL", "../../core/procd/idl"),
         ("HORN_DEVICE_IDL", "../../core/devmgr/idl"),
+        ("HORN_CLOCK_IDL", "../../core/clock/idl"),
         ("HORN_CONSOLE_IDL", "../../core/console/idl"),
     ]
     .map(|(key, fallback)| {

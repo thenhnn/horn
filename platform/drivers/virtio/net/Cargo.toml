@@ -1,0 +1,18 @@
+[package]
+name = "horn-virtio-net"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "virtio_net"
+path = "src/main.rs"
+
+[dependencies]
+horn-driver = {path = "../../horn-driver", features = ["virtio"]}
+horn-virtio = {path = ".."}
+horn-net = {path = "../../../core/net"}
+horn-devmgr = {path = "../../../core/devmgr"}
+horn-runtime = {path = "../../../runtime/rust/horn-runtime"}
+horn-ipc = {path = "../../../runtime/rust/horn-ipc", features = ["sel4"]}
+horn-supervisor = {path = "../../../core/supervisor", features = ["client"]}
+sel4 = {path = "../../../../vendor/rust-sel4/src/crates/sel4"}

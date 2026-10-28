@@ -82,7 +82,7 @@ cc -std=c11 -Wall -Wextra -Werror \
   -c "$TMP/protocol.c" -o "$TMP/process.o"
 
 echo "== device discovery schema and C round trips =="
-PYTHONPATH="$ROOT/tools/idl:$ROOT/platform/core/vm/idl" python3 -m horn_idl \
+PYTHONPATH="$ROOT/tools/idl:$ROOT/platform/core/vm/idl:$ROOT/platform/core/clock/idl" python3 -m horn_idl \
   "$ROOT/platform/core/devmgr/idl/horn_device.py" \
   --header "$TMP/protocol.h" --c "$TMP/protocol.c"
 cc -std=c11 -Wall -Wextra -Werror \

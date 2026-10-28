@@ -5,6 +5,7 @@ extern crate alloc;
 #[cfg(feature = "boot-tests")]
 mod boot_tests;
 mod drivers;
+mod clock;
 mod native;
 mod service;
 
@@ -118,6 +119,7 @@ fn main() -> ! {
     } else {
         None
     };
+    let hpet=clock::discover(&tables);
     drop(tables);
     let count = inventory.status().unwrap().pci_devices;
     let mut io = native::Io::new(platform.into_inner());
@@ -161,6 +163,7 @@ fn main() -> ! {
         policy.vtd
     );
     let fault_irq = service.arm_fault_irq();
+    service.init_clock(hpet);
     service.io().platform.ready().expect("platform preparation");
     #[cfg(feature = "boot-tests")]
     boot_tests::before_start();
@@ -193,7 +196,7 @@ fn main() -> ! {
             );
             sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&server.recv_slot));
             let (info, badge) = server.endpoint.recv(reply);
-            if badge & (horn_devmgr::FAULT_NOTIFICATION_BADGE | horn_supervisor::OWNER_CHANGED) != 0
+            if badge & (horn_devmgr::FAULT_NOTIFICATION_BADGE | horn_supervisor::OWNER_CHANGED | horn_devmgr::TIMER_NOTIFICATION_BADGE) != 0
             {
                 drop(server);
                 receive.delete().unwrap();
@@ -202,6 +205,7 @@ fn main() -> ! {
                         service.handle_fault_irq(fault_irq.expect("unexpected fault notification"));
                     drivers.faulted(&mut service, faults);
                 }
+                if badge & horn_devmgr::TIMER_NOTIFICATION_BADGE != 0 {service.clock_irq();}
                 if badge & horn_supervisor::OWNER_CHANGED != 0 {
                     drivers.changed(&mut service);
                     #[cfg(feature = "boot-tests")]

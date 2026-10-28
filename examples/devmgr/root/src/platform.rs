@@ -9,7 +9,8 @@ use horn_vm::sel4::{
 };
 
 const LARGE_WINDOW: usize = 0x8000_0000;
-pub const TEMP_SLOTS: usize = 128;
+// Shared firmware scratch + retained HPET/VT-d/two PCI BAR capability trees.
+pub const TEMP_SLOTS: usize = 256;
 pub struct Platform {
     pub manager: horn_procd::Manager,
     enabled: bool,
@@ -36,7 +37,7 @@ impl Platform {
     /// # Safety
     /// Device Untypeds must be unused and exclusive to this bank. `scratch` is
     /// an exclusive unmapped root page with translation tables. LARGE_WINDOW..
-    /// +2MiB is reserved; the 128 slots from `first_slot` are empty and excluded
+    /// +2MiB is reserved; TEMP_SLOTS slots from `first_slot` are empty and excluded
     /// from all other allocators for the bank's lifetime.
     pub unsafe fn new(
         boot: &sel4::BootInfoPtr,
@@ -165,9 +166,6 @@ impl Platform {
         Ok(token)
     }
     fn irq_cap(&self, token: u64) -> Result<sel4::cap::IrqHandler, DeviceError> {
-        if !self.enabled {
-            return Err(DeviceError::Denied);
-        }
         self.irqs
             .get(token.checked_sub(1).ok_or(DeviceError::Invalid)? as usize)
             .and_then(|value| *value)
@@ -340,7 +338,8 @@ impl DevicePlatform for Platform {
         address: u64,
         length: u64,
     ) -> Result<MmioGrant, DeviceError> {
-        if !self.enabled {
+        // Read-only PCI profiles still host the system HPET clock. No DMA grants.
+        if !self.enabled && !(address == 0xfed0_0000 && length == 4096) {
             return Err(DeviceError::Denied);
         }
         if self.mmios.len() >= 64 {
@@ -425,7 +424,8 @@ impl DevicePlatform for Platform {
         unsafe { self.manager.unpin_dma(pin) }.map_err(vm_error)
     }
     fn irq(&mut self, sid: u32) -> Result<IrqRoute, DeviceError> {
-        if !self.enabled || sid > 255 {
+        // SID zero is the root-owned system timer/fault vector, not PCI assignment.
+        if (!self.enabled && sid != 0) || sid > 255 {
             return Err(DeviceError::Denied);
         }
         if self.irqs.len() >= 32 {

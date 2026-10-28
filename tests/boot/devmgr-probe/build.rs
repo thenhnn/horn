@@ -5,6 +5,7 @@ fn main() {
         ("HORN_IDL", "../../../tools/idl"),
         ("HORN_VM_IDL", "../../../platform/core/vm/idl"),
         ("HORN_DEVICE_IDL", "../../../platform/core/devmgr/idl"),
+        ("HORN_CLOCK_IDL", "../../../platform/core/clock/idl"),
     ]
     .map(|(key, fallback)| {
         println!("cargo:rerun-if-env-changed={key}");

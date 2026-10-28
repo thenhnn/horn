@@ -24,6 +24,8 @@ pub struct Dmar {
     pub registers: u64,
     pub host_width: u8,
     pub requesters: [u64; 4],
+    /// Interrupt-only HPET source zero from firmware; never grants DMA.
+    pub hpet_sid: Option<u16>,
 }
 impl Dmar {
     pub fn discover<H: AcpiHandler>(tables: &AcpiTables<H>) -> Result<Self, DeviceError> {
@@ -53,6 +55,7 @@ impl Dmar {
         let mut at = 48;
         let mut registers = None;
         let mut requesters = [0u64; 4];
+        let mut hpet_sid = None;
         while at < bytes.len() {
             let header = bytes.get(at..at + 4).ok_or(DeviceError::Invalid)?;
             let kind = u16::from_le_bytes(header[..2].try_into().unwrap());
@@ -104,6 +107,9 @@ impl Dmar {
                         requesters[sid / 64] |= 1 << (sid % 64);
                     }
                     // Interrupt sources do not grant any DMA authority.
+                    4 if scope[4]==0 && scope[5]==0 => {
+                        if hpet_sid.replace(scope[6] as u16*8+scope[7] as u16).is_some(){return Err(DeviceError::Unsupported);}
+                    }
                     3 | 4 => {}
                     _ => return Err(DeviceError::Unsupported),
                 }
@@ -118,6 +124,7 @@ impl Dmar {
             registers: registers.ok_or(DeviceError::Unsupported)?,
             host_width,
             requesters,
+            hpet_sid,
         })
     }
 }

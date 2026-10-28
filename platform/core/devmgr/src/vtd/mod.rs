@@ -85,6 +85,7 @@ pub struct Vtd<H> {
     control: u32,
     width: u8,
     requesters: [u64; 4],
+    hpet_sid: Option<u16>,
     levels: u8,
     drain: u64,
     fault_offset: u64,
@@ -182,6 +183,7 @@ impl<H: Hardware> Vtd<H> {
             io,
             base,
             requesters: dmar.requesters,
+            hpet_sid: dmar.hpet_sid,
             control: 0,
             width,
             levels,
@@ -497,6 +499,14 @@ impl<H: Hardware> Vtd<H> {
     }
     pub fn interrupt(&mut self, domain: Domain, vector: u8, destination: u8) -> Result<Interrupt> {
         self.domain(domain)?;
+        self.interrupt_source(domain.sid, vector, destination)
+    }
+    /// Firmware-validated interrupt-only source, not a DMA domain/assignment.
+    pub fn timer_interrupt(&mut self,vector:u8,destination:u8)->Result<Interrupt>{
+        let sid=self.hpet_sid.ok_or(Error::Unsupported)?;
+        self.interrupt_source(sid,vector,destination)
+    }
+    fn interrupt_source(&mut self,sid:u16,vector:u8,destination:u8)->Result<Interrupt>{
         if !(0x30..=0xdf).contains(&vector) {
             return Err(Error::Invalid);
         }
@@ -507,12 +517,12 @@ impl<H: Hardware> Vtd<H> {
         self.transaction(|s| {
             let index = s.next_interrupt;
             s.next_interrupt += 1;
-            s.routes.push(Some(domain.sid));
+            s.routes.push(Some(sid));
             // SVT=01: validate the full requester SID, no function masking.
             s.io.write_page(
                 s.interrupts,
                 index as usize * 2 + 1,
-                (1 << 18) | domain.sid as u64,
+                (1 << 18) | sid as u64,
             )?;
             s.io.write_page(
                 s.interrupts,
@@ -523,7 +533,7 @@ impl<H: Hardware> Vtd<H> {
             s.sync()?;
             Ok(Interrupt {
                 index,
-                sid: domain.sid,
+                sid,
             })
         })
     }

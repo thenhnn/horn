@@ -1,0 +1,14 @@
+[package]
+name = "horn-http-demo"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "http_demo"
+path = "src/main.rs"
+
+[dependencies]
+horn-net = {path = "../../core/net"}
+horn-runtime = {path = "../../runtime/rust/horn-runtime"}
+horn-ipc = {path = "../../runtime/rust/horn-ipc", features = ["sel4"]}
+sel4 = {path = "../../../vendor/rust-sel4/src/crates/sel4"}

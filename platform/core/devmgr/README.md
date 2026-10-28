@@ -17,6 +17,9 @@ profile enables userspace VT-d and interrupt remapping, launches a separate
 capability-restricted driver, and exercises real host TX/RX plus rejected DMA.
 This remains a narrow experimental QEMU profile, not physical-hardware support.
 
+The PC demo also always starts [timerd](../clock/README.md). The existing
+shell launch includes the [virtio-net/netd/HTTP demo](../net/README.md).
+
 ## Authority and API
 
 `net.nhnn.horn.device.observe` v1:
@@ -68,8 +71,8 @@ specific reset is not needed to promise reuse because **reuse is unsupported**.
 Supporting reassignment will require explicit reset/quiescence policy, not a
 claim that clearing PCI Bus Master Enable alone drains a device.
 
-The current provisioning profile is deliberately narrow: one segment-0,
-single-function root-bus endpoint, page-exclusive assigned memory BARs and
+The current provisioning profile is deliberately narrow: two segment-0,
+single-function root-bus endpoints, page-exclusive assigned memory BARs and
 MSI-X. Bridges/requester aliases, shared-page BARs, device reassignment and MSI
 fallback still need implementation. The intended interrupt policy remains
 MSI-X first, MSI second, never INTx fallback. Do not treat this profile as
@@ -136,7 +139,7 @@ driver receives neither assignment authority nor the private platform endpoint.
 
 `examples/devmgr/` is a Q35 test root, not a production supervisor. Its device
 Untypeds belong exclusively to a shared `DeviceBank`. Temporary reads and
-retained BAR frames share a bounded 128-slot tree; eviction releases only its
+retained HPET/VT-d/BAR frames share a bounded 256-slot tree; eviction releases only its
 own reference, and coalesces/revokes idle ancestors without touching live BARs.
 Cleanup uncertainty poisons the bank and retains uncertain slots. Large frames
 are an optimization, not the lifetime solution. A native probe holds an MMIO

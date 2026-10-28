@@ -155,6 +155,7 @@ fn start(mock: Mock) -> Result<Vtd<Mock>> {
                 registers: BASE,
                 host_width: 48,
                 requesters: [u64::MAX; 4],
+                hpet_sid: None,
             },
             100,
         )

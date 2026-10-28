@@ -246,7 +246,7 @@ fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
             process,
             bootstrap,
             LaunchPolicy {
-                max_children: 4,
+                max_children: 8, // Matches the supervisor's bounded job table.
                 max_ram: 64 * 1024 * 1024,
                 vm_window: 0x4000_0000..0x4400_0000,
                 cpu_budget_us: 1000,

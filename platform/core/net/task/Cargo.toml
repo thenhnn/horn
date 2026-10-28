@@ -1,0 +1,18 @@
+[package]
+name = "horn-netd"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "netd"
+path = "src/main.rs"
+
+[dependencies]
+horn-vm = {path = "../../vm"}
+horn-supervisor = {path = "../../supervisor", features = ["client"]}
+horn-net = {path = ".."}
+horn-clock = {path = "../../clock"}
+horn-runtime = {path = "../../../runtime/rust/horn-runtime"}
+horn-ipc = {path = "../../../runtime/rust/horn-ipc", features = ["sel4"]}
+sel4 = {path = "../../../../vendor/rust-sel4/src/crates/sel4"}
+smoltcp = {version = "=0.12.0", default-features = false, features = ["alloc", "medium-ethernet", "proto-ipv4", "proto-dhcpv4", "socket-tcp", "socket-dhcpv4"]}

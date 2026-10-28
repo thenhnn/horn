@@ -140,6 +140,8 @@ class VM:
             "tcg",
             "-cpu",
             "max",
+            "-global",
+            "hpet.msi=on",
             "-m",
             str(self.memory),
             "-smp",
