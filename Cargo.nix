@@ -63,16 +63,6 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
-    "horn-console-greeting" = rec {
-      packageId = "horn-console-greeting";
-      build = internal.buildRustCrateWithFeatures {
-        packageId = "horn-console-greeting";
-      };
-
-      # Debug support which might change between releases.
-      # File a bug if you depend on any for non-debug work!
-      debug = internal.debugCrate { inherit packageId; };
-    };
     "horn-devmgr" = rec {
       packageId = "horn-devmgr";
       build = internal.buildRustCrateWithFeatures {
@@ -147,6 +137,16 @@ rec {
       packageId = "horn-runtime";
       build = internal.buildRustCrateWithFeatures {
         packageId = "horn-runtime";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "horn-shell" = rec {
+      packageId = "horn-shell";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-shell";
       };
 
       # Debug support which might change between releases.
@@ -735,45 +735,6 @@ rec {
         ];
 
       };
-      "horn-console-greeting" = rec {
-        crateName = "horn-console-greeting";
-        version = "0.1.0";
-        edition = "2024";
-        crateBin = [
-          {
-            name = "console_greeting";
-            path = "src/main.rs";
-            requiredFeatures = [ ];
-          }
-        ];
-        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./examples/devmgr/greeting; };
-        dependencies = [
-          {
-            name = "horn-console";
-            packageId = "horn-console";
-          }
-          {
-            name = "horn-ipc";
-            packageId = "horn-ipc";
-            features = [ "sel4" ];
-          }
-          {
-            name = "horn-procd";
-            packageId = "horn-procd";
-          }
-          {
-            name = "horn-runtime";
-            packageId = "horn-runtime";
-          }
-          {
-            name = "sel4";
-            packageId = "sel4";
-          }
-        ];
-        features = {
-        };
-        resolvedDefaultFeatures = [ "echo-test" ];
-      };
       "horn-devmgr" = rec {
         crateName = "horn-devmgr";
         version = "0.1.0";
@@ -864,6 +825,10 @@ rec {
           {
             name = "horn-runtime";
             packageId = "horn-runtime";
+          }
+          {
+            name = "horn-shell";
+            packageId = "horn-shell";
           }
           {
             name = "horn-supervisor";
@@ -1029,6 +994,48 @@ rec {
             name = "sel4-runtime-common";
             packageId = "sel4-runtime-common";
             features = [ "sel4" ];
+          }
+        ];
+
+      };
+      "horn-shell" = rec {
+        crateName = "horn-shell";
+        version = "0.1.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "shell";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/apps/shell; };
+        libName = "horn_shell";
+        dependencies = [
+          {
+            name = "horn-console";
+            packageId = "horn-console";
+          }
+          {
+            name = "horn-devmgr";
+            packageId = "horn-devmgr";
+          }
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "horn-procd";
+            packageId = "horn-procd";
+          }
+          {
+            name = "horn-runtime";
+            packageId = "horn-runtime";
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
           }
         ];
 

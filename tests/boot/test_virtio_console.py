@@ -34,13 +34,12 @@ def console_connection(vm):
             yield connection
 
 
-def read_banner(connection, vm):
+def read_prompt(connection, vm, count=1):
     received = b""
-    while b"\n" not in received:
+    while received.count(b"$ ") < count or not received.endswith(b"$ "):
         part = connection.recv(4096)
         assert part, vm.serial.path.read_text()
         received += part
-    assert received == b"HORN_VIRTIO_CONSOLE_READY\n"
     return received
 
 
@@ -73,18 +72,25 @@ def test_virtio_console_dma_irq(system, release, cpus):
         modules += ("tests/boot/rust_release.nix",)
     vm = system(modules=modules, cpus=cpus)
     with console_connection(vm) as connection:
-        received = read_banner(connection, vm)
-        # Thousands of map/unmap/close operations exercise pin-token and CSlot
-        # reuse; a short banner alone would miss historical metadata exhaustion.
-        payload = b"horn capability DMA echo\n" * 48
-        connection.sendall(payload)
-        echoed = b""
-        while len(echoed) < len(payload):
-            part = connection.recv(4096)
-            assert part, vm.serial.path.read_text()
-            echoed += part
-        assert echoed == payload
-        (vm.directory / "console.log").write_bytes(received + echoed)
+        received = read_prompt(connection, vm)
+        assert received == b"\x1b[1;36mHorn v0.1 started\x1b[0m\r\n$ "
+        connection.sendall(b"pci\n")
+        devices = read_prompt(connection, vm)
+        assert b"0000:00:04.0 1af4:" in devices
+        connection.sendall(b"ps\n")
+        processes = read_prompt(connection, vm)
+        assert b"devmgr" in processes
+        assert b"virtio-console" in processes
+        assert b"horn-shell" in processes
+        assert b"Active" in processes
+        # Repeated real commands exercise IPC, partial writes and notification
+        # rearming, without an alternate echo implementation in the image.
+        connection.sendall(b"help\n" * 48)
+        commands = read_prompt(connection, vm, count=48)
+        assert commands.count(b"list PCIe devices") == 48
+        (vm.directory / "console.log").write_bytes(
+            received + devices + processes + commands
+        )
         vm.serial.wait_for(b"DEVMGR_ALLOCATOR allocator=mimalloc")
         vm.serial.wait_for(
             b"VTD_ACTIVE translation=true interrupt_remap=true compatibility=false"
@@ -98,13 +104,9 @@ def test_virtio_console_dma_irq(system, release, cpus):
         assert vm.monitor.execute("query-status")["running"]
         assert_idle(vm)
         # Ensure a genuinely sleeping system still wakes and handles new input.
-        connection.sendall(b"wake")
-        resumed = b""
-        while len(resumed) < 4:
-            part = connection.recv(4 - len(resumed))
-            assert part
-            resumed += part
-        assert resumed == b"wake"
+        connection.sendall(b"help\n")
+        resumed = read_prompt(connection, vm)
+        assert b"list supervised processes" in resumed
         vm.kill()
 
 
@@ -119,8 +121,8 @@ def test_virtio_console_denied_dma(system, probe):
     )
     with console_connection(vm) as connection:
         if probe == "stale":
-            read_banner(connection, vm)
-            connection.sendall(b"trigger stale TX")
+            read_prompt(connection, vm)
+            connection.sendall(b"help\n")
         vm.serial.wait_for(b"DEVICE_CAP_CHECK_PASS wrong_vm_object=denied")
         vm.serial.wait_for(f"DMA_PROBE {probe}=true".encode())
         vm.serial.wait_for(b"VTD_FAULT source=0020", timeout=60)

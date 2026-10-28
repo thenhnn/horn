@@ -16,6 +16,7 @@
     HORN_VM_IDL = "${../../platform/core/vm/idl}";
     HORN_PROCESS_IDL = "${../../platform/core/procd/idl}";
     HORN_DEVICE_IDL = "${../../platform/core/devmgr/idl}";
+    HORN_CONSOLE_IDL = "${../../platform/core/console/idl}";
     nativeBuildInputs = (old.nativeBuildInputs or []) ++ [pkgs.python3];
   };
   console = import ../../platform/drivers/virtio/console {
@@ -36,9 +37,7 @@
       horn-vm = protocol;
       memchr = old: {features = ["alloc"];};
       horn-console = protocol;
-      horn-console-greeting = old: {
-        features = (old.features or []) ++ lib.optional config.devmgr-demo.boot-tests "echo-test";
-      };
+      horn-shell = protocol;
       horn-devmgr-probe = protocol;
       horn-devmgr-task = old:
         (protocol old)
@@ -66,7 +65,7 @@
             else "";
           DEVMGR_CONSOLE_CLIENT_ELF =
             if config.devmgr-demo.console
-            then "${runtimeElf childWorkspace.members.horn-console-greeting "console_greeting"}"
+            then "${runtimeElf childWorkspace.members.horn-shell "shell"}"
             else "";
           DEVMGR_DRIVER_DEVICE = "33";
           DEVMGR_DRIVER_NAME = "virtio-console";

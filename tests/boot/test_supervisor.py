@@ -42,7 +42,7 @@ def test_supervisor_driver_revoke(system, mode, release, cpus):
     if release:
         modules += ("tests/boot/rust_release.nix",)
     vm = system(modules=modules, cpus=cpus)
-    with console_connection(vm) as connection:
+    with console_connection(vm):
         vm.serial.wait_for(
             b"SUPERVISOR_RELEASE_PASS job=0 ram_returned=true owner_ack=true",
             timeout=60,

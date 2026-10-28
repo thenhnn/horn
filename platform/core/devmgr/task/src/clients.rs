@@ -1,11 +1,11 @@
-//! Configured console consumer for the demo image; no shell/conhost or name lookup.
+//! Bootstrap a minimal shell with console and read-only observer authority.
 //! Its authority is an explicit console capability, never device control.
 use crate::native::target;
-use horn_console::protocol as c;
 use horn_devmgr::protocol as d;
 use horn_ipc::*;
+use horn_shell::protocol as a;
 use horn_supervisor::{
-    client::{Bootstrap, Io, close_image},
+    client::{Bootstrap, Io, close_image, mint},
     protocol as s,
 };
 static ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/console_client.elf"));
@@ -29,15 +29,15 @@ impl Client {
     pub fn start(io: &mut Io, service: Cap<Endpoint>) -> Self {
         let image = BOOT.upload(io, ELF);
         let mut request = s::ProcessLaunch::default();
-        let name = b"console-greeting";
+        let name = b"horn-shell";
         request.name.len = name.len() as _;
         request.name.data[..name.len()].copy_from_slice(name);
         request.ram_limit = 8 << 20;
         let slots = s::ProcessBootstrap {
-            vm: c::CONSOLE_CLIENT_CAPS_VM_SLOT,
-            address_space: c::CONSOLE_CLIENT_CAPS_ADDRESS_SPACE_SLOT,
-            lifecycle: c::CONSOLE_CLIENT_CAPS_LIFECYCLE_SLOT,
-            reply: c::CONSOLE_CLIENT_CAPS_REPLY_SLOT,
+            vm: a::SHELL_CAPS_VM_SLOT,
+            address_space: a::SHELL_CAPS_ADDRESS_SPACE_SLOT,
+            lifecycle: a::SHELL_CAPS_LIFECYCLE_SLOT,
+            reply: a::SHELL_CAPS_REPLY_SLOT,
         };
         let job = s::SupervisorFactoryClient::new(&mut *io, target(d::DEVICE_CAPS_SUPERVISOR_SLOT))
             .prepare(&image, request, slots)
@@ -55,7 +55,7 @@ impl Client {
         BOOT.install(
             io,
             process,
-            c::CONSOLE_CLIENT_CAPS_READY_SLOT,
+            a::SHELL_CAPS_READY_SLOT,
             ready,
             None,
             Rights::WRITE,
@@ -64,7 +64,7 @@ impl Client {
         BOOT.install(
             io,
             process,
-            c::CONSOLE_CLIENT_CAPS_SERVICE_SLOT,
+            a::SHELL_CAPS_SERVICE_SLOT,
             service,
             None,
             Rights(Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0),
@@ -75,7 +75,7 @@ impl Client {
         BOOT.install(
             io,
             process,
-            c::CONSOLE_CLIENT_CAPS_EVENTS_SLOT,
+            a::SHELL_CAPS_EVENTS_SLOT,
             note,
             None,
             Rights::READ,
@@ -83,12 +83,30 @@ impl Client {
         BOOT.install(
             io,
             process,
-            c::CONSOLE_CLIENT_CAPS_SIGNAL_SLOT,
+            a::SHELL_CAPS_SIGNAL_SLOT,
             note,
             Some(1),
             Rights::WRITE,
         );
         io.space.delete(note.as_ref()).unwrap();
+        let rights = Rights(Rights::WRITE.0 | Rights::GRANT_REPLY.0);
+        let pci = mint(
+            io,
+            sel4::cap::CNode::from_bits(d::DEVICE_CAPS_SELF_SLOT as _),
+            target::<Endpoint>(d::DEVICE_CAPS_SERVICE_SLOT),
+            horn_devmgr::OBSERVER_BADGE,
+            rights,
+        );
+        BOOT.install(io, process, a::SHELL_CAPS_PCI_SLOT, pci, None, rights);
+        io.space.delete(pci.as_ref()).unwrap();
+        BOOT.install(
+            io,
+            process,
+            a::SHELL_CAPS_PROCESSES_SLOT,
+            target::<Endpoint>(d::DEVICE_CAPS_PROCESSES_SLOT),
+            None,
+            rights,
+        );
         s::SupervisorJobClient::new(&mut *io, Cap::from_ref(job.as_ref()))
             .start()
             .unwrap();

@@ -1,0 +1,16 @@
+[package]
+name = "horn-shell"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "shell"
+path = "src/main.rs"
+
+[dependencies]
+horn-console = { path = "../../core/console" }
+horn-procd = { path = "../../core/procd" }
+horn-devmgr = { path = "../../core/devmgr" }
+horn-runtime = { path = "../../runtime/rust/horn-runtime" }
+horn-ipc = { path = "../../runtime/rust/horn-ipc", features = ["sel4"] }
+sel4 = { path = "../../../vendor/rust-sel4/src/crates/sel4" }

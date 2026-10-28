@@ -1,7 +1,21 @@
 """One capability-scoped byte console. No device control, TTY or name lookup."""
+
 from horn_idl import (
-    U8, U32, U64, Borrow, Cap, Copy, List, Move, Option, Result,
-    capset, enum, flags, iface, method, object, record, sel4,
+    U8,
+    U32,
+    U64,
+    Borrow,
+    Cap,
+    List,
+    Option,
+    Result,
+    enum,
+    flags,
+    iface,
+    method,
+    object,
+    record,
+    sel4,
 )
 
 
@@ -63,23 +77,13 @@ class ConsoleInterface:
     # Passing no notification cancels the subscription.
     @method
     def watch(
-        self, notification: Option[Cap[sel4.Notification, Borrow]],
-        interests: ConsoleEvents, size_generation: U64,
+        self,
+        notification: Option[Cap[sel4.Notification, Borrow]],
+        interests: ConsoleEvents,
+        size_generation: U64,
     ) -> Result[ConsoleStatus, ConsoleError]: ...
 
 
 @object(implements=(ConsoleInterface,))
 class ConsoleObject:
     pass
-
-
-@capset(capacity=256)
-class ConsoleClientCaps:
-    vm: Cap[sel4.Endpoint, Copy]
-    address_space: Cap[sel4.Endpoint, Copy]
-    lifecycle: Cap[sel4.Endpoint, Copy]
-    reply: Cap[sel4.Reply, Move]
-    ready: Cap[sel4.Notification, Copy]
-    service: Cap[ConsoleObject, Copy]
-    events: Cap[sel4.Notification, Copy]
-    signal: Cap[sel4.Notification, Copy]

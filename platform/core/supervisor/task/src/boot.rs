@@ -84,6 +84,14 @@ pub fn start(io: &mut Io) {
         Rights::ALL,
     );
     io.space.delete(factory.as_ref()).unwrap();
+    BOOT.install(
+        io,
+        process,
+        d::DEVICE_CAPS_PROCESSES_SLOT,
+        cap::<Endpoint>(SUPERVISOR_CAPS_PROCESSES_SLOT),
+        None,
+        Rights(Rights::WRITE.0 | Rights::GRANT_REPLY.0),
+    );
     let mut control = ProcessControlClient::new(&mut *io, Cap::from_ref(process.as_ref()));
     control
         .bind_notification(&Cap::from_ref(note.as_ref()))

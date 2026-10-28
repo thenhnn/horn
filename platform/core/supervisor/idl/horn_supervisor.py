@@ -168,3 +168,4 @@ class SupervisorCaps:
     events: Cap[sel4.Notification, Copy]
     critical_fault: Cap[sel4.Endpoint, Copy]
     critical_exit: Cap[sel4.Notification, Copy]
+    processes: Cap[sel4.Endpoint, Copy]

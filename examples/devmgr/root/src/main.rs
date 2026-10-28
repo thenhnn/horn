@@ -241,7 +241,7 @@ fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
     let vm_space = vm.address_space();
     manager.attach_vm(process, vm).unwrap();
     let lifecycle = manager.provision_self(process, bootstrap).unwrap();
-    let (factory, _) = manager
+    let (factory, observer) = manager
         .provision_launch(
             process,
             bootstrap,
@@ -262,6 +262,7 @@ fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
         (SUPERVISOR_CAPS_LIFECYCLE_SLOT, lifecycle.bits()),
         (SUPERVISOR_CAPS_REPLY_SLOT, child_reply.bits()),
         (SUPERVISOR_CAPS_FACTORY_SLOT, factory.bits()),
+        (SUPERVISOR_CAPS_PROCESSES_SLOT, observer.bits()),
         (SUPERVISOR_CAPS_PLATFORM_SLOT, platform_slot as _),
         (SUPERVISOR_CAPS_SYSTEM_SLOT, system_slot as _),
         (SUPERVISOR_CAPS_SERVICE_SLOT, service.bits()),

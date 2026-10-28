@@ -1,7 +1,7 @@
-from horn_idl import *
-from horn_idl import sel4
 # Imported record annotations need the complete dependency namespace.
 from horn_device import *
+from horn_idl import *
+from horn_idl import sel4
 
 
 @capset(capacity=256)

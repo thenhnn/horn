@@ -10,7 +10,7 @@ def test_devmgr_ordinary_boot_has_no_probes(system, console):
     vm = system(modules=modules, cpus=1)
     if console:
         with console_connection(vm) as connection:
-            greeting = b"\x1b[1;36mHorn v0.1 started\x1b[0m\r\n"
+            greeting = b"\x1b[1;36mHorn v0.1 started\x1b[0m\r\n$ "
             received = b""
             while len(received) < len(greeting):
                 chunk = connection.recv(4096)

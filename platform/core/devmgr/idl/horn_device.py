@@ -318,3 +318,4 @@ class DeviceCaps:
     ready: Cap[sel4.Notification, Copy]
     events: Cap[sel4.Notification, Copy]
     supervisor: Cap[sel4.Endpoint, Copy]
+    processes: Cap[sel4.Endpoint, Copy]
