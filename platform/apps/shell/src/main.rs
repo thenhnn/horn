@@ -20,6 +20,8 @@ fn cap<T: CapType>(slot: u32) -> Cap<T> {
 }
 struct Shell {
     io: Sel4Transport<Sel4CapSpace>,
+    output: [u8; 256],
+    output_len: usize,
 }
 impl Shell {
     fn wait(&mut self, events: c::ConsoleEvents) {
@@ -42,16 +44,32 @@ impl Shell {
     }
     fn bytes(&mut self, mut data: &[u8]) {
         while !data.is_empty() {
-            let count = data.len().min(256);
+            let count = data.len().min(self.output.len() - self.output_len);
+            self.output[self.output_len..self.output_len + count].copy_from_slice(&data[..count]);
+            self.output_len += count;
+            data = &data[count..];
+            if self.output_len == self.output.len() {
+                self.flush();
+            }
+        }
+    }
+    fn prompt(&mut self) {
+        self.bytes(b"$ ");
+        self.flush();
+    }
+    fn flush(&mut self) {
+        let mut offset = 0;
+        while offset < self.output_len {
+            let count = self.output_len - offset;
             let mut bytes = List::default();
             bytes.len = count as _;
-            bytes.data[..count].copy_from_slice(&data[..count]);
+            bytes.data[..count].copy_from_slice(&self.output[offset..self.output_len]);
             match c::ConsoleInterfaceClient::new(&mut self.io, cap(a::SHELL_CAPS_SERVICE_SLOT))
                 .write(bytes)
             {
                 Ok(n) => {
                     assert!(n > 0 && n as usize <= count);
-                    data = &data[n as usize..];
+                    offset += n as usize;
                 }
                 Err(CallError::Remote(c::ConsoleError::WouldBlock)) => {
                     self.wait(c::ConsoleEvents::WRITABLE)
@@ -59,8 +77,12 @@ impl Shell {
                 error => panic!("console write: {:?}", error),
             }
         }
+        self.output_len = 0;
     }
     fn read(&mut self) -> List<u8, 256> {
+        // Also flush input echo before blocking. Writable waits in flush() must
+        // not recursively flush the same pending buffer.
+        self.flush();
         loop {
             match c::ConsoleInterfaceClient::new(&mut self.io, cap(a::SHELL_CAPS_SERVICE_SLOT))
                 .read(256)
@@ -172,8 +194,11 @@ fn main() -> ! {
     let root = sel4::cap::CNode::from_bits(a::SHELL_CAPS_SELF_SLOT as _);
     let mut shell = Shell {
         io: horn_runtime::transport(root, SLOTS.application()).unwrap(),
+        output: [0; 256],
+        output_len: 0,
     };
     shell.bytes(b"\x1b[1;36mHorn v0.1 started\x1b[0m\r\n$ ");
+    shell.flush();
     horn_runtime::notify_ready(a::SHELL_CAPS_READY_SLOT);
     let mut line = [0u8; 256];
     let mut length = 0;
@@ -192,7 +217,8 @@ fn main() -> ! {
                 length = 0;
                 overflow = false;
                 escape = 0;
-                shell.bytes(b"^C\r\n$ ");
+                shell.bytes(b"^C\r\n");
+                shell.prompt();
                 continue;
             }
             if escape == 1 {
@@ -217,7 +243,7 @@ fn main() -> ! {
                     }
                     length = 0;
                     overflow = false;
-                    shell.bytes(b"$ ");
+                    shell.prompt();
                 }
                 8 | 127 => {
                     if !overflow && length != 0 {

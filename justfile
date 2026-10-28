@@ -20,15 +20,27 @@ demo:
     pytest -q tests/boot/test_idl_demo.py -s
 
 # Interactive virtio console; kernel/debug output goes to work/horn-debug.log.
-shell:
+shell accel="kvm":
     #!/usr/bin/env bash
     set -euo pipefail
+    case '{{ accel }}' in
+      kvm)
+        if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
+          echo 'KVM requires access to /dev/kvm; use just shell tcg explicitly instead.' >&2
+          exit 1
+        fi
+        machine=q35,kernel-irqchip=split
+        cpu=host
+        ;;
+      tcg) machine=q35; cpu=max ;;
+      *) echo 'Usage: just shell [kvm|tcg]' >&2; exit 1 ;;
+    esac
     mkdir -p work
     mapfile -t images < <(nix-build nix -A sel4.out -A root-task.package \
       --argstr profile pc-dev --arg modules '[ ./examples/devmgr/console.nix ]' \
       --no-out-link)
     [[ ${#images[@]} == 2 ]]
-    exec qemu-system-x86_64 -machine q35 -accel tcg -cpu max -m 512 -smp 1 \
+    exec qemu-system-x86_64 -machine "$machine" -accel '{{ accel }}' -cpu "$cpu" -m 512 -smp 1 \
       -nodefaults -no-user-config -nic none -display none -monitor none -no-reboot \
       -serial file:work/horn-debug.log \
       -kernel "${images[0]}/bin/kernel-multiboot.elf" \
