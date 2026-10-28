@@ -205,7 +205,7 @@ impl<H: Hardware> Vtd<H> {
             timeout: timeout_ticks,
             poisoned: false,
         };
-        // Faults are polled. Do not enable an unchecked fault interrupt route.
+        // Keep fault events masked until a trusted, bound kernel IRQ is armed.
         this.io.write32(base + 0x38, 1 << 31)?;
         this.io.write64(base + 0x20, this.root.physical)?;
         this.command(SRTP)?;
@@ -540,6 +540,28 @@ impl<H: Hardware> Vtd<H> {
             s.sync()?;
             s.routes[interrupt.index as usize] = None;
             Ok(())
+        })
+    }
+    /// Route the remapping unit's OWN fault-event MSI, not a PCI device MSI.
+    /// These unit-generated messages bypass interrupt remapping; compatibility
+    /// interrupts from PCI devices remain blocked. Caller owns the kernel vector.
+    pub fn fault_interrupt(&mut self, vector: u8, destination: u8) -> Result<()> {
+        if vector < 32 {
+            return Err(Error::Invalid);
+        }
+        self.transaction(|s| {
+            s.io.write32(s.base + 0x38, 1 << 31)?;
+            s.io.write32(s.base + 0x3c, vector as u32)?;
+            s.io.write32(s.base + 0x40, 0xfee0_0000 | ((destination as u32) << 12))?;
+            s.io.write32(s.base + 0x44, 0)?;
+            s.io.write32(s.base + 0x38, 0)
+        })
+    }
+    /// Mask while draining records; unmask only after the kernel IRQ is acked.
+    /// A fault arriving while masked remains pending and is sent upon unmask.
+    pub fn mask_fault_interrupt(&mut self, masked: bool) -> Result<()> {
+        self.transaction(|s| {
+            s.io.write32(s.base + 0x38, if masked { 1 << 31 } else { 0 })
         })
     }
     /// Ordinary device faults do not poison the IOMMU. Queue/timeout failures

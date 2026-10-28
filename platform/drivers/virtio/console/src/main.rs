@@ -120,6 +120,10 @@ fn main() -> ! {
             .space
             .cap::<sel4::cap_type::Notification>(capability.as_ref())
             .unwrap();
+        #[cfg(feature = "dma-probe")]
+        {
+            state.fault_wait = Some(notification);
+        }
         state.device().activate().expect("bus mastering");
         notification
     });

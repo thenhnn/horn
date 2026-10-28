@@ -304,5 +304,7 @@ class DeviceCaps:
     reply: Cap[sel4.Reply, Move]
     service: Cap[sel4.Endpoint, Copy]
     platform: Cap[sel4.Endpoint, Copy]
+    # Bound to devmgr's TCB by root; IRQ signals wake its blocking endpoint receive.
+    fault: Cap[sel4.Notification, Copy]
     vm: Cap[VmFactory, Copy]
     address_space: Cap[VmAddressSpaceObject, Copy]

@@ -181,10 +181,10 @@ fn main() -> ! {
             .expect("assigned capability delivery");
         service.io().space().delete(exported).unwrap();
     }
+    let fault_irq = service.arm_fault_irq();
     service.io().platform.ready().expect("bootstrap ready");
     let reply = sel4::cap::Reply::from_bits(DEVICE_CAPS_REPLY_SLOT as _);
     loop {
-        service.poll_fault();
         let request = {
             let mut server = Sel4Server::new(
                 root,
@@ -193,13 +193,17 @@ fn main() -> ! {
                 service.io().space(),
             );
             sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&server.recv_slot));
-            let (info, badge) = server.endpoint.nb_recv(reply);
-            if badge == 0 {
-                // Zero is not an exported client role. NBRecv also uses zero
-                // for no sender, but an unbadged unsolicited Send may deliver
-                // a cap: always clear the disposable receive slot.
+            let (info, badge) = server.endpoint.recv(reply);
+            if badge == horn_devmgr::FAULT_NOTIFICATION_BADGE {
+                drop(server);
                 receive.delete().unwrap();
-                sel4::r#yield();
+                service.handle_fault_irq(fault_irq.expect("unexpected fault notification"));
+                continue;
+            }
+            if badge == 0 {
+                // No exported client has badge zero. Discard unsolicited caps
+                // from unbadged bootstrap traffic without dispatching authority.
+                receive.delete().unwrap();
                 continue;
             }
             server.decode_received_dynamic(

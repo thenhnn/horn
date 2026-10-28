@@ -94,8 +94,12 @@ allocation, ARI, SR-IOV, ATS/PASID, AER, hotplug or driver matching.
 The backend uses cache-maintained legacy tables, queued invalidation, full-SID checked
 interrupt remapping and deny-by-default contexts. Compatibility interrupts stay
 blocked. Mapping permissions are device READ/WRITE, and IOVAs are monotonic even
-after unmap. Fault records are polled; device faults do not themselves poison
-the controller, but queue failures/timeouts do.
+after unmap. A dedicated fault-event MSI wakes devmgr through a bound notification
+while it blocks in endpoint receive. The handler masks fault events, drains the
+records, acknowledges the kernel IRQ, then unmasks pending events. There is no
+steady-state fault polling. The remapping unit's own fault MSI bypasses remapping;
+this does **not** enable compatibility interrupts from PCI devices. Device faults
+do not themselves poison the controller, but queue failures/timeouts do.
 
 DMAR parsing uses `acpi` table lookup/checksums plus a bounded DRHD parser. The
 profile requires one segment-0 unit and interrupt remapping, with either
@@ -116,8 +120,9 @@ not a claim of automatic restart/cleanup.
 
 ## Bootstrap and tests
 
-`DeviceCaps` names self/reply/service, private platform, VM factory and address
-space. The private platform supplies RSDP, bounded physical access, MMIO import/
+`DeviceCaps` names self/reply/service, private platform, VM factory, address
+space and an IOMMU fault notification bound to devmgr's TCB. Its notification
+badge is disjoint from the endpoint authority namespace. The private platform supplies RSDP, bounded physical access, MMIO import/
 revocation, authenticated VM pin/unpin and kernel IRQ mechanics. Ordinary driver
 capabilities never include this endpoint. An optional trusted bootstrap
 assignment ID is consumed inside devmgr; its resulting scoped device capability
@@ -135,7 +140,10 @@ charge and complete slot return/coalescing, including x86 kernel-pointer versus
 physical alignment above the direct-map wrap.
 
 The root authenticates bootstrap/fault messages with distinct badges, enforces a
-30-second startup deadline and yields at task priority on one CPU. Critical
+30-second startup deadline and yields at task priority on one CPU during that
+bounded bootstrap polling phase. After readiness, root blocks on IPC/faults and
+devmgr blocks on IPC or its bound IOMMU notification, allowing the kernel idle
+thread to HLT. A timer-backed startup deadline remains future work. Critical
 faults request Q35 full reset without account teardown. This is not a portable
 watchdog or runtime hang supervisor; the read-only observer probe temporarily
 precedes resumed fault monitoring.
@@ -150,4 +158,7 @@ and a previously used, then invalidated/drained IOVA produce real hardware fault
 records for the assigned requester. The latter first transmits valid data to
 warm translation caching before unmapping and deliberately trying its stale
 address again. Neither test relaxes IOMMU permissions or adds identity mappings.
-Model tests are not a substitute for these tests or physical-hardware validation.
+Linux host process-CPU measurements check idle after normal traffic and after
+negative tests; another echo verifies wakeup after idle. Failed test drivers
+block without rearming the device or releasing uncertain backing, rather than
+spinning in Yield. Model tests are not a substitute for these tests or physical-hardware validation.

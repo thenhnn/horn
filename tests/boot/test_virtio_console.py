@@ -1,6 +1,9 @@
+import os
 import re
 import socket
+import time
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
@@ -41,6 +44,27 @@ def read_banner(connection, vm):
     return received
 
 
+def assert_idle(vm):
+    # Linux reports process-wide user+system ticks, including QEMU's vCPU
+    # threads. Measure host CPU, not guest wall time or scheduler Yield calls.
+    def cpu_seconds():
+        stat = (
+            Path(f"/proc/{vm.process.pid}/stat").read_text().rsplit(")", 1)[1].split()
+        )
+        return (int(stat[11]) + int(stat[12])) / os.sysconf("SC_CLK_TCK")
+
+    time.sleep(0.2)
+    before = cpu_seconds()
+    started = time.monotonic()
+    time.sleep(2)
+    elapsed = time.monotonic() - started
+    fraction = (cpu_seconds() - before) / elapsed
+    (vm.directory / "idle-cpu.txt").write_text(
+        f"cpu_seconds_per_wall_second={fraction:.4f}\n"
+    )
+    assert fraction < 0.35, f"Idle QEMU burns {fraction:.1%} of one host CPU"
+
+
 @pytest.mark.parametrize("cpus", [1, 2], ids=["up", "smp"])
 @pytest.mark.parametrize("release", [False, True], ids=["debug", "release"])
 def test_virtio_console_dma_irq(system, release, cpus):
@@ -64,12 +88,22 @@ def test_virtio_console_dma_irq(system, release, cpus):
         vm.serial.wait_for(
             b"VTD_ACTIVE translation=true interrupt_remap=true compatibility=false"
         )
+        vm.serial.wait_for(b"VTD_FAULT_IRQ armed=true")
         vm.serial.wait_for(
             b"VIRTIO_CONSOLE_READY allocator=mimalloc transport=upstream dma=iova irq=msix"
         )
         vm.serial.wait_for(b"VIRTIO_CONSOLE_IRQ delivered=true")
-        assert "VTD_FAULT" not in vm.serial.path.read_text()
+        assert "VTD_FAULT source=" not in vm.serial.path.read_text()
         assert vm.monitor.execute("query-status")["running"]
+        assert_idle(vm)
+        # Ensure a genuinely sleeping system still wakes and handles new input.
+        connection.sendall(b"wake")
+        resumed = b""
+        while len(resumed) < 4:
+            part = connection.recv(4 - len(resumed))
+            assert part
+            resumed += part
+        assert resumed == b"wake"
         vm.kill()
 
 
@@ -105,4 +139,5 @@ def test_virtio_console_denied_dma(system, probe):
             assert "VIRTIO_CONSOLE_READY" not in output
         assert "DEVMGR_FATAL" not in output
         assert vm.monitor.execute("query-status")["running"]
+        assert_idle(vm)
         vm.kill()

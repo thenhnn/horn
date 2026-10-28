@@ -52,8 +52,10 @@ operations. Negative builds deliberately issue an unmapped IOVA and a previously
 used IOVA after its completed unmap/drain; devmgr polls and reports the actual
 VT-d source/address/reason. Fault injections require the `dma-probe` feature and
 a separate Nix profile; the normal driver has no injection path. Test tasks
-retain remaining backing and stop after injecting a failure, rather than trying
-to consume device error completions as successful data.
+retain remaining backing and block on notification after injecting a failure,
+rather than spinning or consuming device error completions as successful data.
+The boot tests also measure QEMU host CPU during idle, including after a denied
+DMA, and verify a new echo wakes the sleeping system.
 
 The task sends a readiness line and echoes input. It does not yet expose a
 console IPC/TTY service or implement orderly shutdown. The HAL's error policy

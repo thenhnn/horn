@@ -33,6 +33,8 @@ pub struct State {
     stale: Option<u64>,
     #[cfg(feature = "dma-probe")]
     injected: bool,
+    #[cfg(feature = "dma-probe")]
+    pub fault_wait: Option<sel4::cap::Notification>,
 }
 pub fn target<T: CapType>(slot: u32) -> Cap<T> {
     Cap::new(
@@ -54,6 +56,8 @@ impl State {
             stale: None,
             #[cfg(feature = "dma-probe")]
             injected: false,
+            #[cfg(feature = "dma-probe")]
+            fault_wait: None,
         }
     }
     pub fn device(&mut self) -> DeviceControlClient<&mut Sel4Transport<Sel4CapSpace>> {
@@ -306,8 +310,11 @@ unsafe impl Hal for CapabilityHal {
         with(|state| {
             #[cfg(feature = "dma-probe")]
             if state.injected {
+                let notification = state.fault_wait.expect("test fault park notification");
                 loop {
-                    sel4::r#yield();
+                    // Consume any already pending device IRQ, then block. Do
+                    // not rearm the failed device or release uncertain backing.
+                    notification.wait();
                 }
             }
             let b = state

@@ -50,7 +50,13 @@ fn serve(
     reset: usize,
 ) {
     sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&server.recv_slot));
-    let (info, badge) = server.endpoint.nb_recv(authority);
+    // Bootstrap retains a bounded startup-deadline poll. Once ready, wait in
+    // the kernel: Yield is not sleep and must not be the steady-state idle path.
+    let (info, badge) = if platform.ready {
+        server.endpoint.recv(authority)
+    } else {
+        server.endpoint.nb_recv(authority)
+    };
     if badge == 0 {
         server.recv_slot.delete().unwrap();
         sel4::r#yield();
@@ -138,6 +144,14 @@ fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
     let service = child_allocator
         .allocate_fixed_sized::<sel4::cap_type::Endpoint>()
         .unwrap();
+    let fault_notification = child_allocator
+        .allocate_fixed_sized::<sel4::cap_type::Notification>()
+        .unwrap();
+    manager
+        .tcb(process)
+        .unwrap()
+        .tcb_bind_notification(fault_notification)
+        .unwrap();
     let unsolicited = allocator
         .allocate_fixed_sized::<sel4::cap_type::Notification>()
         .unwrap();
@@ -201,6 +215,14 @@ fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
             )
             .unwrap();
     }
+    child
+        .absolute_cptr_from_bits_with_depth(DEVICE_CAPS_FAULT_SLOT as _, DEVICE_CAPS_SIZE_BITS as _)
+        .mint(
+            &root.absolute_cptr(fault_notification.cptr()),
+            sel4::CapRights::all(),
+            horn_devmgr::FAULT_NOTIFICATION_BADGE,
+        )
+        .unwrap();
     // Devmgr faults use the same monitored endpoint, never a driver endpoint.
     manager
         .tcb(process)

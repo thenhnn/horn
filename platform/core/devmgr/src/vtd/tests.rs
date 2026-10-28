@@ -8,6 +8,7 @@ struct Mock {
     ticks: Cell<u64>,
     stall: bool,
     drain: Vec<u64>,
+    writes: Vec<(u64, u32)>,
 }
 impl Mock {
     fn new() -> Self {
@@ -26,6 +27,7 @@ impl Mock {
             ticks: Cell::new(0),
             stall: false,
             drain: Vec::new(),
+            writes: Vec::new(),
         }
     }
     fn page(&self, physical: u64) -> usize {
@@ -83,6 +85,7 @@ unsafe impl Hardware for Mock {
         Ok(self.registers.get(&address).copied().unwrap_or(0))
     }
     fn write32(&mut self, address: u64, value: u32) -> Result<()> {
+        self.writes.push((address, value));
         if address == BASE + 0x34 {
             let old = self.registers.get(&address).copied().unwrap_or(0);
             self.registers.insert(address, old & !(value as u64));
@@ -264,6 +267,31 @@ fn queue_wrap_and_domain_id_capability_bounds() {
         unit.attach(sid + 0x20).unwrap();
     }
     assert!(matches!(unit.attach(0x10), Err(Error::Exhausted)));
+}
+#[test]
+fn fault_event_is_masked_until_a_kernel_vector_is_programmed() {
+    let mut unit = start(Mock::new()).unwrap();
+    assert_eq!(unit.io.registers[&(BASE + 0x38)], 1 << 31);
+    unit.io.writes.clear();
+    assert_eq!(unit.fault_interrupt(31, 0), Err(Error::Invalid));
+    assert!(!unit.poisoned());
+    assert!(unit.io.writes.is_empty());
+    unit.fault_interrupt(0x80, 2).unwrap();
+    assert_eq!(
+        unit.io.writes,
+        vec![
+            (BASE + 0x38, 1 << 31),
+            (BASE + 0x3c, 0x80),
+            (BASE + 0x40, 0xfee0_2000),
+            (BASE + 0x44, 0),
+            (BASE + 0x38, 0)
+        ]
+    );
+    assert_eq!(unit.io.registers[&(BASE + 0x1c)] & CFI as u64, 0);
+    unit.mask_fault_interrupt(true).unwrap();
+    assert_eq!(unit.io.registers[&(BASE + 0x38)], 1 << 31);
+    unit.mask_fault_interrupt(false).unwrap();
+    assert_eq!(unit.io.registers[&(BASE + 0x38)], 0);
 }
 #[test]
 fn device_faults_are_reported_without_poisoning_the_unit() {

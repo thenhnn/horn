@@ -100,9 +100,30 @@ impl Service {
             Hardware::Remapping(unit) => unit.hardware(),
         }
     }
-    pub fn poll_fault(&mut self) {
-        if let Hardware::Remapping(unit) = &mut self.hardware {
-            let report = unit.poll_fault().expect("VT-d fault polling");
+    pub fn arm_fault_irq(&mut self) -> Option<u64> {
+        if matches!(self.hardware, Hardware::ReadOnly(_)) {
+            return None;
+        }
+        // The unit's own fault MSI uses the kernel's MSI-vector mechanism,
+        // not a PCI function or an interrupt-remapping table entry.
+        let io = self.io();
+        let irq = io.platform.irq(0).expect("fault kernel IRQ");
+        io.platform
+            .bind_irq(irq.token, &target(DEVICE_CAPS_FAULT_SLOT))
+            .expect("fault IRQ bind");
+        io.platform.ack_irq(irq.token).expect("fault IRQ arm");
+        let vector = u8::try_from(irq.vector).expect("fault IRQ vector");
+        self.unit()
+            .fault_interrupt(vector, 0)
+            .expect("fault event MSI");
+        sel4::debug_println!("VTD_FAULT_IRQ armed=true");
+        Some(irq.token)
+    }
+    pub fn handle_fault_irq(&mut self, token: u64) {
+        let unit = self.unit();
+        unit.mask_fault_interrupt(true).expect("mask fault event");
+        loop {
+            let report = unit.poll_fault().expect("VT-d fault records");
             if let Some(fault) = report.fault {
                 sel4::debug_println!(
                     "VTD_FAULT source={:04x} address={:x} reason={:x} read={} overflow={}",
@@ -112,8 +133,17 @@ impl Service {
                     fault.read,
                     report.overflow
                 );
+            } else {
+                if report.overflow {
+                    sel4::debug_println!("VTD_FAULT overflow=true");
+                }
+                break;
             }
         }
+        self.io().platform.ack_irq(token).expect("fault IRQ ack");
+        self.unit()
+            .mask_fault_interrupt(false)
+            .expect("unmask fault event");
     }
     fn unit(&mut self) -> &mut Vtd<Io> {
         match &mut self.hardware {
@@ -123,6 +153,9 @@ impl Service {
     }
     fn mint(&mut self) -> Result<(u64, CapRef, CapRef), DeviceError> {
         let badge = self.next_badge;
+        if badge >= horn_devmgr::FAULT_NOTIFICATION_BADGE {
+            return Err(DeviceError::Exhausted);
+        }
         self.next_badge = badge.checked_add(1).ok_or(DeviceError::Exhausted)?;
         let space = self.io().space();
         let original = space.reserve_slot().map_err(|_| DeviceError::Exhausted)?;
