@@ -87,6 +87,11 @@
             then "${runtimeElf childWorkspace.members.horn-devmgr-probe "devmgr_probe"}"
             else "";
         };
+      horn-netd = old: {
+        HORN_TCP_BUFFER_BYTES = toString config.devmgr-demo.tcp-buffer-bytes;
+        HORN_TCP_CONNECTIONS = toString config.devmgr-demo.tcp-connections;
+        HORN_TCP_BACKLOG = toString config.devmgr-demo.tcp-backlog;
+      };
       horn-supervisor-task = old: {
         features = (old.features or []) ++ lib.optional config.devmgr-demo.boot-tests "boot-tests";
         HORN_SERVICES = "${config.services.catalog}";
@@ -160,6 +165,21 @@ in {
   options.devmgr-demo.dma-probe = lib.mkOption {
     type = lib.types.enum ["none" "outside" "stale"];
     default = "none";
+  };
+  options.devmgr-demo.tcp-buffer-bytes = lib.mkOption {
+    type = lib.types.ints.between 16384 (16 * 1024 * 1024);
+    default = 4 * 1024 * 1024;
+    description = "Aggregate TCP RX/TX buffer budget; allocated on demand in netd's RAM account.";
+  };
+  options.devmgr-demo.tcp-connections = lib.mkOption {
+    type = lib.types.ints.between 1 32;
+    default = 32;
+    description = "Accepted connection capability quota within netd's fixed CSpace partition.";
+  };
+  options.devmgr-demo.tcp-backlog = lib.mkOption {
+    type = lib.types.ints.between 1 128;
+    default = 32;
+    description = "Pending handshake/accept sockets per listening port.";
   };
   options.devmgr-demo.net = lib.mkOption {
     type = lib.types.bool;

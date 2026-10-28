@@ -1,7 +1,7 @@
-//! Port reservations and capability-selected servers. One accepted stream per cap;
-//! eight independent TCP slots permit graceful FIN/TIME_WAIT without blocking listen.
+//! On-demand TCP storage, bounded accept queues and capability-selected streams.
+//! Closing sockets retain buffers, not application handles, until TCP teardown.
 use crate::{Io, cap, root};
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 use horn_ipc::*;
 use horn_net::protocol::*;
 use smoltcp::{
@@ -9,81 +9,240 @@ use smoltcp::{
     socket::tcp,
     time::Duration,
 };
-pub struct Slot {
-    handle: SocketHandle,
-    closing: bool,
+const BUFFER_SIZE: usize = 8192;
+const SOCKET_BYTES: usize = 2 * BUFFER_SIZE;
+const MAX_PORTS: usize = 4;
+// Two CSpace entries per accepted stream (authority + optional notification).
+// Leaves room for listeners, VM/clock imports and transient RPC exports.
+const CSPACE_CONNECTION_LIMIT: usize = 32;
+struct Limits {
+    buffer_bytes: usize,
+    connections: usize,
+    backlog: usize,
 }
-pub struct Server {
-    port: u16,
-    slots: Vec<Slot>,
-    current: Option<usize>,
+impl Limits {
+    fn configured() -> Self {
+        let this = Self {
+            buffer_bytes: option_env!("HORN_TCP_BUFFER_BYTES")
+                .unwrap_or("4194304")
+                .parse()
+                .unwrap(),
+            connections: option_env!("HORN_TCP_CONNECTIONS")
+                .unwrap_or("32")
+                .parse()
+                .unwrap(),
+            backlog: option_env!("HORN_TCP_BACKLOG")
+                .unwrap_or("32")
+                .parse()
+                .unwrap(),
+        };
+        assert!(this.buffer_bytes >= SOCKET_BYTES && this.buffer_bytes <= 16 * 1024 * 1024);
+        assert!((1..=CSPACE_CONNECTION_LIMIT).contains(&this.connections));
+        assert!((1..=128).contains(&this.backlog));
+        this
+    }
+}
+struct Watch {
     note: Option<Cap<Notification>>,
     interests: u32,
+}
+impl Watch {
+    fn new() -> Self {
+        Self {
+            note: None,
+            interests: 0,
+        }
+    }
+    fn arm(
+        &mut self,
+        io: &mut Io,
+        signal: Cap<Notification>,
+        interests: u32,
+    ) -> Result<(), NetError> {
+        if signal.as_ref().unwrapped_badge().is_some() {
+            return Err(NetError::Denied);
+        }
+        let next = horn_supervisor::client::copy(io, root(), signal);
+        if let Some(old) = self.note.replace(next) {
+            io.space.delete(old.as_ref()).unwrap();
+        }
+        self.interests = interests;
+        Ok(())
+    }
+    fn notify(&mut self, io: &mut Io, ready: u32) {
+        if ready & self.interests != 0 {
+            self.interests = 0;
+            if let Some(note) = self.note {
+                io.space
+                    .cap::<sel4::cap_type::Notification>(note.as_ref())
+                    .unwrap()
+                    .signal();
+            }
+        }
+    }
+    fn release(self, io: &mut Io) {
+        if let Some(note) = self.note {
+            io.space.delete(note.as_ref()).unwrap();
+        }
+    }
+}
+struct Connection {
+    badge: u64,
+    anchor: Cap<Endpoint>,
+    watch: Watch,
+}
+enum State {
+    Pending,
+    Open(Connection),
+    Closing,
+}
+struct Slot {
+    handle: SocketHandle,
+    server: usize,
+    state: State,
+}
+struct Server {
+    port: u16,
+    watch: Watch,
     _anchor: Cap<Endpoint>,
 }
 pub struct Service {
     pub sockets: SocketSet<'static>,
-    pub servers: Vec<Server>,
     pub io: Io,
+    servers: Vec<Server>,
+    slots: Vec<Option<Slot>>,
+    limits: Limits,
+    buffer_bytes: usize,
+    connections: usize,
+    next_badge: u64,
 }
 impl Service {
+    pub fn new(io: Io, sockets: SocketSet<'static>) -> Self {
+        Self {
+            sockets,
+            io,
+            servers: Vec::new(),
+            slots: Vec::new(),
+            limits: Limits::configured(),
+            buffer_bytes: 0,
+            connections: 0,
+            next_badge: 256,
+        }
+    }
+    fn allocate(&mut self, server: usize, port: u16) -> Result<(), NetError> {
+        if self.buffer_bytes + SOCKET_BYTES > self.limits.buffer_bytes {
+            return Err(NetError::Exhausted);
+        }
+        let free = self.slots.iter().position(Option::is_none);
+        if free.is_none() {
+            self.slots.try_reserve(1).map_err(|_| NetError::Exhausted)?;
+        }
+        let buffer = || -> Result<Vec<u8>, NetError> {
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(BUFFER_SIZE)
+                .map_err(|_| NetError::Exhausted)?;
+            bytes.resize(BUFFER_SIZE, 0);
+            Ok(bytes)
+        };
+        let mut socket = tcp::Socket::new(
+            tcp::SocketBuffer::new(buffer()?),
+            tcp::SocketBuffer::new(buffer()?),
+        );
+        socket.set_timeout(Some(Duration::from_secs(30)));
+        socket.set_nagle_enabled(false);
+        socket.set_ack_delay(None);
+        socket.listen(port).map_err(|_| NetError::Invalid)?;
+        let slot = Some(Slot {
+            handle: self.sockets.add(socket),
+            server,
+            state: State::Pending,
+        });
+        if let Some(i) = free {
+            self.slots[i] = slot;
+        } else {
+            self.slots.push(slot);
+        }
+        self.buffer_bytes += SOCKET_BYTES;
+        Ok(())
+    }
     pub fn maintain(&mut self) {
-        for server in &mut self.servers {
-            let mut listening = false;
-            for slot in &mut server.slots {
-                let socket = self.sockets.get_mut::<tcp::Socket>(slot.handle);
-                if socket.state() == tcp::State::Closed {
-                    slot.closing = false;
-                }
-                if socket.state() == tcp::State::Listen {
-                    listening = true;
-                }
-            }
-            if !listening {
-                if let Some((_, slot)) = server.slots.iter().enumerate().find(|(i, s)| {
-                    Some(*i) != server.current
-                        && self.sockets.get::<tcp::Socket>(s.handle).state() == tcp::State::Closed
-                }) {
-                    self.sockets
-                        .get_mut::<tcp::Socket>(slot.handle)
-                        .listen(server.port)
-                        .unwrap();
-                }
-            }
-            let mut ready = 0;
-            if let Some(i) = server.current {
-                let socket = self.sockets.get::<tcp::Socket>(server.slots[i].handle);
-                // EOF is readable; a peer FIN must not repeatedly wake a
-                // backpressured writer whose send half remains open.
-                if socket.can_recv() || !socket.may_recv() {
-                    ready |= TcpEvents::READABLE.0;
-                }
-                if socket.can_send() || !socket.may_send() {
-                    ready |= TcpEvents::WRITABLE.0;
-                }
-                if socket.state() == tcp::State::Closed {
-                    ready |= TcpEvents::CLOSED.0;
-                }
-            } else if server.slots.iter().any(|slot| {
-                !slot.closing
-                    && matches!(
-                        self.sockets.get::<tcp::Socket>(slot.handle).state(),
-                        tcp::State::Established | tcp::State::CloseWait
-                    )
-            }) {
-                ready |= TcpEvents::ACCEPT.0;
-            }
-            if ready & server.interests != 0 {
-                server.interests = 0;
-                if let Some(note) = server.note {
-                    self.io
-                        .space
-                        .cap::<sel4::cap_type::Notification>(note.as_ref())
-                        .unwrap()
-                        .signal();
-                }
+        for entry in &mut self.slots {
+            let Some(slot) = entry else {
+                continue;
+            };
+            if matches!(slot.state, State::Closing)
+                && self.sockets.get::<tcp::Socket>(slot.handle).state() == tcp::State::Closed
+            {
+                self.sockets.remove(slot.handle);
+                *entry = None;
+                self.buffer_bytes -= SOCKET_BYTES;
             }
         }
+        for i in 0..self.servers.len() {
+            let mut pending = 0;
+            let mut listening = false;
+            let mut acceptable = false;
+            for slot in self.slots.iter_mut().flatten().filter(|s| s.server == i) {
+                if matches!(slot.state, State::Pending) {
+                    pending += 1;
+                    let socket = self.sockets.get_mut::<tcp::Socket>(slot.handle);
+                    if socket.state() == tcp::State::Closed {
+                        socket.listen(self.servers[i].port).unwrap();
+                    }
+                    listening |= socket.state() == tcp::State::Listen;
+                    acceptable |= matches!(
+                        socket.state(),
+                        tcp::State::Established | tcp::State::CloseWait
+                    );
+                }
+                if let State::Open(connection) = &mut slot.state {
+                    let socket = self.sockets.get::<tcp::Socket>(slot.handle);
+                    let mut ready = 0;
+                    if socket.can_recv() || !socket.may_recv() {
+                        ready |= TcpEvents::READABLE.0;
+                    }
+                    if socket.can_send() || !socket.may_send() {
+                        ready |= TcpEvents::WRITABLE.0;
+                    }
+                    if socket.state() == tcp::State::Closed {
+                        ready |= TcpEvents::CLOSED.0;
+                    }
+                    connection.watch.notify(&mut self.io, ready);
+                }
+            }
+            // Keep a listener behind each handshake/accepted connection, not a
+            // fixed batch of eight sockets. Budget exhaustion applies backpressure.
+            if !listening && pending < self.limits.backlog {
+                let _ = self.allocate(i, self.servers[i].port);
+            }
+            let ready = if acceptable && self.connections < self.limits.connections {
+                TcpEvents::ACCEPT.0
+            } else {
+                0
+            };
+            self.servers[i].watch.notify(&mut self.io, ready);
+        }
+    }
+    fn connection(&self, badge: u64) -> Result<usize, NetError> {
+        self.slots
+            .iter()
+            .position(|s| {
+                s.as_ref()
+                    .is_some_and(|s| matches!(&s.state,State::Open(c) if c.badge==badge))
+            })
+            .ok_or(NetError::Denied)
+    }
+    fn endpoint(&mut self, badge: u64) -> (Cap<Endpoint>, Cap<Endpoint>) {
+        let anchor = horn_supervisor::client::mint(
+            &mut self.io,
+            root(),
+            cap::<Endpoint>(NETD_CAPS_SERVICE_SLOT),
+            badge,
+            Rights(Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0),
+        );
+        let exported = horn_supervisor::client::copy(&mut self.io, root(), anchor);
+        (anchor, exported)
     }
 }
 pub struct Caller<'a> {
@@ -91,7 +250,7 @@ pub struct Caller<'a> {
     pub badge: u64,
 }
 impl Caller<'_> {
-    fn index(&self) -> Result<usize, NetError> {
+    fn server(&self) -> Result<usize, NetError> {
         let i = self.badge.checked_sub(32).ok_or(NetError::Denied)? as usize;
         if i >= self.service.servers.len() {
             return Err(NetError::Denied);
@@ -99,13 +258,11 @@ impl Caller<'_> {
         Ok(i)
     }
     fn socket(&mut self) -> Result<&mut tcp::Socket<'static>, NetError> {
-        let i = self.index()?;
-        let server = &self.service.servers[i];
-        let j = server.current.ok_or(NetError::WouldBlock)?;
+        let i = self.service.connection(self.badge)?;
         Ok(self
             .service
             .sockets
-            .get_mut::<tcp::Socket>(server.slots[j].handle))
+            .get_mut::<tcp::Socket>(self.service.slots[i].as_ref().unwrap().handle))
     }
 }
 impl TcpFactory for Caller<'_> {
@@ -119,64 +276,68 @@ impl TcpFactory for Caller<'_> {
         if self.service.servers.iter().any(|s| s.port == port as u16) {
             return Err(NetError::Denied);
         }
-        if self.service.servers.len() == 4 {
+        if self.service.servers.len() == MAX_PORTS {
             return Err(NetError::Exhausted);
         }
-        let mut slots = Vec::new();
-        for _ in 0..8 {
-            let mut socket = tcp::Socket::new(
-                tcp::SocketBuffer::new(vec![0; 8192]),
-                tcp::SocketBuffer::new(vec![0; 8192]),
-            );
-            socket.set_timeout(Some(Duration::from_secs(30)));
-            socket.set_nagle_enabled(false);
-            socket.set_ack_delay(None);
-            slots.push(Slot {
-                handle: self.service.sockets.add(socket),
-                closing: false,
-            });
-        }
-        let anchor = horn_supervisor::client::mint(
-            &mut self.service.io,
-            root(),
-            cap::<Endpoint>(NETD_CAPS_SERVICE_SLOT),
-            32 + self.service.servers.len() as u64,
-            Rights(Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0),
-        );
-        let exported = horn_supervisor::client::copy(&mut self.service.io, root(), anchor);
+        self.service
+            .servers
+            .try_reserve(1)
+            .map_err(|_| NetError::Exhausted)?;
+        let index = self.service.servers.len();
+        self.service.allocate(index, port as u16)?;
+        let (anchor, exported) = self.service.endpoint(32 + index as u64);
         self.service.servers.push(Server {
             port: port as u16,
-            slots,
-            current: None,
-            note: None,
-            interests: 0,
+            watch: Watch::new(),
             _anchor: anchor,
         });
-        self.service.maintain();
         Ok(Cap::from_ref(exported.as_ref()))
     }
 }
 impl TcpServer for Caller<'_> {
-    fn accept(&mut self) -> Result<(), NetError> {
-        let i = self.index()?;
-        let server = &mut self.service.servers[i];
-        if server.current.is_some() {
-            return Err(NetError::Denied);
+    fn accept(&mut self) -> Result<Cap<TcpConnectionObjectTag>, NetError> {
+        let server = self.server()?;
+        if self.service.connections == self.service.limits.connections {
+            return Err(NetError::Exhausted);
         }
-        let j = server
+        let i = self
+            .service
             .slots
             .iter()
-            .position(|slot| {
-                !slot.closing
-                    && matches!(
-                        self.service.sockets.get::<tcp::Socket>(slot.handle).state(),
-                        tcp::State::Established | tcp::State::CloseWait
-                    )
+            .position(|s| {
+                s.as_ref().is_some_and(|s| {
+                    s.server == server
+                        && matches!(s.state, State::Pending)
+                        && matches!(
+                            self.service.sockets.get::<tcp::Socket>(s.handle).state(),
+                            tcp::State::Established | tcp::State::CloseWait
+                        )
+                })
             })
             .ok_or(NetError::WouldBlock)?;
-        server.current = Some(j);
-        Ok(())
+        let badge = self.service.next_badge;
+        // Endpoint badges are never reused, even when socket/storage slots are.
+        self.service.next_badge = badge.checked_add(1).ok_or(NetError::Exhausted)?;
+        let (anchor, exported) = self.service.endpoint(badge);
+        self.service.slots[i].as_mut().unwrap().state = State::Open(Connection {
+            badge,
+            anchor,
+            watch: Watch::new(),
+        });
+        self.service.connections += 1;
+        Ok(Cap::from_ref(exported.as_ref()))
     }
+    fn watch(&mut self, signal: Cap<Notification>, interests: TcpEvents) -> Result<(), NetError> {
+        let i = self.server()?;
+        if interests.0 != TcpEvents::ACCEPT.0 {
+            return Err(NetError::Invalid);
+        }
+        self.service.servers[i]
+            .watch
+            .arm(&mut self.service.io, signal, interests.0)
+    }
+}
+impl TcpConnection for Caller<'_> {
     fn read(&mut self) -> Result<List<u8, 256>, NetError> {
         let socket = self.socket()?;
         if !socket.can_recv() {
@@ -206,30 +367,41 @@ impl TcpServer for Caller<'_> {
             .map_err(|_| NetError::Closed)? as u32)
     }
     fn finish(&mut self) -> Result<(), NetError> {
-        let i = self.index()?;
-        let server = &mut self.service.servers[i];
-        let j = server.current.take().ok_or(NetError::Closed)?;
+        let i = self.service.connection(self.badge)?;
+        let slot = self.service.slots[i].as_mut().unwrap();
+        let State::Open(connection) = core::mem::replace(&mut slot.state, State::Closing) else {
+            unreachable!()
+        };
         self.service
             .sockets
-            .get_mut::<tcp::Socket>(server.slots[j].handle)
+            .get_mut::<tcp::Socket>(slot.handle)
             .close();
-        server.slots[j].closing = true;
+        self.service.connections -= 1;
+        connection.watch.release(&mut self.service.io);
+        root()
+            .absolute_cptr(sel4::CPtr::from_bits(connection.anchor.as_ref().slot as _))
+            .revoke()
+            .unwrap();
+        self.service
+            .io
+            .space
+            .delete(connection.anchor.as_ref())
+            .unwrap();
         Ok(())
     }
     fn watch(&mut self, signal: Cap<Notification>, interests: TcpEvents) -> Result<(), NetError> {
-        let i = self.index()?;
-        if interests.0 == 0 || interests.0 & !15 != 0 {
+        let i = self.service.connection(self.badge)?;
+        if interests.0 == 0
+            || interests.0 & !(TcpEvents::READABLE.0 | TcpEvents::WRITABLE.0 | TcpEvents::CLOSED.0)
+                != 0
+        {
             return Err(NetError::Invalid);
         }
-        if signal.as_ref().unwrapped_badge().is_some() {
-            return Err(NetError::Denied);
-        }
-        let next = horn_supervisor::client::copy(&mut self.service.io, root(), signal);
-        let server = &mut self.service.servers[i];
-        if let Some(old) = server.note.replace(next) {
-            self.service.io.space.delete(old.as_ref()).unwrap();
-        }
-        server.interests = interests.0;
-        Ok(())
+        let State::Open(connection) = &mut self.service.slots[i].as_mut().unwrap().state else {
+            unreachable!()
+        };
+        connection
+            .watch
+            .arm(&mut self.service.io, signal, interests.0)
     }
 }

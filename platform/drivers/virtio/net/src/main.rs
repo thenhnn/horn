@@ -49,7 +49,7 @@ fn main() -> ! {
                 service.changed();
             }
             while let Some(frame) = hw.receive() {
-                if !frame.is_empty() && service.rx.len() < 8 {
+                if !frame.is_empty() && service.rx.len() < 64 {
                     service.rx.push_back(frame);
                     service.changed();
                 }

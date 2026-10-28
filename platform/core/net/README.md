@@ -24,9 +24,11 @@ new processes/endpoints.
    owns Ethernet/ARP, DHCPv4, IPv4 and TCP. It receives neither assignment
    authority nor hardware/MMIO/DMA capabilities. READY follows DHCP configuration.
 3. **http-demo** receives only TCP service plus ordinary task/VM/ready ports and
-   a notification. It reserves port 80, reads bounded request headers, sends a
-   fixed text response with Content-Length/Connection: close, then closes.
-   There is no network-configuration or device authority in the application.
+   a notification. Its single-threaded event loop reserves port 80 and drives
+   multiple independent connections with bounded work per turn. An unfinished
+   header or backpressured response does not block other requests. It sends a
+   fixed response with Content-Length/Connection: close. There is no network-
+   configuration or device authority in the application.
 
 Nix definitions in `examples/devmgr/module.nix` wire dependencies and separate
 RAM accounts. `examples/devmgr/console.nix` enables networking in `just shell`;
@@ -39,17 +41,51 @@ As elsewhere, paths select published capabilities; paths do not confer authority
 
 Ethernet frames are 14–1514 bytes, transferred in at most 512-byte chunks.
 Receive preserves a frame boundary; begin/append/commit stages one transmit
-frame. RX/TX queues hold eight frames each. Generation watches are one-shot
-hints, with recheck/rearm rather than polling. netd has bounded local queues.
+frame. The driver buffers up to 64 RX frames and eight TX frames, so a short
+handshake burst is not dropped simply because netd is between RPC turns.
+Generation watches are one-shot hints, with recheck/rearm rather than polling.
+netd has bounded local queues and bounded ingress work per turn. Reaching that
+work budget schedules another drain: it is not mistaken for WouldBlock/empty.
+A local-work hint stops once queues are drained or TX backpressure prevents
+progress; it is not an idle polling tick.
 
-A TCP factory reserves a port and returns a badged server capability. No
-caller-supplied socket ID selects another reservation. A server has one
-accepted connection at a time and eight TCP slots, including graceful closing
-and TIME_WAIT, so closing one connection need not block listening. There are
-four port reservations per netd lifetime; slots and port records are bounded,
-not an unbounded socket API. Read/write parcels are 256 bytes with explicit
-WouldBlock/Closed. Watches select ACCEPT/READABLE/WRITABLE/CLOSED interests;
-writable sockets do not continuously wake readers. Idle TCP timeout is 30 s.
+A TCP factory reserves a port and returns a badged listener capability.
+`accept()` returns a **separate connection capability**; no caller-supplied
+socket ID selects another stream. The listener only accepts/watches ACCEPT;
+connections read/write/watch READABLE/WRITABLE/CLOSED. Read/write parcels are
+256 bytes with explicit WouldBlock/Closed. EOF is readable; a peer FIN does not
+continuously wake a backpressured writer. Idle TCP timeout is 30 s.
+
+`finish()` queues graceful close and retires the connection capability (including
+copies). The client deletes its local cap after success and must not use it
+again. netd retains buffers through FIN/TIME_WAIT independently of that handle,
+then removes closed sockets and returns their buffer allowance. Storage slots
+may be reused; endpoint badges are never reused. There are four lifetime port
+reservations; automatic abandoned-handle/client-death cleanup is not implemented.
+
+## Growing TCP pool and budgets
+
+A port starts with one listening socket, not eight preallocated streams. netd
+replenishes listeners between ingress packets, including SYNs in the same batch.
+Buffers grow on demand for handshakes, accepted streams and closing sockets.
+Pending sockets and live capabilities have separate admission limits:
+
+| Nix option (`devmgr-demo.` prefix) | Default | Meaning |
+| --- | --- | --- |
+| `tcp-buffer-bytes` | 4 MiB | Aggregate requested RX/TX buffer capacity, including FIN/TIME_WAIT |
+| `tcp-backlog` | 32 | Pending handshake/accept slots per port, including the standing listener |
+| `tcp-connections` | 32 | Live accepted capabilities, globally; bounded by the current CSpace partition |
+
+Each TCP slot requests 8 KiB RX + 8 KiB TX, so the default buffer budget permits
+up to 256 slots, **not 256 live application handles**. Metadata/allocator/kernel
+overhead also belongs to netd's separate 32-MiB RAM account. Allocation is
+fallible; exhaustion does not switch to control storage. The HTTP event loop
+itself admits up to 32 live handles. Enlarging that bound beyond 32 requires a
+larger capability partition, not just another numeric configuration value.
+
+The root's bounded, self-RPC-free bootstrap heap is 8 MiB to accommodate frame/
+tree metadata and transient growth while the pool expands. This is the existing
+root exception, not an allocation fallback for netd or the HTTP application.
 
 smoltcp's next poll deadline arms an independent timerd alarm. Ethernet IRQs
 and timer hints wake endpoint receive; there is no periodic network tick.
@@ -66,8 +102,9 @@ active DMA mappings per assignment and a bounded 256-slot shared device bank.
 ## Scope
 
 This is a small IPv4/DHCP/TCP demonstration, not a general HTTP stack. Headers
-are bounded to 1 KiB; requests are handled sequentially with a fixed response.
-The TCP/TIME_WAIT pool can fill under bursts; this is not a throughput server.
+are bounded to 1 KiB; concurrent streams are handled by an event loop with a
+fixed response. The budgeted TCP/TIME_WAIT pool can still fill; this is not a
+throughput server or a Linux-equivalent socket implementation.
 There is no DNS service, TLS, IPv6, routing/NAT service, dynamic network-control
 API, broad recovery or physical-hardware proof. The VM allocator remains the
 ordinary global mimalloc path; control storage is not an application OOM fallback.

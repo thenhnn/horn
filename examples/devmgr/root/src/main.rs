@@ -126,7 +126,9 @@ fn serve(
     }
     platform.manager.finish_reply(server).unwrap();
 }
-#[root_task(stack_size = 256 * 1024, heap_size = 4 * 1024 * 1024)]
+// Root cannot use its own VM RPC allocator. Keep bounded space for resident
+// frame/tree metadata, including transient Vec growth as the TCP pool expands.
+#[root_task(stack_size = 256 * 1024, heap_size = 8 * 1024 * 1024)]
 fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
     let root = sel4::init_thread::slot::CNODE.cap();
     let empty = boot.empty().range();

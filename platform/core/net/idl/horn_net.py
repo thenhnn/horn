@@ -1,4 +1,4 @@
-"""Bounded Ethernet packet transport and capability-scoped sequential TCP servers."""
+"""Bounded Ethernet transport, TCP listeners and independently scoped connections."""
 
 from __future__ import annotations
 
@@ -64,16 +64,24 @@ class TcpFactory:
     def listen(self, port: U32) -> Result[Cap[TcpServerObject, Move], NetError]: ...
 
 
-@iface("net.nhnn.horn.net.tcp.server", version=(1, 0))
+@iface("net.nhnn.horn.net.tcp.server", version=(2, 0))
 class TcpServer:
-    # One accepted connection at a time; finish drains queued bytes then closes.
-    # The reservation returns to listening after TCP teardown.
     @method
-    def accept(self) -> Result[None, NetError]: ...
+    def accept(self) -> Result[Cap[TcpConnectionObject, Move], NetError]: ...
+    @method
+    def watch(
+        self, signal: Cap[sel4.Notification, Borrow], interests: TcpEvents
+    ) -> Result[None, NetError]: ...
+
+
+@iface("net.nhnn.horn.net.tcp.connection", version=(1, 0))
+class TcpConnection:
     @method
     def read(self) -> Result[List[U8, 256], NetError]: ...
     @method
     def write(self, data: List[U8, 256]) -> Result[U32, NetError]: ...
+    # Retire this capability now; queued bytes/FIN drain in netd independently.
+    # Delete the local cap after success and never call it again.
     @method
     def finish(self) -> Result[None, NetError]: ...
     # One-shot readiness; rechecks state on arm, so no missed wakeup.
@@ -88,7 +96,12 @@ class TcpServerObject:
     pass
 
 
-@object(implements=(TcpFactory, TcpServer))
+@object(implements=(TcpConnection,))
+class TcpConnectionObject:
+    pass
+
+
+@object(implements=(TcpFactory, TcpServer, TcpConnection))
 class TcpHost:
     pass
 

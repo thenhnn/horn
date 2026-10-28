@@ -11,6 +11,7 @@ pub struct Device {
     rx: VecDeque<Vec<u8>>,
     tx: VecDeque<Vec<u8>>,
     pub generation: u64,
+    more_rx: bool,
 }
 impl Device {
     pub fn new() -> Self {
@@ -18,7 +19,11 @@ impl Device {
             rx: VecDeque::new(),
             tx: VecDeque::new(),
             generation: 0,
+            more_rx: false,
         }
+    }
+    pub fn local_work(&self) -> bool {
+        (!self.rx.is_empty() && self.tx.len() < 16) || (self.more_rx && self.rx.len() < 16)
     }
     pub fn pending_tx(&self) -> bool {
         !self.tx.is_empty()
@@ -26,13 +31,17 @@ impl Device {
     pub fn receive_rpc(&mut self, io: &mut Io) {
         let mut ethernet = EthernetInterfaceClient::new(&mut *io, cap(NETD_CAPS_ETHERNET_SLOT));
         self.generation = ethernet.info().unwrap().generation;
+        self.more_rx = true; // A full work budget does not prove the driver queue is empty.
         for _ in 0..8 {
             if self.rx.len() == 16 {
                 break;
             }
             let first = match ethernet.receive() {
                 Ok(chunk) => chunk,
-                Err(CallError::Remote(NetError::WouldBlock)) => break,
+                Err(CallError::Remote(NetError::WouldBlock)) => {
+                    self.more_rx = false;
+                    break;
+                }
                 Err(e) => panic!("Ethernet RX: {:?}", e),
             };
             let mut packet = Vec::with_capacity(1514);

@@ -4,7 +4,7 @@
 extern crate alloc;
 mod ethernet;
 mod tcp;
-use alloc::{vec, vec::Vec};
+use alloc::vec;
 use horn_clock::{ClockPage, protocol as c};
 use horn_ipc::*;
 use horn_net::protocol::*;
@@ -157,11 +157,7 @@ fn main() -> ! {
     );
     let mut sockets = SocketSet::new(vec![]);
     let dhcp = sockets.add(dhcpv4::Socket::new());
-    let mut service = tcp::Service {
-        io,
-        sockets,
-        servers: Vec::new(),
-    };
+    let mut service = tcp::Service::new(io, sockets);
     let mut ready = false;
     let endpoint = sel4::cap::Endpoint::from_bits(NETD_CAPS_SERVICE_SLOT as _);
     let reply = sel4::cap::Reply::from_bits(NETD_CAPS_REPLY_SLOT as _);
@@ -170,7 +166,18 @@ fn main() -> ! {
         device.receive_rpc(&mut service.io);
         let now = time.now(&mut service.io);
         let timestamp = Instant::from_micros(now as i64);
-        iface.poll(timestamp, &mut device, &mut service.sockets);
+        // Replenish a listener between SYNs, including packets from one burst.
+        // Work stays bounded by the local Ethernet ingress queue.
+        service.maintain();
+        for _ in 0..16 {
+            if iface.poll_ingress_single(timestamp, &mut device, &mut service.sockets)
+                == smoltcp::iface::PollIngressSingleResult::None
+            {
+                break;
+            }
+            service.maintain();
+        }
+        iface.poll_egress(timestamp, &mut device, &mut service.sockets);
         match service.sockets.get_mut::<dhcpv4::Socket>(dhcp).poll() {
             Some(dhcpv4::Event::Configured(config)) => {
                 iface.update_ip_addrs(|a| {
@@ -196,6 +203,13 @@ fn main() -> ! {
         }
         service.maintain();
         device.transmit_rpc(&mut service.io);
+        // A full RX work budget does not prove the driver's queue is empty;
+        // TX RPCs may also have unblocked already-imported RX frames. Neither
+        // needs a new device IRQ. A bounded-work hint drains them, and stops
+        // once WouldBlock is observed or the local queues cannot make progress.
+        if device.local_work() {
+            sel4::cap::Notification::from_bits(NETD_CAPS_ETHERNET_SIGNAL_SLOT as _).signal();
+        }
         EthernetInterfaceClient::new(&mut service.io, cap(NETD_CAPS_ETHERNET_SLOT))
             .watch(&cap(NETD_CAPS_ETHERNET_SIGNAL_SLOT), device.generation)
             .unwrap();
