@@ -5,7 +5,11 @@ from test_virtio_console import assert_idle, console_connection, read_banner
 @pytest.mark.parametrize("scenario", ["no_ready", "early_fault"])
 def test_supervisor_requires_explicit_ready(system, scenario):
     vm = system(
-        modules=("examples/devmgr/module.nix", f"tests/boot/supervisor_{scenario}.nix"),
+        modules=(
+            "examples/devmgr/module.nix",
+            "tests/boot/devmgr_checks.nix",
+            f"tests/boot/supervisor_{scenario}.nix",
+        ),
         cpus=1,
         extra_args=("-device", "virtio-serial-pci", "-device", "virtio-net-pci"),
     )
@@ -30,7 +34,11 @@ def test_supervisor_requires_explicit_ready(system, scenario):
     "release,cpus", [(False, 1), (True, 2)], ids=["debug-up", "release-smp"]
 )
 def test_supervisor_driver_revoke(system, mode, release, cpus):
-    modules = ("examples/devmgr/module.nix", f"tests/boot/supervisor_{mode}.nix")
+    modules = (
+        "examples/devmgr/module.nix",
+        "tests/boot/devmgr_checks.nix",
+        f"tests/boot/supervisor_{mode}.nix",
+    )
     if release:
         modules += ("tests/boot/rust_release.nix",)
     vm = system(modules=modules, cpus=cpus)

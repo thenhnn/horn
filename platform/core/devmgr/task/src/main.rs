@@ -2,8 +2,10 @@
 #![no_std]
 #![no_main]
 extern crate alloc;
-mod native;
+#[cfg(feature = "boot-tests")]
+mod boot_tests;
 mod drivers;
+mod native;
 mod service;
 
 use acpi::{AcpiHandler, AcpiTables, PhysicalMapping, rsdp::Rsdp};
@@ -83,12 +85,8 @@ fn main() -> ! {
     let transport = horn_runtime::transport(root, SLOTS.application()).expect("devmgr transport");
     let target = horn_runtime::bootstrap_cap(root, DEVICE_CAPS_PLATFORM_SLOT);
     let mut platform = DevicePlatformClient::new(transport, target);
-    let allocation = alloc::boxed::Box::new(42u64);
-    assert!(!horn_runtime::is_control(
-        (&*allocation as *const u64).cast()
-    ));
-    drop(allocation);
-    sel4::debug_println!("DEVMGR_ALLOCATOR allocator=mimalloc");
+    #[cfg(feature = "boot-tests")]
+    boot_tests::allocator();
     let policy = platform.policy().expect("bootstrap policy");
     let supplied = platform.rsdp().expect("bootstrap RSDP");
     let mut bytes = [0u8; 36];
@@ -164,10 +162,28 @@ fn main() -> ! {
     );
     let fault_irq = service.arm_fault_irq();
     service.io().platform.ready().expect("platform preparation");
-    if option_env!("DEVMGR_TEST_EARLY_FAULT")==Some("1"){unsafe{core::arch::asm!("ud2",options(noreturn));}}
-    let mut drivers=drivers::Drivers::start(&mut service);
+    #[cfg(feature = "boot-tests")]
+    boot_tests::before_start();
+    let mut drivers = drivers::Drivers::start(&mut service);
+    #[cfg(feature = "boot-tests")]
+    let mut observer = drivers
+        .is_empty()
+        .then(|| boot_tests::Observer::start(&mut service.io().platform.transport));
+    let mut reported = false;
     let reply = sel4::cap::Reply::from_bits(DEVICE_CAPS_REPLY_SLOT as _);
     loop {
+        #[cfg(not(feature = "boot-tests"))]
+        let tests_finished = true;
+        #[cfg(feature = "boot-tests")]
+        let tests_finished = observer.as_ref().is_none_or(|probe| probe.finished);
+        if !reported && drivers.ready() && tests_finished {
+            reported = true;
+            sel4::debug_println!("DEVMGR_SERVICE_READY configured=true");
+            #[cfg(feature = "boot-tests")]
+            boot_tests::ready();
+            #[cfg(not(feature = "boot-tests"))]
+            horn_runtime::notify_ready(DEVICE_CAPS_READY_SLOT);
+        }
         let request = {
             let mut server = Sel4Server::new(
                 root,
@@ -177,13 +193,22 @@ fn main() -> ! {
             );
             sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&server.recv_slot));
             let (info, badge) = server.endpoint.recv(reply);
-            if badge & (horn_devmgr::FAULT_NOTIFICATION_BADGE | horn_supervisor::OWNER_CHANGED) != 0 {
-                drop(server);receive.delete().unwrap();
+            if badge & (horn_devmgr::FAULT_NOTIFICATION_BADGE | horn_supervisor::OWNER_CHANGED) != 0
+            {
+                drop(server);
+                receive.delete().unwrap();
                 if badge & horn_devmgr::FAULT_NOTIFICATION_BADGE != 0 {
-                    let faults=service.handle_fault_irq(fault_irq.expect("unexpected fault notification"));
-                    drivers.faulted(&mut service,faults);
+                    let faults =
+                        service.handle_fault_irq(fault_irq.expect("unexpected fault notification"));
+                    drivers.faulted(&mut service, faults);
                 }
-                if badge & horn_supervisor::OWNER_CHANGED != 0 {drivers.changed(&mut service);}
+                if badge & horn_supervisor::OWNER_CHANGED != 0 {
+                    drivers.changed(&mut service);
+                    #[cfg(feature = "boot-tests")]
+                    if let Some(probe) = &mut observer {
+                        probe.changed(&mut service.io().platform.transport);
+                    }
+                }
                 continue;
             }
             if badge == 0 {

@@ -305,16 +305,6 @@ class DeviceDriverCaps:
 
 
 @capset(capacity=256)
-class DeviceProbeCaps:
-    vm: Cap[VmFactory, Copy]
-    address_space: Cap[VmAddressSpaceObject, Copy]
-    observer: Cap[DeviceDiscovery, Copy]
-    lifecycle: Cap[sel4.Endpoint, Copy]
-    reply: Cap[sel4.Reply, Move]
-    ready: Cap[sel4.Notification, Copy]
-
-
-@capset(capacity=256)
 class DeviceCaps:
     reply: Cap[sel4.Reply, Move]
     service: Cap[sel4.Endpoint, Copy]

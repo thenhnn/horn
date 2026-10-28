@@ -15,6 +15,7 @@
     HORN_IDL = "${../../tools/idl}";
     HORN_VM_IDL = "${../../platform/core/vm/idl}";
     HORN_PROCESS_IDL = "${../../platform/core/procd/idl}";
+    HORN_DEVICE_IDL = "${../../platform/core/devmgr/idl}";
     nativeBuildInputs = (old.nativeBuildInputs or []) ++ [pkgs.python3];
   };
   console = import ../../platform/drivers/virtio/console {
@@ -34,29 +35,41 @@
       horn-supervisor = protocol;
       horn-vm = protocol;
       memchr = old: {features = ["alloc"];};
-      horn-devmgr-task = old: {
-        DEVMGR_TEST_FAULT =
-          if config.devmgr-demo.inject-fault
-          then "1"
-          else "0";
-        DEVMGR_TEST_EARLY_FAULT =
-          if config.devmgr-demo.early-fault
-          then "1"
-          else "0";
-        DEVMGR_TEST_NO_READY =
-          if config.devmgr-demo.withhold-ready
-          then "1"
-          else "0";
-        DEVMGR_DRIVER_ELF =
-          if config.devmgr-demo.console
-          then "${runtimeElf console "virtio_console"}"
-          else "";
-        DEVMGR_DRIVER_DEVICE = "33";
-        DEVMGR_DRIVER_NAME = "virtio-console";
-        DEVMGR_DRIVER_RAM = "33554432";
-        DEVMGR_PROBE_ELF = "${runtimeElf childWorkspace.members.horn-devmgr-probe "devmgr_probe"}";
-      };
+      horn-devmgr-probe = protocol;
+      horn-devmgr-task = old:
+        (protocol old)
+        // {
+          features = (old.features or []) ++ lib.optional config.devmgr-demo.boot-tests "boot-tests";
+          HORN_DEVICE_TEST_IDL =
+            if config.devmgr-demo.boot-tests
+            then "${../../tests/boot/devmgr-probe/schema.py}"
+            else "";
+          DEVMGR_TEST_FAULT =
+            if config.devmgr-demo.inject-fault
+            then "1"
+            else "0";
+          DEVMGR_TEST_EARLY_FAULT =
+            if config.devmgr-demo.early-fault
+            then "1"
+            else "0";
+          DEVMGR_TEST_NO_READY =
+            if config.devmgr-demo.withhold-ready
+            then "1"
+            else "0";
+          DEVMGR_DRIVER_ELF =
+            if config.devmgr-demo.console
+            then "${runtimeElf console "virtio_console"}"
+            else "";
+          DEVMGR_DRIVER_DEVICE = "33";
+          DEVMGR_DRIVER_NAME = "virtio-console";
+          DEVMGR_DRIVER_RAM = "33554432";
+          DEVMGR_PROBE_ELF =
+            if config.devmgr-demo.boot-tests
+            then "${runtimeElf childWorkspace.members.horn-devmgr-probe "devmgr_probe"}"
+            else "";
+        };
       horn-supervisor-task = old: {
+        features = (old.features or []) ++ lib.optional config.devmgr-demo.boot-tests "boot-tests";
         DEVMGR_ELF = "${runtimeElf childWorkspace.members.horn-devmgr-task "devmgr"}";
         SUPERVISOR_STALL =
           if config.devmgr-demo.stall-bootstrap
@@ -74,6 +87,7 @@
       horn-supervisor = protocol;
       horn-vm = protocol;
       devmgr-demo-root = old: {
+        features = (old.features or []) ++ lib.optional config.devmgr-demo.boot-tests "boot-tests";
         SUPERVISOR_ELF = "${runtimeElf childWorkspace.members.horn-supervisor-task "supervisor"}";
         DEVMGR_TEST_VTD =
           if config.devmgr-demo.console
@@ -89,6 +103,11 @@
     };
   };
 in {
+  options.devmgr-demo.boot-tests = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Compile boot-test fixtures and self-checks; never enabled for ordinary boots.";
+  };
   options.devmgr-demo.early-fault = lib.mkOption {
     type = lib.types.bool;
     default = false;

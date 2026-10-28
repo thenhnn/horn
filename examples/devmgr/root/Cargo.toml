@@ -7,6 +7,9 @@ edition = "2024"
 name = "task"
 path = "src/main.rs"
 
+[features]
+boot-tests = []
+
 [dependencies]
 horn-supervisor = { path = "../../../platform/core/supervisor" }
 horn-devmgr = { path = "../../../platform/core/devmgr" }

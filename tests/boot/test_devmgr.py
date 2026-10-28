@@ -1,11 +1,43 @@
 import pytest
+from test_virtio_console import assert_idle, console_connection, read_banner
+
+
+@pytest.mark.parametrize("console", [False, True], ids=["discovery", "console"])
+def test_devmgr_ordinary_boot_has_no_probes(system, console):
+    modules = ("examples/devmgr/module.nix",)
+    if console:
+        modules += ("tests/boot/virtio_console_clean.nix",)
+    vm = system(modules=modules, cpus=1)
+    if console:
+        with console_connection(vm) as connection:
+            read_banner(connection, vm)
+            connection.sendall(b"clean boot\n")
+            echo = b""
+            while len(echo) < len(b"clean boot\n"):
+                chunk = connection.recv(4096)
+                assert chunk
+                echo += chunk
+            assert echo == b"clean boot\n"
+            vm.serial.wait_for(b"SUPERVISOR_READY policy=userspace", timeout=60)
+            assert_idle(vm)
+    else:
+        vm.start()
+        vm.serial.wait_for(b"SUPERVISOR_READY policy=userspace", timeout=60)
+        assert_idle(vm)
+        vm.kill()
+    output = vm.serial.path.read_text()
+    assert "_PASS" not in output
+    assert "PROBE" not in output
+    assert "devmgr-observer" not in output
+    assert "DEVMGR_ALLOCATOR" not in output
+    assert "DEVMGR_FATAL" not in output
 
 
 @pytest.mark.parametrize("cpus", [1, 2], ids=["up", "smp"])
 @pytest.mark.parametrize("release", [False, True], ids=["debug", "release"])
 @pytest.mark.parametrize("fault", [False, True], ids=["discovery", "fatal"])
 def test_devmgr_discovery(system, release, fault, cpus):
-    modules = ("examples/devmgr/module.nix",)
+    modules = ("examples/devmgr/module.nix", "tests/boot/devmgr_checks.nix")
     if fault:
         modules += ("tests/boot/devmgr_fault.nix",)
     if release:
@@ -44,7 +76,11 @@ def test_devmgr_discovery(system, release, fault, cpus):
 
 def test_device_manager_startup_deadline(system):
     vm = system(
-        modules=("examples/devmgr/module.nix", "tests/boot/devmgr_stall.nix"),
+        modules=(
+            "examples/devmgr/module.nix",
+            "tests/boot/devmgr_checks.nix",
+            "tests/boot/devmgr_stall.nix",
+        ),
         cpus=1,
     )
     vm.start()

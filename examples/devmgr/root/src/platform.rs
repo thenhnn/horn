@@ -22,6 +22,7 @@ pub struct Platform {
     bank: DeviceBank,
     active: Option<(usize, DevicePage)>,
     poisoned: bool,
+    #[cfg(feature = "boot-tests")]
     evictions: usize,
     scratch: usize,
     rsdp: List<u8, 36>,
@@ -29,7 +30,9 @@ pub struct Platform {
     device_ready: bool,
 }
 impl Platform {
-    pub fn ticks_per_us(&self)->u64 {self.frequency}
+    pub fn ticks_per_us(&self) -> u64 {
+        self.frequency
+    }
     /// # Safety
     /// Device Untypeds must be unused and exclusive to this bank. `scratch` is
     /// an exclusive unmapped root page with translation tables. LARGE_WINDOW..
@@ -46,6 +49,7 @@ impl Platform {
     ) -> Self {
         // Exercise seL4's kernel-pointer/physical alignment difference above
         // the x86 direct-map wrap, without issuing reads to the physical hole.
+        #[cfg(feature = "boot-tests")]
         let test_page = boot
             .untyped_list()
             .iter()
@@ -97,6 +101,7 @@ impl Platform {
         rsdp.len = length as u32;
         // Root-owned IRQ infrastructure has root lifetime, not a restartable task's.
         let irq_allocator = allocator.clone();
+        #[allow(unused_mut)]
         let mut this = Self {
             manager,
             enabled,
@@ -109,15 +114,18 @@ impl Platform {
             bank,
             active: None,
             poisoned: false,
+            #[cfg(feature = "boot-tests")]
             evictions: 0,
             scratch,
             rsdp,
             ready: false,
             device_ready: false,
         };
+        #[cfg(feature = "boot-tests")]
         this.verify_shared_bank(test_page, allocator);
         this
     }
+    #[cfg(feature = "boot-tests")]
     fn verify_shared_bank(&mut self, address: usize, allocator: KernelAllocator) {
         let mut pool = horn_vm::sel4::FramePool::for_account(allocator);
         let before = pool.account().usage().charged;
@@ -174,7 +182,10 @@ impl Platform {
                 self.poisoned = true;
                 return Err(DeviceError::Backend);
             }
-            self.evictions += 1;
+            #[cfg(feature = "boot-tests")]
+            {
+                self.evictions += 1;
+            }
         }
         Ok(())
     }
@@ -211,6 +222,7 @@ impl Platform {
         self.active = Some((base, frame));
         Ok(result)
     }
+    #[cfg(feature = "boot-tests")]
     fn verify_returned_slots(&self) {
         assert!(self.active.is_none() && !self.poisoned && !self.bank.poisoned());
         assert_eq!(self.bank.available_slots(), TEMP_SLOTS);
@@ -485,6 +497,7 @@ impl DevicePlatform for Platform {
     }
     fn ready(&mut self) -> Result<(), DeviceError> {
         self.evict()?;
+        #[cfg(feature = "boot-tests")]
         if !self.enabled {
             self.verify_returned_slots();
         }

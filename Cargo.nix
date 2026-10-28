@@ -580,7 +580,9 @@ rec {
             packageId = "sel4-root-task";
           }
         ];
-
+        features = {
+        };
+        resolvedDefaultFeatures = [ "boot-tests" ];
       };
       "dlmalloc" = rec {
         crateName = "dlmalloc";
@@ -729,7 +731,7 @@ rec {
             requiredFeatures = [ ];
           }
         ];
-        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./examples/devmgr/probe; };
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./tests/boot/devmgr-probe; };
         dependencies = [
           {
             name = "horn-devmgr";
@@ -796,7 +798,9 @@ rec {
             packageId = "sel4";
           }
         ];
-
+        features = {
+        };
+        resolvedDefaultFeatures = [ "boot-tests" ];
       };
       "horn-driver" = rec {
         crateName = "horn-driver";
@@ -1018,7 +1022,9 @@ rec {
             packageId = "sel4";
           }
         ];
-
+        features = {
+        };
+        resolvedDefaultFeatures = [ "boot-tests" ];
       };
       "horn-virtio" = rec {
         crateName = "horn-virtio";

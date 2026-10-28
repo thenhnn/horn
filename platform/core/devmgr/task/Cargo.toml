@@ -7,6 +7,9 @@ edition = "2024"
 name = "devmgr"
 path = "src/main.rs"
 
+[features]
+boot-tests = []
+
 [dependencies]
 acpi = { version = "=5.2.0", default-features = false }
 horn-devmgr = { path = ".." }
