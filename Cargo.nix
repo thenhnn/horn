@@ -73,6 +73,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-driver" = rec {
+      packageId = "horn-driver";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-driver";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-ipc" = rec {
       packageId = "horn-ipc";
       build = internal.buildRustCrateWithFeatures {
@@ -712,6 +722,29 @@ rec {
         ];
 
       };
+      "horn-driver" = rec {
+        crateName = "horn-driver";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/drivers/horn-driver; };
+        libName = "horn_driver";
+        dependencies = [
+          {
+            name = "horn-devmgr";
+            packageId = "horn-devmgr";
+          }
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+          }
+        ];
+
+      };
       "horn-ipc" = rec {
         crateName = "horn-ipc";
         version = "0.1.0";
@@ -880,6 +913,10 @@ rec {
           {
             name = "horn-devmgr";
             packageId = "horn-devmgr";
+          }
+          {
+            name = "horn-driver";
+            packageId = "horn-driver";
           }
           {
             name = "horn-ipc";

@@ -9,11 +9,14 @@ root tasks that implement the VM backend.
 Declare the entrypoint once per ELF, using generated bootstrap slot names:
 
 ```rust
+const SLOTS: horn_runtime::TaskSlots =
+    horn_runtime::TaskSlots::new(DEVICE_CAPS_FIRST_FREE_SLOT, DEVICE_CAPS_SIZE_BITS);
+
 horn_runtime::task!(main, vm: horn_runtime::VmBootstrap {
     cnode: DEVICE_CAPS_SELF_SLOT,
     factory: DEVICE_CAPS_VM_SLOT,
     address_space: DEVICE_CAPS_ADDRESS_SPACE_SLOT,
-    slots: 128..256,
+    slots: SLOTS,
 });
 ```
 
@@ -23,13 +26,25 @@ sets the ABI IPC buffer after `_end`, and installs resident VM-backed mimalloc
 **before `main() -> !`**. Heap-install failure aborts; it never silently runs the
 application on dlmalloc.
 
-The first heap slot is its receive slot; the rest are its imported-cap pool.
-Reserve the entire range exclusively for allocator callbacks. For a 256-slot
-CNode, the examples use `128..256` for the heap and a lower range for application
-RPC. `transport(root, range)` reserves the range's first slot for receive and
-uses the rest for imports. An additional public server receive slot must also
-be disjoint. Ranges must fit the actual CNode and be empty; the runtime does not
-create new authority or discover spare slots on its own.
+`TaskSlots` (pure layout logic in `horn-ipc`, reexported here) preserves the
+entire generated bootstrap prefix and derives three disjoint allocations:
+
+- `SLOTS.public_receive()` is the dedicated public-server receive slot;
+- `SLOTS.application()` contains an application/private RPC receive slot and
+  imports, ending at the CNode midpoint;
+- `SLOTS.heap()` contains the heap callback receive slot and imports above it.
+
+`transport(root, SLOTS.application())` reserves the range's first slot for receive
+and uses the rest for imports; heap entry does the same with `SLOTS.heap()`.
+For a 256-slot CNode the midpoint happens to be 128, but consumers no longer
+coordinate that number. Unsupported sizes, overflowing/out-of-range prefixes
+and empty import pools fail before capability operations (at compile time for
+the const above). Pure host tests cover the partition and its boundaries.
+
+This is numeric layout validation, not a kernel slot allocator or new authority.
+The supplied size/prefix must describe the actual bootstrap CNode and the free
+slots must really be empty. Instantiate each pool only once; copying the layout
+does not grant permission to run two independent allocators over the same pool.
 
 `bootstrap_cap(root, GENERATED_SLOT)` references an already installed capability.
 `allocator` reexports `horn-mimalloc` for explicit allocation/collection/diagnostics;

@@ -10,11 +10,12 @@ use alloc::alloc::{alloc, dealloc, handle_alloc_error};
 use core::{alloc::Layout, cell::RefCell, mem, ptr::NonNull};
 use horn_devmgr::{Inventory, firmware, pci::ConfigRead, protocol::*};
 use horn_ipc::*;
+const SLOTS: TaskSlots = TaskSlots::new(DEVICE_CAPS_FIRST_FREE_SLOT, DEVICE_CAPS_SIZE_BITS);
 horn_runtime::task!(main, vm: horn_runtime::VmBootstrap {
     cnode: DEVICE_CAPS_SELF_SLOT,
     factory: DEVICE_CAPS_VM_SLOT,
     address_space: DEVICE_CAPS_ADDRESS_SPACE_SLOT,
-    slots: 128..256,
+    slots: SLOTS,
 });
 
 use native::PlatformClient;
@@ -76,10 +77,9 @@ impl ConfigRead for Firmware<'_> {
 
 fn main() -> ! {
     let root = sel4::cap::CNode::from_bits(DEVICE_CAPS_SELF_SLOT as _);
-    let receive = root.absolute_cptr(sel4::CPtr::from_bits(DEVICE_CAPS_FIRST_FREE_SLOT as _));
+    let receive = root.absolute_cptr(sel4::CPtr::from_bits(SLOTS.public_receive() as _));
     // Public receive, private RPC and heap callbacks have disjoint slots.
-    let transport = horn_runtime::transport(root, (DEVICE_CAPS_FIRST_FREE_SLOT + 1)..128)
-        .expect("devmgr transport");
+    let transport = horn_runtime::transport(root, SLOTS.application()).expect("devmgr transport");
     let target = horn_runtime::bootstrap_cap(root, DEVICE_CAPS_PLATFORM_SLOT);
     let mut platform = DevicePlatformClient::new(transport, target);
     let allocation = alloc::boxed::Box::new(42u64);

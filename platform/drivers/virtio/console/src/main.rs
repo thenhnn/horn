@@ -18,36 +18,49 @@ use horn_virtio::{
         },
     },
 };
+const SLOTS: horn_runtime::TaskSlots = horn_runtime::TaskSlots::new(
+    DEVICE_DRIVER_CAPS_FIRST_FREE_SLOT,
+    DEVICE_DRIVER_CAPS_SIZE_BITS,
+);
 horn_runtime::task!(main, vm: horn_runtime::VmBootstrap {
     cnode: DEVICE_DRIVER_CAPS_SELF_SLOT,
     factory: DEVICE_DRIVER_CAPS_VM_SLOT,
     address_space: DEVICE_DRIVER_CAPS_ADDRESS_SPACE_SLOT,
-    slots: 128..256,
+    slots: SLOTS,
 });
 
 fn main() -> ! {
     let root = sel4::cap::CNode::from_bits(DEVICE_DRIVER_CAPS_SELF_SLOT as _);
-    let transport = horn_runtime::transport(root, DEVICE_DRIVER_CAPS_FIRST_FREE_SLOT..128)
-        .expect("driver transport");
-    hal::install(hal::State::new(transport));
+    let transport = horn_runtime::transport(root, SLOTS.application()).expect("driver transport");
+    let session = horn_driver::DeviceSession::new(
+        transport,
+        hal::target(DEVICE_DRIVER_CAPS_VM_SLOT),
+        hal::target(DEVICE_DRIVER_CAPS_ADDRESS_SPACE_SLOT),
+        hal::target(DEVICE_DRIVER_CAPS_DEVICE_SLOT),
+    );
+    hal::install(hal::State::new(session));
     #[cfg(feature = "dma-probe")]
     hal::with(|state| {
         // Kernel-unwrapped caps for devmgr's endpoint are NOT VM capabilities.
         let wrong_memory = hal::target::<VmMemoryObjectTag>(DEVICE_DRIVER_CAPS_DEVICE_SLOT);
         assert!(matches!(
-            state.device().map(&wrong_memory, 0, 4096, 3),
+            state.session.control().map(&wrong_memory, 0, 4096, 3),
             Err(CallError::Remote(DeviceError::Denied))
         ));
         let wrong_space = hal::target::<VmAddressSpaceObjectTag>(DEVICE_DRIVER_CAPS_DEVICE_SLOT);
         assert!(matches!(
-            state.device().bar(4, &wrong_space),
+            state.session.control().bar(4, &wrong_space),
             Err(CallError::Remote(DeviceError::Denied))
         ));
         sel4::debug_println!("DEVICE_CAP_CHECK_PASS wrong_vm_object=denied");
     });
     let resources = hal::with(|state| {
-        let resources = state.device().resources().expect("assigned PCI resources");
-        state.map_bars(&resources);
+        let resources = state
+            .session
+            .control()
+            .resources()
+            .expect("assigned PCI resources");
+        state.session.map_bars(&resources);
         resources
     });
     assert_eq!(resources.address.segment, 0);
@@ -83,8 +96,11 @@ fn main() -> ! {
             .checked_add(length as u64)
             .is_some_and(|end| end <= size)
     );
-    let common: NonNull<u8> =
-        hal::with(|state| state.mmio(base.checked_add(offset).unwrap(), length));
+    let common: NonNull<u8> = hal::with(|state| {
+        state
+            .session
+            .mmio(base.checked_add(offset).unwrap(), length)
+    });
     let transport = PciTransport::new::<hal::CapabilityHal, _>(&mut pci, function)
         .expect("virtio PCI transport");
     assert_eq!(transport.device_type(), DeviceType::Console);
@@ -92,17 +108,12 @@ fn main() -> ! {
     let transport = unsafe { IommuPciTransport::new(transport, common, length, 0) }
         .expect("IOMMU virtio transport");
     let notification = hal::with(|state| {
-        let capability = state.device().interrupt().expect("remapped IRQ");
-        let notification = state
-            .transport
-            .space
-            .cap::<sel4::cap_type::Notification>(capability.as_ref())
-            .unwrap();
+        let notification = state.session.interrupt();
         #[cfg(feature = "dma-probe")]
         {
             state.fault_wait = Some(notification);
         }
-        state.device().activate().expect("bus mastering");
+        state.session.activate();
         notification
     });
     let mut console =
@@ -128,7 +139,7 @@ fn main() -> ! {
         while let Some(byte) = console.recv(true).expect("console receive") {
             console.send(byte).expect("console echo");
         }
-        hal::with(|state| state.device().ack().expect("IRQ rearm"));
+        hal::with(|state| state.session.ack_interrupt());
         if !irq_reported {
             sel4::debug_println!("VIRTIO_CONSOLE_IRQ delivered=true");
             irq_reported = true;

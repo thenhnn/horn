@@ -13,6 +13,7 @@ dma-probe = []
 
 [dependencies]
 horn-virtio = { path = ".." }
+horn-driver = { path = "../../horn-driver" }
 horn-runtime = { path = "../../../runtime/rust/horn-runtime" }
 horn-devmgr = { path = "../../../core/devmgr" }
 horn-ipc = { path = "../../../runtime/rust/horn-ipc", features = ["sel4"] }

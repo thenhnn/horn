@@ -11,6 +11,9 @@ use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+mod slots;
+pub use slots::TaskSlots;
+
 pub const MAX_CAPS: usize = 3;
 /// Emit once per executable, not once per generated protocol module.
 /// Segment permissions, entry point and TLS use the standard ELF metadata.

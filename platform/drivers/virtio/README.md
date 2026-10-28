@@ -30,6 +30,12 @@ implementing all five upstream hooks using VM/device authority:
 The crate's `PhysAddr` is a **device-visible IOVA**, not an exported RAM paddr.
 Contiguous IOVA mappings do not require contiguous physical RAM.
 
+The HAL is a thin adapter over [`horn-driver::DeviceSession`](../horn-driver/README.md).
+BAR/VM/DMA ownership, directional bounces and IRQ grants live there, without any
+virtio dependency or global state. The adapter translates `BufferDirection` to
+device READ/WRITE permissions; its singleton exists only because upstream Hal
+uses static methods.
+
 - Allocate resident VM backing in the driver's own RAM account; map it into the
   CPU address space and into the device domain with the requested direction.
 - Only resolve MMIO addresses within BAR grants already owned by this driver.
@@ -43,13 +49,15 @@ The task installs VM-backed mimalloc as its default Rust allocator before
 constructing upstream transport/console objects. Bootstrap and internal allocator
 RPC metadata use separate bounded control storage; the heap callback transport
 and device HAL use disjoint CSpace pools to avoid reentrant slot allocation.
+One checked `TaskSlots` derived from generated bootstrap bounds supplies both
+pools and the public receive slot; no independently coordinated midpoint literals.
 
 The optional Q35 harness now assigns `00:04.0` in devmgr, passes only its scoped
 device capability plus the driver's own VM authority, and launches this ELF.
 `tests/boot/test_virtio_console.py` validates real host TX/RX echo and remapped
 MSI-X on one/two CPUs in debug/release, including thousands of DMA map/unmap
 operations. Negative builds deliberately issue an unmapped IOVA and a previously
-used IOVA after its completed unmap/drain; devmgr polls and reports the actual
+used IOVA after its completed unmap/drain; devmgr wakes on its fault IRQ and reports the actual
 VT-d source/address/reason. Fault injections require the `dma-probe` feature and
 a separate Nix profile; the normal driver has no injection path. Test tasks
 retain remaining backing and block on notification after injecting a failure,

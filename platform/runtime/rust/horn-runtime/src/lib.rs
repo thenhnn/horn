@@ -9,17 +9,18 @@
 use core::ops::Range;
 use horn_ipc::*;
 
+pub use horn_ipc::TaskSlots;
 pub use horn_mimalloc as allocator;
 pub use horn_mimalloc::Error;
 
 /// Named bootstrap capabilities and an exclusive CSpace range for heap callbacks.
-/// The first slot in `slots` is the receive slot; the remainder are imported caps.
-/// Application transports MUST use a disjoint range, including receive slots.
+/// The checked layout keeps bootstrap, public receive, application RPC and heap
+/// callbacks disjoint. It must match the CNode installed by the trusted loader.
 pub struct VmBootstrap {
     pub cnode: u32,
     pub factory: u32,
     pub address_space: u32,
-    pub slots: Range<u32>,
+    pub slots: TaskSlots,
 }
 
 /// Reference an already-installed local bootstrap capability, not new authority.
@@ -66,13 +67,13 @@ pub unsafe fn install_heap(config: VmBootstrap) -> Result<(), Error> {
         || config.factory == config.address_space
         || [config.cnode, config.factory, config.address_space]
             .iter()
-            .any(|slot| config.slots.contains(slot))
+            .any(|slot| *slot >= config.slots.public_receive())
     {
         return Err(Error::Invalid);
     }
     let root = sel4::cap::CNode::from_bits(config.cnode as _);
     let heap = allocator::VmHeap::new(
-        transport(root, config.slots)?,
+        transport(root, config.slots.heap())?,
         bootstrap_cap::<horn_vm::protocol::VmFactoryTag>(root, config.factory).as_ref(),
         bootstrap_cap::<horn_vm::protocol::VmAddressSpaceObjectTag>(root, config.address_space)
             .as_ref(),
