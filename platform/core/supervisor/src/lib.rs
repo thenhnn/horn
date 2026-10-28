@@ -6,7 +6,7 @@ pub const OWNER_CHANGED: u64 = 1 << 62;
 pub const STOP: u64 = 2;
 pub const IRQ: u64 = 1;
 pub const FACTORY_BADGE: u64 = 64;
-pub const MAX_JOBS: usize = 4;
+pub const MAX_JOBS: usize = 8;
 #[allow(dead_code, unused_imports, non_camel_case_types)]
 pub mod protocol { include!(concat!(env!("OUT_DIR"), "/protocol.rs")); }
 use protocol::*;

@@ -8,6 +8,7 @@ name = "shell"
 path = "src/main.rs"
 
 [dependencies]
+horn-registry = {path = "../../core/registry"}
 horn-console = { path = "../../core/console" }
 horn-procd = { path = "../../core/procd" }
 horn-devmgr = { path = "../../core/devmgr" }

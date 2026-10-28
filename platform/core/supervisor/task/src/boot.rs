@@ -1,101 +1,46 @@
-//! Initial core-service bootstrap manifest. No driver catalogue or device policy.
-//! Kept separate from the generic supervision loop; root boots only supervisor.
+//! Privileged bootstrap mechanisms. All image/slot/grant policy is catalog data.
 use super::*;
-use horn_devmgr::protocol as d;
-static CORE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/devmgr.elf"));
-pub fn start(io: &mut Io) {
-    let image = BOOT.upload(io, CORE);
-    let mut request = ProcessLaunch::default();
-    request.name.len = 6;
-    request.name.data[..6].copy_from_slice(b"devmgr");
-    request.ram_limit = 64 << 20;
+use catalog::{BootSource, core};
+pub fn start(manager: &mut Manager) {
+    let definition = core();
+    let io = &mut manager.io;
+    let image = BOOT.upload(io, definition.elf);
+    let mut launch = ProcessLaunch::default();
+    launch.name.len = definition.name.len() as _;
+    launch.name.data[..definition.name.len()].copy_from_slice(definition.name.as_bytes());
+    launch.ram_limit = definition.ram;
     let process = ProcessFactoryClient::new(&mut *io, cap(SUPERVISOR_CAPS_FACTORY_SLOT))
-        .prepare(
-            &image,
-            request,
-            ProcessBootstrap {
-                vm: d::DEVICE_CAPS_VM_SLOT,
-                address_space: d::DEVICE_CAPS_ADDRESS_SPACE_SLOT,
-                lifecycle: d::DEVICE_CAPS_LIFECYCLE_SLOT,
-                reply: d::DEVICE_CAPS_REPLY_SLOT,
-            },
-        )
+        .prepare(&image, launch, definition.bootstrap.clone())
         .unwrap();
     horn_supervisor::client::close_image(io, image);
-    let service = ProcessControlClient::new(&mut *io, Cap::from_ref(process.as_ref()))
-        .kernel_object(ProcessKernelObject::Endpoint)
-        .unwrap();
-    let note = ProcessControlClient::new(&mut *io, Cap::from_ref(process.as_ref()))
-        .kernel_object(ProcessKernelObject::Notification)
-        .unwrap();
-    BOOT.install(
-        io,
-        process,
-        d::DEVICE_CAPS_SERVICE_SLOT,
-        service,
-        None,
-        Rights::ALL,
-    );
-    BOOT.install(
-        io,
-        process,
-        d::DEVICE_CAPS_PLATFORM_SLOT,
-        cap::<Endpoint>(SUPERVISOR_CAPS_PLATFORM_SLOT),
-        None,
-        Rights::ALL,
-    );
-    BOOT.install(
-        io,
-        process,
-        d::DEVICE_CAPS_FAULT_SLOT,
-        note,
-        Some(horn_devmgr::FAULT_NOTIFICATION_BADGE),
-        Rights::ALL,
-    );
-    BOOT.install(
-        io,
-        process,
-        d::DEVICE_CAPS_EVENTS_SLOT,
-        note,
-        Some(OWNER_CHANGED),
-        Rights::WRITE,
-    );
-    BOOT.install(
-        io,
-        process,
-        d::DEVICE_CAPS_READY_SLOT,
-        cap::<Notification>(SUPERVISOR_CAPS_EVENTS_SLOT),
-        Some(CORE_READY),
-        Rights::WRITE,
-    );
-    let factory = mint(
+    manager.objects(process, definition, 0);
+    let io = &mut manager.io;
+    let ready = mint(
         io,
         root(),
-        cap::<Endpoint>(SUPERVISOR_CAPS_SERVICE_SLOT),
-        FACTORY_BADGE,
-        Rights::ALL,
+        cap::<Notification>(SUPERVISOR_CAPS_EVENTS_SLOT),
+        CORE_READY,
+        Rights::WRITE,
     );
-    BOOT.install(
-        io,
-        process,
-        d::DEVICE_CAPS_SUPERVISOR_SLOT,
-        factory,
-        None,
-        Rights::ALL,
-    );
-    io.space.delete(factory.as_ref()).unwrap();
-    BOOT.install(
-        io,
-        process,
-        d::DEVICE_CAPS_PROCESSES_SLOT,
-        cap::<Endpoint>(SUPERVISOR_CAPS_PROCESSES_SLOT),
-        None,
-        Rights(Rights::WRITE.0 | Rights::GRANT_REPLY.0),
-    );
+    BOOT.install(io, process, definition.ready, ready, None, Rights::WRITE);
+    io.space.delete(ready.as_ref()).unwrap();
+    for grant in definition.grants {
+        let source = match grant.source {
+            BootSource::Platform => {
+                copy(io, root(), cap::<Endpoint>(SUPERVISOR_CAPS_PLATFORM_SLOT))
+            }
+            BootSource::SupervisorFactory => mint(
+                io,
+                root(),
+                cap::<Endpoint>(SUPERVISOR_CAPS_SERVICE_SLOT),
+                FACTORY_BADGE,
+                Rights::ALL,
+            ),
+        };
+        BOOT.install(io, process, grant.slot, source, None, Rights(grant.rights));
+        io.space.delete(source.as_ref()).unwrap();
+    }
     let mut control = ProcessControlClient::new(&mut *io, Cap::from_ref(process.as_ref()));
-    control
-        .bind_notification(&Cap::from_ref(note.as_ref()))
-        .unwrap();
     control
         .fault_handler(
             &cap(SUPERVISOR_CAPS_SELF_SLOT),
@@ -109,9 +54,5 @@ pub fn start(io: &mut Io) {
     if !(cfg!(feature = "boot-tests") && option_env!("SUPERVISOR_STALL") == Some("1")) {
         control.start().unwrap();
     }
-    io.space.delete(service.as_ref()).unwrap();
-    io.space.delete(note.as_ref()).unwrap();
-    // The critical fault/exit path goes directly to root, independent of any
-    // supervisor RPC wait. No ordinary job-control grant is exported for it.
     io.space.delete(process.as_ref()).unwrap();
 }

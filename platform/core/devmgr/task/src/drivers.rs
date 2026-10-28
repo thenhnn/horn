@@ -16,9 +16,12 @@ const BOOT: Bootstrap = Bootstrap {
 };
 struct DriverConfig {
     name: &'static str,
-    device: u64,
+    rule: horn_devmgr::matching::PciMatch,
     ram: u64,
     elf: &'static [u8],
+    namespace: &'static str,
+    badge: u64,
+    rights: u8,
 }
 include!(concat!(env!("OUT_DIR"), "/drivers.rs"));
 struct Managed {
@@ -27,8 +30,6 @@ struct Managed {
     device: u64,
     device_id: u64,
     service: Cap<Endpoint>,
-    client: Option<crate::clients::Client>,
-    ready: bool,
     finished: bool,
 }
 pub struct Drivers {
@@ -48,11 +49,25 @@ impl Drivers {
         let mut this = Self {
             records: Vec::new(),
         };
-        this.records
-            .try_reserve(DRIVERS.len())
-            .expect("driver records");
         for cfg in DRIVERS {
-            this.spawn(service, cfg);
+            cfg.rule.validate().expect("PCI match configuration");
+        }
+        let devices: Vec<_> = service.devices().cloned().collect();
+        for device in devices {
+            let mut candidates = DRIVERS.iter().filter(|cfg| cfg.rule.matches(&device));
+            let first = candidates.next();
+            if let Some(cfg) = first {
+                if candidates.next().is_some() {
+                    sel4::debug_println!(
+                        "DEVMGR_MATCH ambiguous device={} skipped=true",
+                        device.id
+                    );
+                    continue;
+                }
+                this.spawn(service, cfg, &device);
+            } else {
+                sel4::debug_println!("DEVMGR_MATCH device={} driver=none", device.id);
+            }
         }
         this
     }
@@ -60,20 +75,25 @@ impl Drivers {
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
     }
-    pub fn ready(&self) -> bool {
-        self.records.iter().all(|r| {
-            (r.ready || r.finished) && r.client.as_ref().is_none_or(|c| c.ready || c.finished)
-        })
-    }
-    fn spawn(&mut self, service: &mut Service, cfg: &DriverConfig) {
+    fn spawn(&mut self, service: &mut Service, cfg: &DriverConfig, pci: &d::PciDevice) {
         let (device, badge) = service
-            .claim_driver(cfg.device)
+            .claim_driver(pci.id)
             .expect("configured device assignment");
         let io = &mut service.io().platform.transport;
         let image = BOOT.upload(io, cfg.elf);
         let mut request = s::ProcessLaunch::default();
-        request.name.len = cfg.name.len() as _;
-        request.name.data[..cfg.name.len()].copy_from_slice(cfg.name.as_bytes());
+        let address = pci.address.clone();
+        let instance = alloc::format!(
+            "{:04x}:{:02x}:{:02x}.{}",
+            address.segment,
+            address.bus,
+            address.device,
+            address.function
+        );
+        let name = alloc::format!("{}@{}", cfg.name, instance);
+        assert!(name.len() <= request.name.data.len());
+        request.name.len = name.len() as _;
+        request.name.data[..name.len()].copy_from_slice(name.as_bytes());
         request.ram_limit = cfg.ram;
         let slots = s::ProcessBootstrap {
             vm: d::DEVICE_DRIVER_CAPS_VM_SLOT,
@@ -124,10 +144,18 @@ impl Drivers {
             io,
             sel4::cap::CNode::from_bits(d::DEVICE_CAPS_SELF_SLOT as _),
             Cap::<Endpoint>::from_ref(endpoint.as_ref()),
-            horn_console::CLIENT_BADGE,
-            Rights(Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0),
+            cfg.badge,
+            Rights(cfg.rights),
         );
         io.space.delete(endpoint.as_ref()).unwrap();
+        let path = alloc::format!("{}/{}", cfg.namespace, instance);
+        let mut published_path = List::default();
+        assert!(path.len() <= 96);
+        published_path.len = path.len() as _;
+        published_path.data[..path.len()].copy_from_slice(path.as_bytes());
+        s::SupervisorJobClient::new(&mut *io, Cap::from_ref(managed.as_ref()))
+            .publish(published_path, &service)
+            .unwrap();
         let wake = s::ProcessControlClient::new(&mut *io, Cap::from_ref(process.as_ref()))
             .kernel_object(s::ProcessKernelObject::Notification)
             .unwrap();
@@ -202,10 +230,8 @@ impl Drivers {
             job: managed,
             process,
             device: badge,
-            device_id: cfg.device,
+            device_id: pci.id,
             service,
-            client: None,
-            ready: false,
             finished: false,
         });
         sel4::debug_println!("DEVMGR_SERVICE_START name={} policy=devmgr", cfg.name);
@@ -231,27 +257,8 @@ impl Drivers {
             if record.finished {
                 continue;
             }
-            if let Some(client) = &mut record.client {
-                client.changed(&mut service.io().platform.transport);
-            }
             let state = job(service, record.job).status().unwrap();
-            if state == s::ServiceStatus::Active && !record.ready {
-                record.ready = true;
-                if crate::clients::Client::configured() {
-                    record.client = Some(crate::clients::Client::start(
-                        &mut service.io().platform.transport,
-                        record.service,
-                    ));
-                }
-            }
             if state == s::ServiceStatus::AwaitingCleanup {
-                if let Some(client) = &mut record.client {
-                    client.stop(&mut service.io().platform.transport);
-                    client.changed(&mut service.io().platform.transport);
-                    if !client.finished {
-                        continue;
-                    }
-                }
                 let info = s::ProcessControlClient::new(
                     &mut service.io().platform.transport,
                     Cap::from_ref(record.process.as_ref()),

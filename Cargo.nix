@@ -133,6 +133,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-registry" = rec {
+      packageId = "horn-registry";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-registry";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-runtime" = rec {
       packageId = "horn-runtime";
       build = internal.buildRustCrateWithFeatures {
@@ -810,10 +820,6 @@ rec {
             usesDefaultFeatures = false;
           }
           {
-            name = "horn-console";
-            packageId = "horn-console";
-          }
-          {
             name = "horn-devmgr";
             packageId = "horn-devmgr";
           }
@@ -825,10 +831,6 @@ rec {
           {
             name = "horn-runtime";
             packageId = "horn-runtime";
-          }
-          {
-            name = "horn-shell";
-            packageId = "horn-shell";
           }
           {
             name = "horn-supervisor";
@@ -952,6 +954,20 @@ rec {
         ];
 
       };
+      "horn-registry" = rec {
+        crateName = "horn-registry";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/core/registry; };
+        libName = "horn_registry";
+        dependencies = [
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+          }
+        ];
+
+      };
       "horn-runtime" = rec {
         crateName = "horn-runtime";
         version = "0.1.0";
@@ -1030,6 +1046,10 @@ rec {
             packageId = "horn-procd";
           }
           {
+            name = "horn-registry";
+            packageId = "horn-registry";
+          }
+          {
             name = "horn-runtime";
             packageId = "horn-runtime";
           }
@@ -1076,17 +1096,13 @@ rec {
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/core/supervisor/task; };
         dependencies = [
           {
-            name = "horn-devmgr";
-            packageId = "horn-devmgr";
-          }
-          {
             name = "horn-ipc";
             packageId = "horn-ipc";
             features = [ "sel4" ];
           }
           {
-            name = "horn-procd";
-            packageId = "horn-procd";
+            name = "horn-registry";
+            packageId = "horn-registry";
           }
           {
             name = "horn-runtime";

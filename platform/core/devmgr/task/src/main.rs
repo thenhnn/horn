@@ -4,7 +4,6 @@
 extern crate alloc;
 #[cfg(feature = "boot-tests")]
 mod boot_tests;
-mod clients;
 mod drivers;
 mod native;
 mod service;
@@ -177,7 +176,7 @@ fn main() -> ! {
         let tests_finished = true;
         #[cfg(feature = "boot-tests")]
         let tests_finished = observer.as_ref().is_none_or(|probe| probe.finished);
-        if !reported && drivers.ready() && tests_finished {
+        if !reported && tests_finished {
             reported = true;
             sel4::debug_println!("DEVMGR_SERVICE_READY configured=true");
             #[cfg(feature = "boot-tests")]

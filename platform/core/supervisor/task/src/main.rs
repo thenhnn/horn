@@ -2,6 +2,8 @@
 #![no_main]
 extern crate alloc;
 mod boot;
+mod catalog;
+mod namespace;
 use alloc::vec::Vec;
 use horn_ipc::*;
 use horn_supervisor::{
@@ -43,18 +45,25 @@ fn stopped_bit(i: usize) -> u64 {
 }
 struct Job {
     process: Cap<ProcessObjectTag>,
-    authority: Cap<Endpoint>,
+    // Keep the owner capability's derivation anchor for the instance lifetime.
+    _authority: Cap<Endpoint>,
     lifecycle: Lifecycle,
     owner: Option<Cap<Notification>>,
     stop: Option<Cap<Notification>>,
     deadline: u64,
     process_exported: bool,
     cooperative: bool,
+    internal: bool,
+    dependencies: Vec<u64>,
+    publications: usize,
 }
 struct Manager {
     io: Io,
     jobs: Vec<Job>,
     ticks: u64,
+    namespace: namespace::Namespace,
+    launched: [bool; 8],
+    wait_logged: [bool; 8],
 }
 impl Manager {
     fn process(&mut self, i: usize) -> ProcessControlClient<&mut Io> {
@@ -74,6 +83,26 @@ impl Manager {
                 .expect("stop execution, retain VM");
         }
         self.jobs[i].lifecycle.cpu_stopped();
+        self.namespace.remove(&mut self.io, (i + 1) as u64);
+        // Stop bound consumers before the external owner may reclaim hardware.
+        // Namespace discovery alone does not establish a lifetime dependency.
+        for dependent in 0..self.jobs.len() {
+            if self.jobs[dependent]
+                .dependencies
+                .contains(&((i + 1) as u64))
+            {
+                self.stopped(dependent);
+            }
+        }
+        if self.jobs[i].internal {
+            Caller {
+                manager: self,
+                badge: owner_badge(i),
+            }
+            .cleanup_done()
+            .unwrap();
+            return;
+        }
         sel4::debug_println!("SUPERVISOR_CPU_STOPPED job={} cleanup=pending", i);
         if let Some(note) = self.jobs[i].owner {
             self.io
@@ -86,6 +115,7 @@ impl Manager {
     fn update(&mut self, event: u64) {
         for i in 0..self.jobs.len() {
             if event & ready_bit(i) != 0 && self.jobs[i].lifecycle.ready() {
+                self.namespace.tree.ready((i + 1) as u64);
                 sel4::debug_println!("SUPERVISOR_SERVICE_READY job={}", i);
                 if let Some(note) = self.jobs[i].owner {
                     self.io
@@ -232,18 +262,57 @@ impl SupervisorFactory for Caller<'_> {
         let exported = copy(&mut self.manager.io, root(), authority);
         self.manager.jobs.push(Job {
             process,
-            authority,
+            _authority: authority,
             lifecycle: Lifecycle::new(),
             owner: None,
             stop: None,
             deadline: 0,
             process_exported: false,
             cooperative: false,
+            internal: false,
+            dependencies: Vec::new(),
+            publications: 0,
         });
         Ok(Cap::from_ref(exported.as_ref()))
     }
 }
 impl SupervisorJob for Caller<'_> {
+    fn publish(
+        &mut self,
+        path: List<u8, 96>,
+        endpoint: Cap<Endpoint>,
+    ) -> Result<(), SupervisorError> {
+        let i = self.owner()?;
+        if self.manager.jobs[i].lifecycle.state != ServiceStatus::Created
+            || self.manager.jobs[i].publications >= 4
+        {
+            return Err(SupervisorError::Busy);
+        }
+        if endpoint.as_ref().unwrapped_badge().is_some() {
+            return Err(SupervisorError::Denied);
+        }
+        let path = core::str::from_utf8(&path.data[..path.len as usize])
+            .map_err(|_| SupervisorError::Invalid)?;
+        if !catalog::core().publish.iter().any(|prefix| {
+            path.strip_prefix(prefix)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+        }) {
+            return Err(SupervisorError::Denied);
+        }
+        let retained = copy(&mut self.manager.io, root(), endpoint);
+        if self
+            .manager
+            .namespace
+            .tree
+            .declare(path, (i + 1) as u64, retained)
+            .is_err()
+        {
+            self.manager.io.space.delete(retained.as_ref()).unwrap();
+            return Err(SupervisorError::Invalid);
+        }
+        self.manager.jobs[i].publications += 1;
+        Ok(())
+    }
     fn client(&mut self) -> Result<Cap<SupervisedClientTag>, SupervisorError> {
         let i = self.owner()?;
         let cap = mint(
@@ -393,12 +462,16 @@ fn main() -> ! {
         .unwrap();
     io.space.delete(exits.as_ref()).unwrap();
     sel4::debug_println!("SUPERVISOR_START policy=generic cleanup=owner-ack");
-    boot::start(&mut io);
+    let namespace = namespace::Namespace::new(&mut io);
     let mut manager = Manager {
         io,
         jobs: Vec::new(),
         ticks,
+        namespace,
+        launched: [false; 8],
+        wait_logged: [false; 8],
     };
+    boot::start(&mut manager);
     let endpoint = sel4::cap::Endpoint::from_bits(SUPERVISOR_CAPS_SERVICE_SLOT as _);
     let reply = sel4::cap::Reply::from_bits(SUPERVISOR_CAPS_REPLY_SLOT as _);
     let receive = root().absolute_cptr(sel4::CPtr::from_bits(SLOTS.public_receive() as _));
@@ -410,11 +483,38 @@ fn main() -> ! {
             endpoint.recv(reply)
         };
         if badge & CORE_READY != 0 {
+            manager.namespace.tree.ready(0);
             SystemControlClient::new(&mut manager.io, cap(SUPERVISOR_CAPS_SYSTEM_SLOT))
                 .ready()
                 .unwrap();
         }
-        if badge == FACTORY_BADGE
+        if manager.namespace.recognizes(badge) {
+            let request = {
+                let mut server = Sel4Server::new(root(), endpoint, receive, &mut manager.io.space);
+                server.decode_received_dynamic(
+                    info,
+                    badge,
+                    reply,
+                    horn_registry::protocol::registry_node_request_layout,
+                    horn_registry::protocol::RegistryNodeRequest::decode,
+                )
+            };
+            if let Ok((_, request, reply)) = request {
+                let response = horn_registry::protocol::registry_node_dispatch(
+                    request,
+                    &mut namespace::DirectoryCaller {
+                        manager: &mut manager,
+                        badge,
+                    },
+                );
+                horn_registry::protocol::registry_node_reply(
+                    reply,
+                    &mut manager.io.space,
+                    &response,
+                )
+                .unwrap();
+            }
+        } else if badge == FACTORY_BADGE
             || manager
                 .jobs
                 .iter()
@@ -444,6 +544,8 @@ fn main() -> ! {
         }
         receive.delete().unwrap();
         manager.update(badge);
+        manager.activate();
+        manager.namespace.changed(&mut manager.io);
         if manager.polling() {
             sel4::r#yield();
         }

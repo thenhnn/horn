@@ -186,11 +186,9 @@ name = "horn-devmgr-task"
 version = "0.1.0"
 dependencies = [
  "acpi",
- "horn-console",
  "horn-devmgr",
  "horn-ipc",
  "horn-runtime",
- "horn-shell",
  "horn-supervisor",
  "sel4",
 ]
@@ -234,6 +232,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "horn-registry"
+version = "0.1.0"
+dependencies = [
+ "horn-ipc",
+]
+
+[[package]]
 name = "horn-runtime"
 version = "0.1.0"
 dependencies = [
@@ -255,6 +260,7 @@ dependencies = [
  "horn-devmgr",
  "horn-ipc",
  "horn-procd",
+ "horn-registry",
  "horn-runtime",
  "sel4",
 ]
@@ -271,9 +277,8 @@ dependencies = [
 name = "horn-supervisor-task"
 version = "0.1.0"
 dependencies = [
- "horn-devmgr",
  "horn-ipc",
- "horn-procd",
+ "horn-registry",
  "horn-runtime",
  "horn-supervisor",
  "horn-vm",

@@ -51,7 +51,10 @@ struct Dma {
     iova: u64,
     pages: usize,
 }
-pub struct Faults {pub requesters:[u64;4],pub overflow:bool}
+pub struct Faults {
+    pub requesters: [u64; 4],
+    pub overflow: bool,
+}
 pub struct Service {
     inventory: Inventory,
     regions: Vec<EcamRegion>,
@@ -73,14 +76,26 @@ fn failure(error: vtd::Error) -> DeviceError {
     }
 }
 impl Service {
+    pub fn devices(&self) -> impl Iterator<Item = &PciDevice> {
+        self.inventory.devices()
+    }
     /// Trusted in-process driver policy owns this grant; wire IDs alone never
     /// authorize close. Keep the private badge only after a successful claim.
-    pub fn claim_driver(&mut self,id:u64)->Result<(Cap<DeviceObjectTag>,u64),DeviceError>{
-        let grant=DeviceAssignment::claim(&mut Caller{service:self,badge:horn_devmgr::ASSIGNMENT_BADGE},id)?;
-        Ok((grant,self.devices.last().unwrap().badge))
+    pub fn claim_driver(&mut self, id: u64) -> Result<(Cap<DeviceObjectTag>, u64), DeviceError> {
+        let grant = DeviceAssignment::claim(
+            &mut Caller {
+                service: self,
+                badge: horn_devmgr::ASSIGNMENT_BADGE,
+            },
+            id,
+        )?;
+        Ok((grant, self.devices.last().unwrap().badge))
     }
-    pub fn revoke_driver(&mut self,badge:u64)->Result<(),DeviceError>{
-        DeviceControl::close(&mut Caller{service:self,badge})
+    pub fn revoke_driver(&mut self, badge: u64) -> Result<(), DeviceError> {
+        DeviceControl::close(&mut Caller {
+            service: self,
+            badge,
+        })
     }
     pub fn new(inventory: Inventory, regions: Vec<EcamRegion>, io: Io) -> Self {
         Self {
@@ -128,15 +143,20 @@ impl Service {
         sel4::debug_println!("VTD_FAULT_IRQ armed=true");
         Some(irq.token)
     }
-    pub fn handle_fault_irq(&mut self, token: u64)->Faults {
-        let mut faults=Faults{requesters:[0;4],overflow:false};
+    pub fn handle_fault_irq(&mut self, token: u64) -> Faults {
+        let mut faults = Faults {
+            requesters: [0; 4],
+            overflow: false,
+        };
         let unit = self.unit();
         unit.mask_fault_interrupt(true).expect("mask fault event");
         loop {
             let report = unit.poll_fault().expect("VT-d fault records");
             faults.overflow |= report.overflow;
             if let Some(fault) = report.fault {
-                if fault.source<256 {faults.requesters[fault.source as usize/64]|=1u64<<(fault.source%64);}
+                if fault.source < 256 {
+                    faults.requesters[fault.source as usize / 64] |= 1u64 << (fault.source % 64);
+                }
                 sel4::debug_println!(
                     "VTD_FAULT source={:04x} address={:x} reason={:x} read={} overflow={}",
                     fault.source,
@@ -581,30 +601,75 @@ impl DeviceControl for Caller<'_> {
     }
     fn interrupt_to(&mut self, notification: Cap<Notification>) -> Result<(), DeviceError> {
         let d = self.service.device(self.badge)?;
-        if self.service.devices[d].irq.is_some() || notification.as_ref().unwrapped_badge().is_some() { return Err(DeviceError::Denied); }
+        if self.service.devices[d].irq.is_some()
+            || notification.as_ref().unwrapped_badge().is_some()
+        {
+            return Err(DeviceError::Denied);
+        }
         let root = sel4::cap::CNode::from_bits(DEVICE_CAPS_SELF_SLOT as _);
-        let slot = self.service.io().space().reserve_slot().expect("IRQ notification retention");
-        root.absolute_cptr(*slot.path()).copy(
-            &root.absolute_cptr(sel4::CPtr::from_bits(notification.as_ref().slot as _)), sel4::CapRights::all()).expect("notification copy");
-        let notification = self.service.io().space().register(sel4::cap::Notification::from_bits(slot.path().bits())).unwrap();
+        let slot = self
+            .service
+            .io()
+            .space()
+            .reserve_slot()
+            .expect("IRQ notification retention");
+        root.absolute_cptr(*slot.path())
+            .copy(
+                &root.absolute_cptr(sel4::CPtr::from_bits(notification.as_ref().slot as _)),
+                sel4::CapRights::all(),
+            )
+            .expect("notification copy");
+        let notification = self
+            .service
+            .io()
+            .space()
+            .register(sel4::cap::Notification::from_bits(slot.path().bits()))
+            .unwrap();
         let sid = self.service.devices[d].sid;
         let domain = self.service.devices[d].domain;
-        let irq = self.service.io().platform.irq(sid as u32).expect("kernel IRQ");
-        self.service.io().platform.bind_irq(irq.token, &Cap::from_ref(notification)).expect("IRQ bind");
-        let route = self.service.unit().interrupt(domain, irq.vector as u8, 0).expect("interrupt remap");
+        let irq = self
+            .service
+            .io()
+            .platform
+            .irq(sid as u32)
+            .expect("kernel IRQ");
+        self.service
+            .io()
+            .platform
+            .bind_irq(irq.token, &Cap::from_ref(notification))
+            .expect("IRQ bind");
+        let route = self
+            .service
+            .unit()
+            .interrupt(domain, irq.vector as u8, 0)
+            .expect("interrupt remap");
         let device = &self.service.devices[d];
         let table = device.msix.address + device.msix_offset;
         let control = device.config + device.msix_cap as u64 + 2;
         unsafe {
             (table as *mut u32).add(3).write_volatile(1);
             (table as *mut u32).write_volatile(route.address() as u32);
-            (table as *mut u32).add(1).write_volatile((route.address() >> 32) as u32);
+            (table as *mut u32)
+                .add(1)
+                .write_volatile((route.address() >> 32) as u32);
             (table as *mut u32).add(2).write_volatile(route.data());
         }
         self.service.io().write(control, 2, 0x8000);
-        unsafe { (table as *mut u32).add(3).write_volatile(0); }
-        self.service.io().platform.ack_irq(irq.token).expect("IRQ arm");
-        self.service.devices[d].irq = Some(Irq { token: irq.token, route, notification, backing: None, table });
+        unsafe {
+            (table as *mut u32).add(3).write_volatile(0);
+        }
+        self.service
+            .io()
+            .platform
+            .ack_irq(irq.token)
+            .expect("IRQ arm");
+        self.service.devices[d].irq = Some(Irq {
+            token: irq.token,
+            route,
+            notification,
+            backing: None,
+            table,
+        });
         Ok(())
     }
     fn ack(&mut self) -> Result<(), DeviceError> {
@@ -666,8 +731,12 @@ impl DeviceControl for Caller<'_> {
                 .expect("kernel IRQ revoke");
             self.service.retire(irq.notification);
             if let Some((lease, untyped)) = irq.backing {
-                VmUntypedClient::new(&mut self.service.io().platform.transport, Cap::from_ref(lease.as_ref()))
-                    .close().expect("notification backing revoke");
+                VmUntypedClient::new(
+                    &mut self.service.io().platform.transport,
+                    Cap::from_ref(lease.as_ref()),
+                )
+                .close()
+                .expect("notification backing revoke");
                 self.service.io().space().delete(untyped.as_ref()).unwrap();
                 self.service.io().space().delete(lease.as_ref()).unwrap();
             }
@@ -694,9 +763,9 @@ impl DeviceControl for Caller<'_> {
                 self.service.retire(map.authority);
             }
         }
-        let msix=&self.service.devices[d].msix;
-        let (region,memory,token)=(msix.region,msix.memory,msix.token);
-        self.service.io().release_mmio(region,memory,token);
+        let msix = &self.service.devices[d].msix;
+        let (region, memory, token) = (msix.region, msix.memory, msix.token);
+        self.service.io().release_mmio(region, memory, token);
         let authority = self.service.devices[d].authority;
         self.service.devices[d].active = false;
         self.service.retire(authority);

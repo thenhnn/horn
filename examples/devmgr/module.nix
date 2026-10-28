@@ -10,6 +10,22 @@
     pkgs.pkgsBuildBuild.runCommand "${name}-runtime.elf" {
       nativeBuildInputs = [pkgs.pkgsBuildBuild.llvmPackages.llvm];
     } ''llvm-objcopy --strip-debug ${package}/bin/${name}.elf "$out"'';
+  bootstrap = schema:
+    pkgs.pkgsBuildBuild.runCommand "horn-bootstrap.json" {
+      nativeBuildInputs = [pkgs.pkgsBuildBuild.python3];
+      PYTHONPATH = lib.concatStringsSep ":" (map (p: "${p}") [../../tools/idl ../../platform/core/vm/idl ../../platform/core/procd/idl ../../platform/core/devmgr/idl ../../platform/core/console/idl]);
+    } ''python3 -B -m horn_idl ${schema} --capsets "$out"'';
+  driverCatalog = pkgs.pkgsBuildBuild.writeText "horn-drivers.rs" (''      static DRIVERS: &[DriverConfig] = &[
+    ''
+    + lib.concatMapStrings (d: let
+      option = v:
+        if v == null
+        then "None"
+        else "Some(${toString v})";
+    in ''      DriverConfig{name:${builtins.toJSON d.name},ram:${toString d.ram},namespace:${builtins.toJSON d.publish.namespace},badge:${toString d.publish.badge},rights:${toString d.publish.rights},elf:include_bytes!(${builtins.toJSON (toString d.elf)}),rule:horn_devmgr::matching::PciMatch{vendor:${option (d.pci.vendor or null)},device:${option (d.pci.device or null)},class:${toString (d.pci.class or 0)},class_mask:${toString (d.pci.classMask or 0)}}},
+    '')
+    config.devmgr.drivers
+    + "];\n");
   mimalloc = import ../../platform/runtime/mimalloc {pkgs = pkgs.pkgsBuildBuild;};
   protocol = old: {
     HORN_IDL = "${../../tools/idl}";
@@ -37,6 +53,7 @@
       horn-vm = protocol;
       memchr = old: {features = ["alloc"];};
       horn-console = protocol;
+      horn-registry = protocol;
       horn-shell = protocol;
       horn-devmgr-probe = protocol;
       horn-devmgr-task = old:
@@ -59,17 +76,7 @@
             if config.devmgr-demo.withhold-ready
             then "1"
             else "0";
-          DEVMGR_DRIVER_ELF =
-            if config.devmgr-demo.console
-            then "${runtimeElf console "virtio_console"}"
-            else "";
-          DEVMGR_CONSOLE_CLIENT_ELF =
-            if config.devmgr-demo.console
-            then "${runtimeElf childWorkspace.members.horn-shell "shell"}"
-            else "";
-          DEVMGR_DRIVER_DEVICE = "33";
-          DEVMGR_DRIVER_NAME = "virtio-console";
-          DEVMGR_DRIVER_RAM = "33554432";
+          DEVMGR_DRIVER_CATALOG = "${driverCatalog}";
           DEVMGR_PROBE_ELF =
             if config.devmgr-demo.boot-tests
             then "${runtimeElf childWorkspace.members.horn-devmgr-probe "devmgr_probe"}"
@@ -77,7 +84,7 @@
         };
       horn-supervisor-task = old: {
         features = (old.features or []) ++ lib.optional config.devmgr-demo.boot-tests "boot-tests";
-        DEVMGR_ELF = "${runtimeElf childWorkspace.members.horn-devmgr-task "devmgr"}";
+        HORN_SERVICES = "${config.services.catalog}";
         SUPERVISOR_STALL =
           if config.devmgr-demo.stall-bootstrap
           then "1"
@@ -97,7 +104,7 @@
         features = (old.features or []) ++ lib.optional config.devmgr-demo.boot-tests "boot-tests";
         SUPERVISOR_ELF = "${runtimeElf childWorkspace.members.horn-supervisor-task "supervisor"}";
         DEVMGR_TEST_VTD =
-          if config.devmgr-demo.console
+          if config.devmgr.drivers != []
           then "1"
           else "0";
         DEVMGR_TEST_STALL =
@@ -110,6 +117,19 @@
     };
   };
 in {
+  imports = [../../platform/services/module.nix];
+  options.devmgr.drivers = lib.mkOption {
+    type = lib.types.listOf (lib.types.submodule {
+      options = {
+        name = lib.mkOption {type = lib.types.str;};
+        elf = lib.mkOption {type = lib.types.path;};
+        ram = lib.mkOption {type = lib.types.ints.positive;};
+        pci = lib.mkOption {type = lib.types.attrsOf lib.types.int;};
+        publish = lib.mkOption {type = lib.types.attrsOf lib.types.anything;};
+      };
+    });
+    default = [];
+  };
   options.devmgr-demo.boot-tests = lib.mkOption {
     type = lib.types.bool;
     default = false;
@@ -149,6 +169,102 @@ in {
     default = false;
   };
   config = {
+    devmgr.drivers = lib.mkIf config.devmgr-demo.console [
+      {
+        name = "virtio-console";
+        elf = runtimeElf console "virtio_console";
+        ram = 32 * 1024 * 1024;
+        pci = {
+          vendor = 6900;
+          device = 4163;
+        }; # 1af4:1043, modern virtio console
+        publish = {
+          namespace = "/consoles/virtio";
+          badge = 16;
+          rights = 14;
+        };
+      }
+    ];
+    services.definitions = {
+      devmgr = {
+        elf = runtimeElf childWorkspace.members.horn-devmgr-task "devmgr";
+        bootstrap = bootstrap ../../platform/core/devmgr/idl/horn_device.py;
+        capset = "DeviceCaps";
+        activation = "boot";
+        ram = 64 * 1024 * 1024;
+        grants = {
+          platform = {
+            source = "Platform";
+            rights = 15;
+          };
+          supervisor = {
+            source = "SupervisorFactory";
+            rights = 15;
+          };
+        };
+        publish = ["/consoles"];
+        objects = {
+          service = {
+            kind = "Endpoint";
+            bindings.service.rights = 15;
+          };
+          events = {
+            kind = "Notification";
+            bindNotification = true;
+            bindings = {
+              fault = {
+                badge = "0x8000000000000000";
+                rights = 2;
+              };
+              events = {
+                badge = 4611686018427387904;
+                rights = 2;
+              };
+            };
+          };
+        };
+        exports = [
+          {
+            object = "service";
+            path = "/services/devmgr";
+            badge = 1;
+            rights = 10;
+          }
+        ];
+      };
+      horn-shell = lib.mkIf config.devmgr-demo.console {
+        elf = runtimeElf childWorkspace.members.horn-shell "shell";
+        bootstrap = bootstrap ../../platform/apps/shell/idl/horn_shell.py;
+        capset = "ShellCaps";
+        ram = 8 * 1024 * 1024;
+        requires = {
+          console = {
+            path = "/consoles";
+            select = "first";
+          };
+          pci = {path = "/services/devmgr";};
+          processes = {path = "/services/procd";};
+        };
+        namespaces.consoles = {
+          path = "/consoles";
+          minReady = 1;
+        };
+        namespaces.registry = {
+          path = "/";
+          minReady = 0;
+        };
+        objects.events = {
+          kind = "Notification";
+          bindings = {
+            events.rights = 1;
+            signal = {
+              badge = 1;
+              rights = 2;
+            };
+          };
+        };
+      };
+    };
     sel4.settings.KernelRootCNodeSizeBits = lib.mkForce 16;
     root-task.package = lib.mkForce rootWorkspace.members.devmgr-demo-root;
   };

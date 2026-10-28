@@ -7,6 +7,7 @@ use horn_ipc::List;
 use protocol::*;
 
 pub mod firmware;
+pub mod matching;
 pub mod pci;
 pub mod vtd;
 
@@ -44,6 +45,9 @@ impl Inventory {
     }
 }
 impl Inventory {
+    pub fn devices(&self) -> impl Iterator<Item = &PciDevice> {
+        self.devices.iter().map(|info| &info.device)
+    }
     /// Trusted owner calls only after translation AND interrupt remapping are active.
     pub fn iommu_enabled(&mut self) {
         self.iommu = IommuState::Enabled;

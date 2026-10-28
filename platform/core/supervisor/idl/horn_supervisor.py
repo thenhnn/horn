@@ -2,11 +2,13 @@
 
 from horn_idl import (
     BOOL,
+    U8,
     U32,
     U64,
     Borrow,
     Cap,
     Copy,
+    List,
     Move,
     Result,
     capset,
@@ -92,6 +94,11 @@ class SupervisorFactory:
 
 @iface("net.nhnn.horn.supervisor.job", version=(1, 0))
 class SupervisorJob:
+    @method
+    def publish(
+        self, path: List[U8, 96], endpoint: Cap[sel4.Endpoint, Borrow]
+    ) -> Result[None, SupervisorError]: ...
+
     @method
     def client(self) -> Result[Cap[SupervisedClient, Move], SupervisorError]: ...
 

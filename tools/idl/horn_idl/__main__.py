@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from .compile import compile_path
@@ -14,9 +15,30 @@ def main() -> None:
     parser.add_argument("--rust", type=Path)
     parser.add_argument("--header", type=Path)
     parser.add_argument("--c", type=Path)
+    parser.add_argument(
+        "--capsets", type=Path, help="Export named bootstrap slots as JSON"
+    )
     args = parser.parse_args()
 
     schema = compile_path(args.schema)
+    if args.capsets:
+        args.capsets.parent.mkdir(parents=True, exist_ok=True)
+        args.capsets.write_text(
+            json.dumps(
+                {
+                    capset.python_name: {
+                        "slots": dict(capset.type.slots),
+                        "types": {
+                            field.name: field.type.target_name()
+                            for field in capset.type.fields
+                        },
+                        "capacity": capset.type.capacity,
+                    }
+                    for capset in schema.capsets
+                },
+                sort_keys=True,
+            )
+        )
     if args.rust:
         args.rust.parent.mkdir(parents=True, exist_ok=True)
         args.rust.write_text(emit_rust(schema))

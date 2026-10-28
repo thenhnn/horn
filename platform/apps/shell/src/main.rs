@@ -26,7 +26,7 @@ struct Shell {
 impl Shell {
     fn wait(&mut self, events: c::ConsoleEvents) {
         let mut client =
-            c::ConsoleInterfaceClient::new(&mut self.io, cap(a::SHELL_CAPS_SERVICE_SLOT));
+            c::ConsoleInterfaceClient::new(&mut self.io, cap(a::SHELL_CAPS_CONSOLE_SLOT));
         let status = client.status().expect("console status");
         assert_eq!(
             status.events.0 & c::ConsoleEvents::CLOSED.0,
@@ -64,7 +64,7 @@ impl Shell {
             let mut bytes = List::default();
             bytes.len = count as _;
             bytes.data[..count].copy_from_slice(&self.output[offset..self.output_len]);
-            match c::ConsoleInterfaceClient::new(&mut self.io, cap(a::SHELL_CAPS_SERVICE_SLOT))
+            match c::ConsoleInterfaceClient::new(&mut self.io, cap(a::SHELL_CAPS_CONSOLE_SLOT))
                 .write(bytes)
             {
                 Ok(n) => {
@@ -84,7 +84,7 @@ impl Shell {
         // not recursively flush the same pending buffer.
         self.flush();
         loop {
-            match c::ConsoleInterfaceClient::new(&mut self.io, cap(a::SHELL_CAPS_SERVICE_SLOT))
+            match c::ConsoleInterfaceClient::new(&mut self.io, cap(a::SHELL_CAPS_CONSOLE_SLOT))
                 .read(256)
             {
                 Ok(bytes) => return bytes,
@@ -99,10 +99,50 @@ impl Shell {
         let command = core::str::from_utf8(line).unwrap().trim();
         match command {
             ""=>{},
-            "help"=>self.bytes(b"help  show commands\r\npci   list PCIe devices\r\nps    list supervised processes\r\n"),
+            "help"=>self.bytes(b"help  show commands\r\npci   list PCIe devices\r\nps    list supervised processes\r\nregistry  list published endpoints\r\nconsoles  list consoles\r\n"),
             "pci"=>self.pci(),
             "ps"=>self.processes(),
+            "registry"=>self.namespace(a::SHELL_CAPS_REGISTRY_SLOT,"/"),
+            "consoles"=>self.namespace(a::SHELL_CAPS_CONSOLES_SLOT,"/consoles/"),
             _=>self.bytes(b"unknown command; try help\r\n"),
+        }
+    }
+    fn namespace(&mut self, slot: u32, prefix: &str) {
+        let mut cursor = 0;
+        loop {
+            let page = match horn_registry::protocol::RegistryDirectoryClient::new(
+                &mut self.io,
+                cap(slot),
+            )
+            .list(cursor, true)
+            {
+                Ok(page) => page,
+                Err(error) => {
+                    writeln!(self, "Registry: {:?}\r", error).unwrap();
+                    return;
+                }
+            };
+            for entry in &page.entries.data[..page.entries.len as usize] {
+                let name =
+                    core::str::from_utf8(&entry.name.data[..entry.name.len as usize]).unwrap();
+                write!(
+                    self,
+                    "{}{} {}\r\n",
+                    prefix,
+                    name,
+                    if entry.available {
+                        "ready"
+                    } else {
+                        "unavailable"
+                    }
+                )
+                .unwrap();
+            }
+            if page.next == 0 {
+                break;
+            }
+            assert!(page.next > cursor);
+            cursor = page.next;
         }
     }
     fn pci(&mut self) {
