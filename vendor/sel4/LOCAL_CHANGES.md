@@ -1,4 +1,4 @@
-# Local VM changes
+# Local changes
 
 The upstream revision/tree in `upstream.json` identify the pristine import,
 not this locally modified source tree.
@@ -17,3 +17,40 @@ The debug/release process boot test attempts instruction fetch from a present,
 RW+NX IPC page and checks the resulting instruction-fetch protection fault.
 This covers 4 KiB mappings in QEMU, not huge pages, SMP, or formal verification
 of the modified kernel.
+
+## Foreign syscall trapping (x86-64)
+
+`seL4_TCBFlag_trapSyscalls` is opt-in through the existing TCB SetFlags API.
+It is supported only on x86-64 with SYSCALL entry; other configurations ignore
+the bit and do not report it in the resulting flags. Newly created TCBs remain
+native. Every SYSCALL of a marked thread becomes an UnknownSyscall fault before
+native fastpaths, VM-entry or debug dispatch. The fault's syscall field retains
+the native RDX selector; a Linux dispatcher obtains the Linux number from saved
+RAX. User INT traps are reported as general-protection exceptions, not SYSCALLs.
+There is no mixed ABI and no change to debug syscall access for native threads.
+
+The flag/dispatch concept and INT handling derive from l4h patch `0001` at the
+revision cited above. Unlike l4h patch `0004`, Horn retains SKIM: raw RSP uses
+supervisor-only per-core scratch, consumed and cleared before C/locking, and
+foreign contexts return through IRET. The scratch layout and IRET approach
+derive from the earlier arrfindustries seL4 port's
+`src/arch/x86/64/traps.S`, `src/arch/x86/c_traps.c`, and
+`include/arch/x86/arch/64/mode/model/smp.h` (local checkout inspected at Git HEAD
+`32df7c8f082d322fb0c1f9e2848455c16d3c07a0`; this identifies the checkout, not a
+claim of a pristine tree). No manager, Linux-mode invocation, FPU transport,
+deadline-timer or user-event extension is imported.
+
+SYSCALL entry also clears DF before C, while retaining the user's flags in the
+saved context. RCX/R11 reflect SYSCALL's architectural clobbers. The foreign
+context is marked for IRET before taking the kernel lock, including a possible
+SMP IPI stall. UnknownSyscall replies already bypass the native reply fastpath;
+VM-fault replies also use the existing full-context restore path.
+
+`tests/boot/test_syscall_trap.py` is a dedicated trusted root fixture with shared
+VSpace/CSpace, not an isolation or resource-accounting test. It checks raw
+RSP/arguments/DF and RCX/R11, replies with a changed RAX and resumes repeatedly,
+collisions with every ordinary MCS selector plus debug/unknown selectors, INT
+#GP, and native IPC after clearing the flag. Two application TCBs exercise
+per-CPU scratch. Native debug output and the existing IDL boot fixture remain
+regression coverage. No formal verification, migration, Linux boot or
+same-process Horn runtime threading is claimed.

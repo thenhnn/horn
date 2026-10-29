@@ -17,6 +17,11 @@
 #include <benchmark/benchmark_track.h>
 #include <benchmark/benchmark_utilisation.h>
 
+#ifdef CONFIG_ARCH_X86_64
+/* RESTORE_SYSCALL_RSP in traps.S writes the saved user stack slot. */
+compile_assert(syscallSavedRSPOffset, RSP * sizeof(word_t) == 128)
+#endif
+
 void VISIBLE c_nested_interrupt(int irq)
 {
     /* This is not a real entry point, so we do not grab locks or
@@ -82,6 +87,16 @@ void VISIBLE NORETURN c_handle_interrupt(int irq, int syscall)
          * instruction by subtracting 2 */
         int sys_num;
         NODE_STATE(ksCurThread)->tcbArch.tcbContext.registers[FaultIP] -= 2;
+        if (unlikely(threadTrapsSyscalls(NODE_STATE(ksCurThread)))) {
+            /* INT is not a foreign SYSCALL: emulate a closed IDT gate. */
+#ifdef TRACK_KERNEL_ENTRIES
+            ksKernelEntry.path = Entry_UserLevelFault;
+            ksKernelEntry.word = int_gp_fault;
+#endif
+            handleUserLevelFault(int_gp_fault, ((word_t)irq << 3) | 2);
+            restore_user_context();
+            UNREACHABLE();
+        }
         /* trap number is MSBs of the syscall number and the LSBS of EAX */
         sys_num = (irq << 24) | (syscall & 0x00ffffff);
 #ifdef TRACK_KERNEL_ENTRIES
@@ -157,9 +172,36 @@ void VISIBLE NORETURN c_handle_syscall(word_t cptr, word_t msgInfo, syscall_t sy
         setRegister(NODE_STATE(ksCurThread), FaultIP, getRegister(NODE_STATE(ksCurThread), NextIP) - 2);
     }
 
+#ifdef CONFIG_ARCH_X86_64
+    if (unlikely(threadTrapsSyscalls(NODE_STATE(ksCurThread)))) {
+        /* Do this before an IPI stall can restore the thread while taking
+         * NODE_LOCK_SYS. Foreign code needs IRET, not the libsel4 SYSRET ABI.
+         * RSP was captured by assembly; RCX/R11 are SYSCALL's clobbers.
+         */
+        tcb_t *thread = NODE_STATE(ksCurThread);
+        setRegister(thread, RCX, getRegister(thread, NextIP));
+        setRegister(thread, R11, getRegister(thread, FLAGS));
+        setRegister(thread, Error, 0);
+    }
+#endif
+
     NODE_LOCK_SYS;
 
     c_entry_hook();
+
+    if (unlikely(threadTrapsSyscalls(NODE_STATE(ksCurThread)))) {
+        /* Before native fastpaths, VM entry, selector and debug dispatch.
+         * The fault retains RDX as its selector; Linux reads saved RAX.
+         */
+#ifdef TRACK_KERNEL_ENTRIES
+        ksKernelEntry.path = Entry_UnknownSyscall;
+        ksKernelEntry.word = syscall;
+        ksKernelEntry.is_fastpath = 0;
+#endif
+        handleUnknownSyscall(syscall);
+        restore_user_context();
+        UNREACHABLE();
+    }
 
 #ifdef TRACK_KERNEL_ENTRIES
     benchmark_debug_syscall_start(cptr, msgInfo, syscall);

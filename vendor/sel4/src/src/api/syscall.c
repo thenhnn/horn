@@ -96,6 +96,17 @@ exception_t handleInterruptEntry(void)
 
 exception_t handleUnknownSyscall(word_t w)
 {
+    /* Foreign ABI selectors must never enter native/debug syscall handlers. */
+    if (unlikely(threadTrapsSyscalls(NODE_STATE(ksCurThread)))) {
+        MCS_DO_IF_BUDGET({
+            current_fault = seL4_Fault_UnknownSyscall_new(w);
+            handleFault(NODE_STATE(ksCurThread));
+        })
+        schedule();
+        activateThread();
+        return EXCEPTION_NONE;
+    }
+
 #ifdef CONFIG_PRINTING
     if (w == SysDebugPutChar) {
         kernel_putchar(getRegister(NODE_STATE(ksCurThread), capRegister));

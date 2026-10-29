@@ -63,6 +63,16 @@
 #define LOAD_USER_CONTEXT_OFFSET(x) LOAD_USER_CONTEXT; addq $((x) * 8), %rsp
 #define LOAD_KERNEL_STACK movq %gs:0, %rsp
 #define LOAD_IRQ_STACK(x) movq %gs:8, %x
+#ifdef CONFIG_KERNEL_SKIM_WINDOW
+#define SYSCALL_RSP_SCRATCH nodeSkimScratchOffset + 32
+#else
+#define SYSCALL_RSP_SCRATCH 32
+#endif
+#define SAVE_SYSCALL_RSP movq %rsp, %gs:SYSCALL_RSP_SCRATCH
+#define RESTORE_SYSCALL_RSP \
+    movq %gs:SYSCALL_RSP_SCRATCH, %rax; \
+    movq %rax, 128(%rsp); \
+    movq $0, %gs:SYSCALL_RSP_SCRATCH
 #else
 /* The location in the user context we want is in ksCurThread after the
  * fpu state (CONFIG_XSAVE_SIZE) and then the end of the user context is
@@ -75,6 +85,12 @@
 #define LOAD_USER_CONTEXT LOAD_USER_CONTEXT_OFFSET(0)
 #define LOAD_KERNEL_STACK leaq    kernel_stack_alloc + (1 << CONFIG_KERNEL_STACK_BITS), %rsp
 #define LOAD_IRQ_STACK(x)  leaq    x64KSIRQStack, %x
+/* Unused supervisor-only IRQ-stack word, also mapped in the SKIM window. */
+#define SAVE_SYSCALL_RSP movq %rsp, x64KSIRQStack + 7*8
+#define RESTORE_SYSCALL_RSP \
+    movq x64KSIRQStack + 7*8, %rax; \
+    movq %rax, 128(%rsp); \
+    movq $0, x64KSIRQStack + 7*8
 #endif
 
 #ifdef CONFIG_KERNEL_SKIM_WINDOW
@@ -594,8 +610,14 @@ END_FUNC(kernel_exception)
 # the current RFLAGS (after saving) have been masked
 # with IA32_FMASK.
 BEGIN_FUNC(handle_fastsyscall)
-    LOAD_KERNEL_AS(rsp)
+    /* Save raw RSP without using user RBX or clobbering an argument.
+     * Select trusted GS first; SKIM scratch is accessible before CR3 changes.
+     * IRQs are masked. Consume/clear scratch before any C code or lock.
+     */
+    cld
     MAYBE_SWAPGS
+    SAVE_SYSCALL_RSP
+    LOAD_KERNEL_AS(rsp)
     LOAD_USER_CONTEXT
     pushq   $-1             # set Error -1 to mean entry via syscall
     push    %rcx            # save NextIP
@@ -613,6 +635,7 @@ BEGIN_FUNC(handle_fastsyscall)
     push    %rax
     push    %rsi            # save RSI (msgInfo register)
     push    %rdi            # save RDI (capRegister)
+    RESTORE_SYSCALL_RSP
 
     # switch to kernel stack
     LOAD_KERNEL_STACK

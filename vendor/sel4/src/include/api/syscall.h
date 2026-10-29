@@ -29,6 +29,16 @@
     }
 #endif
 
+/* The flag is supported only by the x86-64 SYSCALL entry path. */
+static inline bool_t PURE threadTrapsSyscalls(tcb_t *thread)
+{
+#if defined(CONFIG_ARCH_X86_64) && defined(CONFIG_SYSCALL)
+    return !!(thread->tcbFlags & seL4_TCBFlag_trapSyscalls);
+#else
+    return false;
+#endif
+}
+
 exception_t handleSyscall(syscall_t syscall);
 exception_t handleInterruptEntry(void);
 exception_t handleUnknownSyscall(word_t w);

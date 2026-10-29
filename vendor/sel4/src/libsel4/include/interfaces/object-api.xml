@@ -840,7 +840,13 @@
             </brief>
             <description>
                 A newly created TCB has all flags cleared.
-                Currently the only flag supported is <texttt text="seL4_TCBFlag_fpuDisabled"/>.
+                Supported flags include <texttt text="seL4_TCBFlag_fpuDisabled"/> and,
+                on x86-64 with SYSCALL entry, <texttt text="seL4_TCBFlag_trapSyscalls"/>.
+                The latter delivers every SYSCALL as an unknown-syscall fault,
+                regardless of RDX, including native and debug selectors. The saved
+                context preserves raw RSP and Linux arguments; the fault's syscall
+                field is RDX, while a Linux syscall number is in saved RAX.
+                INT traps of such a thread raise a user general-protection fault.
                 The flags are cleared and set in the given order, i.e. when a flag is both cleared and set, it will be set.
                 Unknown flags are ignored. Use zero for both clear and set to retrieve the current flags value.
             </description>

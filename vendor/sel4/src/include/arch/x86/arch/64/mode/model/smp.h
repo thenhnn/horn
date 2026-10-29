@@ -25,17 +25,18 @@ typedef struct nodeInfo {
      */
     word_t currentThreadUserContext;
     cpu_id_t index;
-    PAD_TO_NEXT_CACHE_LN(sizeof(void *) + sizeof(void *) + sizeof(word_t) + sizeof(cpu_id_t));
+    /* Raw SYSCALL entry scratch; SKIM uses the same offset in nodeSkimScratch. */
+    word_t syscallUserRSP;
+    PAD_TO_NEXT_CACHE_LN(sizeof(void *) + sizeof(void *) + 2 * sizeof(word_t) + sizeof(cpu_id_t));
 } nodeInfo_t;
+compile_assert(nodeInfoSyscallRSPOffset, OFFSETOF(nodeInfo_t, syscallUserRSP) == 32)
 compile_assert(nodeInfoIsCacheSized, (sizeof(nodeInfo_t) % L1_CACHE_LINE_SIZE) == 0)
 
 extern nodeInfo_t node_info[CONFIG_MAX_NUM_NODES] ALIGN(L1_CACHE_LINE_SIZE);
 
 #ifdef CONFIG_KERNEL_SKIM_WINDOW
-/* we only need 1 word of scratch space, which we know we will at least get by the size
- 8 of the nodeInfo_t struct so we define this array as char to ensure it is sized correctly.
- We need each element of the array to be precisely the same size as each element of node_info
- so that the offset between the element of each array is a constant */
+/* IRET uses word 0; SYSCALL entry uses syscallUserRSP's offset. Match
+ * node_info's stride to select the same CPU before and after switching CR3. */
 extern char nodeSkimScratch[CONFIG_MAX_NUM_NODES][sizeof(nodeInfo_t)] ALIGN(L1_CACHE_LINE_SIZE) VISIBLE SKIM_BSS;
 compile_assert(nodeInfoAndScratchSameSize, sizeof(node_info) == sizeof(nodeSkimScratch))
 /* this will be declared in the linker script as the offset between node_info and

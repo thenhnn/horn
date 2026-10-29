@@ -73,9 +73,14 @@ typedef enum {
 typedef enum {
     seL4_TCBFlag_NoFlag = 0x0,
     seL4_TCBFlag_fpuDisabled = 0x1,
+    /* x86-64 SYSCALL: deliver every call as an UnknownSyscall fault. */
+    seL4_TCBFlag_trapSyscalls = 0x2,
 
     SEL4_FORCE_LONG_ENUM(seL4_TCBFlag),
     seL4_TCBFlag_MASK = seL4_TCBFlag_NoFlag
+#if defined(CONFIG_ARCH_X86_64) && defined(CONFIG_SYSCALL)
+                        | seL4_TCBFlag_trapSyscalls
+#endif
 #ifdef CONFIG_HAVE_FPU
                         | seL4_TCBFlag_fpuDisabled
 #endif
