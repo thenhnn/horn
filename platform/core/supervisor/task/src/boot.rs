@@ -14,6 +14,25 @@ pub fn start(manager: &mut Manager) {
         .unwrap();
     horn_supervisor::client::close_image(io, image);
     manager.objects(process, definition, 0);
+    // Boot may receive empty discovery scopes, never wait on a later service.
+    for grant in definition.namespaces {
+        assert_eq!(grant.min_ready, 0, "boot namespace cannot wait for READY");
+        let node = manager
+            .namespace
+            .tree
+            .resolve(0, grant.path.strip_prefix('/').unwrap())
+            .unwrap();
+        let directory = manager.namespace.create(&mut manager.io, node, 0).unwrap();
+        BOOT.install(
+            &mut manager.io,
+            process,
+            grant.slot,
+            directory,
+            None,
+            Rights(Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0),
+        );
+        manager.io.space.delete(directory.as_ref()).unwrap();
+    }
     let io = &mut manager.io;
     let ready = mint(
         io,

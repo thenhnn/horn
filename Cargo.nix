@@ -1150,6 +1150,10 @@ rec {
             features = [ "sel4" ];
           }
           {
+            name = "horn-registry";
+            packageId = "horn-registry";
+          }
+          {
             name = "horn-runtime";
             packageId = "horn-runtime";
           }

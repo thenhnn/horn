@@ -94,12 +94,23 @@ impl Io {
         })
     }
     /// Release a quiesced, no-longer-used internal MMIO mapping and its lease.
-    pub fn release_mmio(&mut self,region:Cap<VmRegionObjectTag>,memory:Cap<VmMemoryObjectTag>,token:u64){
-        VmRegionClient::new(&mut self.platform.transport,Cap::from_ref(region.as_ref())).destroy().expect("internal MMIO CPU unmap");
+    pub fn release_mmio(
+        &mut self,
+        region: Cap<VmRegionObjectTag>,
+        memory: Cap<VmMemoryObjectTag>,
+        token: u64,
+    ) {
+        VmRegionClient::new(&mut self.platform.transport, Cap::from_ref(region.as_ref()))
+            .destroy()
+            .expect("internal MMIO CPU unmap");
         self.space().delete(region.as_ref()).unwrap();
-        VmMemoryClient::new(&mut self.platform.transport,Cap::from_ref(memory.as_ref())).close().expect("internal MMIO memory close");
+        VmMemoryClient::new(&mut self.platform.transport, Cap::from_ref(memory.as_ref()))
+            .close()
+            .expect("internal MMIO memory close");
         self.space().delete(memory.as_ref()).unwrap();
-        self.platform.revoke_mmio(token).expect("internal MMIO lease revoke");
+        self.platform
+            .revoke_mmio(token)
+            .expect("internal MMIO lease revoke");
     }
     pub fn mmio(&mut self, base: u64, length: usize) -> vtd::Result<Mapping> {
         let grant = self

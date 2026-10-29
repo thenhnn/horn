@@ -15,6 +15,7 @@ const BOOT: Bootstrap = Bootstrap {
     space: d::DEVICE_CAPS_ADDRESS_SPACE_SLOT,
 };
 struct DriverConfig {
+    clock: bool,
     name: &'static str,
     rule: horn_devmgr::matching::PciMatch,
     ram: u64,
@@ -35,6 +36,7 @@ struct Managed {
 }
 pub struct Drivers {
     records: Vec<Managed>,
+    pending: Vec<(&'static DriverConfig, d::PciDevice)>,
 }
 fn job<'a>(
     service: &'a mut Service,
@@ -49,6 +51,7 @@ impl Drivers {
     pub fn start(service: &mut Service) -> Self {
         let mut this = Self {
             records: Vec::new(),
+            pending: Vec::new(),
         };
         for cfg in DRIVERS {
             cfg.rule.validate().expect("PCI match configuration");
@@ -66,7 +69,11 @@ impl Drivers {
                     );
                     continue;
                 }
-                this.spawn(service, cfg, &device);
+                if cfg.clock {
+                    this.pending.push((cfg, device));
+                } else {
+                    this.spawn(service, cfg, &device, None);
+                }
             } else {
                 sel4::debug_println!("DEVMGR_MATCH device={} driver=none", device.id);
             }
@@ -75,9 +82,46 @@ impl Drivers {
     }
     #[cfg(feature = "boot-tests")]
     pub fn is_empty(&self) -> bool {
-        self.records.is_empty()
+        self.records.is_empty() && self.pending.is_empty()
     }
-    fn spawn(&mut self, service: &mut Service, cfg: &DriverConfig, pci: &d::PciDevice) {
+    /// Arm a generation watch, not a startup spin or a dependency cycle:
+    /// timerd itself needs devmgr's already-running HPET source.
+    pub fn launch_pending(&mut self, service: &mut Service) {
+        if self.pending.is_empty() {
+            return;
+        }
+        use horn_registry::protocol as r;
+        let io = &mut service.io().platform.transport;
+        let directory = target(d::DEVICE_CAPS_CLOCKS_SLOT);
+        let generation = r::RegistryDirectoryClient::new(&mut *io, directory)
+            .list(0, false)
+            .unwrap()
+            .generation;
+        let mut path = List::default();
+        path.len = 9;
+        path.data[..9].copy_from_slice(b"monotonic");
+        let clock = match r::RegistryDirectoryClient::new(&mut *io, directory).lookup(path) {
+            Ok(clock) => clock,
+            Err(CallError::Remote(r::RegistryError::NotFound | r::RegistryError::Unavailable)) => {
+                r::RegistryDirectoryClient::new(&mut *io, directory)
+                    .watch(&target(d::DEVICE_CAPS_EVENTS_SLOT), generation)
+                    .unwrap();
+                return;
+            }
+            Err(error) => panic!("driver clock lookup: {:?}", error),
+        };
+        for (cfg, pci) in core::mem::take(&mut self.pending) {
+            self.spawn(service, cfg, &pci, Some(clock));
+        }
+        service.io().space().delete(clock.as_ref()).unwrap();
+    }
+    fn spawn(
+        &mut self,
+        service: &mut Service,
+        cfg: &DriverConfig,
+        pci: &d::PciDevice,
+        clock: Option<Cap<Endpoint>>,
+    ) {
         let (device, badge) = service
             .claim_driver(pci.id)
             .expect("configured device assignment");
@@ -188,6 +232,32 @@ impl Drivers {
             None,
             Rights::WRITE,
         );
+        if let Some(clock) = clock {
+            BOOT.install(
+                io,
+                process,
+                d::DEVICE_DRIVER_CAPS_CLOCK_SLOT,
+                clock,
+                None,
+                Rights(Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0),
+            );
+            let signal = mint(
+                io,
+                sel4::cap::CNode::from_bits(d::DEVICE_CAPS_SELF_SLOT as _),
+                Cap::<Notification>::from_ref(wake.as_ref()),
+                4,
+                Rights::WRITE,
+            );
+            BOOT.install(
+                io,
+                process,
+                d::DEVICE_DRIVER_CAPS_ALARM_SIGNAL_SLOT,
+                signal,
+                None,
+                Rights::WRITE,
+            );
+            io.space.delete(signal.as_ref()).unwrap();
+        }
         let stop = mint(
             io,
             sel4::cap::CNode::from_bits(d::DEVICE_CAPS_SELF_SLOT as _),

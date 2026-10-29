@@ -42,6 +42,12 @@ fn main() -> ! {
     hal::install(hal::State::new(session));
     #[cfg(feature = "dma-probe")]
     hal::with(|state| {
+        let _now = ClockInterfaceClient::new(
+            state.session.transport(),
+            hal::target(DEVICE_DRIVER_CAPS_CLOCK_SLOT),
+        )
+        .now()
+        .expect("named monotonic clock");
         // Kernel-unwrapped caps for devmgr's endpoint are NOT VM capabilities.
         let wrong_memory = hal::target::<VmMemoryObjectTag>(DEVICE_DRIVER_CAPS_DEVICE_SLOT);
         assert!(matches!(

@@ -32,6 +32,7 @@ in {
     devmgr.drivers = [
       {
         name = "nvidia-probe";
+        clock = true;
         inherit elf;
         ram = 16 * 1024 * 1024;
         # Explicit future GSP budget, not an allocation or a larger virtio default.

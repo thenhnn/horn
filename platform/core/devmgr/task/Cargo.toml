@@ -13,6 +13,7 @@ boot-tests = []
 [dependencies]
 acpi = { version = "=5.2.0", default-features = false }
 horn-devmgr = { path = ".." }
+horn-registry = { path = "../../registry" }
 horn-supervisor = { path = "../../supervisor", features = ["client"] }
 horn-runtime = { path = "../../../runtime/rust/horn-runtime" }
 horn-ipc = { path = "../../../../platform/runtime/rust/horn-ipc", features = ["sel4"] }

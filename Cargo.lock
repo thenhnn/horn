@@ -271,6 +271,7 @@ dependencies = [
  "horn-devmgr",
  "horn-idl-build",
  "horn-ipc",
+ "horn-registry",
  "horn-runtime",
  "horn-supervisor",
  "sel4",

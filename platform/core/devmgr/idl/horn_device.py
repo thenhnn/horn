@@ -23,6 +23,7 @@ from horn_idl import (
 
 # The collector needs imported object dependencies in this module's namespace.
 from horn_vm import *
+from horn_registry import *
 
 
 @enum(base=U32)
@@ -374,6 +375,9 @@ class DeviceDriverCaps:
     reply: Cap[sel4.Reply, Move]
     supervisor: Cap[sel4.Endpoint, Copy]
     service: Cap[sel4.Endpoint, Copy]
+    # Installed only when trusted driver policy requests monotonic time.
+    clock: Cap[ClockHost, Copy]
+    alarm_signal: Cap[sel4.Notification, Copy]
 
 
 @capset(capacity=256)
@@ -390,3 +394,4 @@ class DeviceCaps:
     events: Cap[sel4.Notification, Copy]
     supervisor: Cap[sel4.Endpoint, Copy]
     timer: Cap[sel4.Notification, Copy]
+    clocks: Cap[RegistryNode, Copy]

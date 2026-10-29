@@ -99,6 +99,15 @@ entire BAR up to 64 KiB. The broker's
 private MSI-X map covers just entry zero's page(s). CPU MMIO decoding is enabled
 while bus mastering remains off, so a read-only probe needs no DMA activation.
 
+### Named driver clock
+
+Trusted driver configuration may request `clock = true`. Such drivers are
+launched only after `/clocks/monotonic` becomes available through devmgr's
+scoped `/clocks` directory. A generation watch wakes the existing owner event
+loop; no startup spin or timerd↔devmgr dependency cycle. The child receives named
+clock and alarm-signal capabilities; ordinary drivers receive neither. The
+30-second READY deadline still starts with actual child execution.
+
 ### Quota-bound DMA reservations
 
 The legacy `map()` and each physical pin/map operation stay bounded to sixteen
