@@ -153,6 +153,10 @@ in {
     type = lib.types.bool;
     default = false;
   };
+  options.devmgr-demo.shell = lib.mkOption {
+    type = lib.types.bool;
+    default = config.devmgr-demo.console;
+  };
   options.devmgr-demo.console = lib.mkOption {
     type = lib.types.bool;
     default = false;
@@ -340,7 +344,7 @@ in {
           };
         };
       };
-      horn-shell = lib.mkIf config.devmgr-demo.console {
+      horn-shell = lib.mkIf config.devmgr-demo.shell {
         elf = runtimeElf childWorkspace.members.horn-shell "shell";
         bootstrap = bootstrap "horn_shell";
         capset = "ShellCaps";
@@ -373,7 +377,7 @@ in {
         };
       };
     };
-    sel4.settings.KernelRootCNodeSizeBits = lib.mkForce 16;
+    sel4.settings.KernelRootCNodeSizeBits = lib.mkOverride 900 16;
     root-task.package = lib.mkForce rootWorkspace.members.devmgr-demo-root;
   };
 }

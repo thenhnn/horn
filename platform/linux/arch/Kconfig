@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: GPL-2.0-only
+menu "Horn guest options"
+config HORN
+	def_bool y
+config UML
+	def_bool y
+	select ARCH_HAS_CPU_FINALIZE_INIT
+	select ARCH_WANTS_DYNAMIC_TASK_STRUCT
+	select ARCH_HAS_CACHE_LINE_SIZE
+	select ARCH_HAS_STRNCPY_FROM_USER
+	select ARCH_HAS_STRNLEN_USER
+	select HAVE_ARCH_AUDITSYSCALL
+	select HAVE_UID16
+	select HAVE_PAGE_SIZE_4KB
+	select BUILDTIME_TABLE_SORT
+	select NO_DMA
+	select GENERIC_IRQ_SHOW
+	select GENERIC_CPU_DEVICES
+	select HAVE_ARCH_TRACEHOOK
+	select HAVE_ARCH_SECCOMP
+	select HAVE_ARCH_SECCOMP_FILTER
+	select HAVE_SYSCALL_TRACEPOINTS
+	select THREAD_INFO_IN_TASK
+	select SPARSE_IRQ
+config MMU
+	def_bool y
+config NO_IOMEM
+	def_bool y
+config ISA
+	bool
+config SBUS
+	bool
+config LOCKDEP_SUPPORT
+	def_bool y
+config STACKTRACE_SUPPORT
+	def_bool y
+	select STACKTRACE
+config GENERIC_CALIBRATE_DELAY
+	def_bool y
+config HZ
+	int
+	default 100
+config NR_CPUS
+	int
+	default 1
+config KERNEL_STACK_ORDER
+	int
+	default 2
+config PGTABLE_LEVELS
+	int
+	default 4
+config 64BIT
+ def_bool y
+config X86_64
+ def_bool y
+ select MODULES_USE_ELF_RELA
+config UML_X86
+ def_bool y
+ select DCACHE_WORD_ACCESS
+ select HAVE_EFFICIENT_UNALIGNED_ACCESS
+config GENERIC_HWEIGHT
+ def_bool y
+source "arch/x86/Kconfig.cpu"
+config HORN_CONSOLE
+	def_bool y
+	select HVC_DRIVER
+	select TTY
+endmenu

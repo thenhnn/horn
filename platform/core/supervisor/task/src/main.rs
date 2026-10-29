@@ -163,6 +163,11 @@ impl Manager {
                 ServiceStatus::Starting | ServiceStatus::Stopping
             ) && now().wrapping_sub(self.jobs[i].deadline) < (1 << 63)
             {
+                sel4::debug_println!(
+                    "SUPERVISOR_TIMEOUT job={} state={:?}",
+                    i,
+                    self.jobs[i].lifecycle.state
+                );
                 self.stopped(i);
             }
         }
@@ -482,6 +487,15 @@ fn main() -> ! {
         } else {
             endpoint.recv(reply)
         };
+        if let Some((i, _)) = manager
+            .jobs
+            .iter()
+            .enumerate()
+            .find(|(i, _)| badge == fault_badge(*i))
+        {
+            let fault = sel4::with_ipc_buffer(|ipc| sel4::Fault::new(ipc, &info));
+            sel4::debug_println!("SUPERVISOR_FAULT job={} fault={:?}", i, fault);
+        }
         if badge & CORE_READY != 0 {
             manager.namespace.tree.ready(0);
             SystemControlClient::new(&mut manager.io, cap(SUPERVISOR_CAPS_SYSTEM_SLOT))

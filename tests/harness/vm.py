@@ -106,6 +106,7 @@ class VM:
         root_task,
         *,
         cpus=1,
+        accel="tcg",
         memory=128,
         devices=(),
         extra_args=(),
@@ -114,6 +115,7 @@ class VM:
         self.kernel = Path(kernel)
         self.root_task = Path(root_task)
         self.cpus = cpus
+        self.accel = accel
         self.memory = memory
         self.devices = list(devices)
         self.extra_args = list(extra_args)
@@ -135,11 +137,11 @@ class VM:
         command = [
             "qemu-system-x86_64",
             "-machine",
-            "q35",
+            "q35,kernel-irqchip=split" if self.accel == "kvm" else "q35",
             "-accel",
-            "tcg",
+            self.accel,
             "-cpu",
-            "max",
+            "host" if self.accel == "kvm" else "max",
             "-global",
             "hpet.msi=on",
             "-m",

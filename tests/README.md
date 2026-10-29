@@ -6,6 +6,16 @@ run inside `nix-shell`:
 pytest -q
 ```
 
+Linux bring-up smoke (requires `/dev/kvm`; skipped when unavailable):
+
+```sh
+pytest -q tests/boot/test_linux.py
+```
+
+The VM run has a 15-second deadline, independent of image build time and the
+service's 30-second READY deadline. It checks PID 1, clock/sleep and two further
+seconds without faults. TCG has not passed this bounded Linux boot test.
+
 Focused network smoke (single-CPU and two-CPU TCG boots, not a profile matrix):
 
 ```sh

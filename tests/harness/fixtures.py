@@ -16,7 +16,14 @@ def system(request):
     machines = []
 
     def build(
-        *, profile="pc-dev", modules=(), cpus=1, memory=512, devices=(), extra_args=()
+        *,
+        profile="pc-dev",
+        modules=(),
+        cpus=1,
+        accel="tcg",
+        memory=512,
+        devices=(),
+        extra_args=(),
     ):
         artifacts = ROOT / "work" / "pytest"
         artifacts.mkdir(parents=True, exist_ok=True)
@@ -59,6 +66,7 @@ def system(request):
             kernel,
             root_task,
             cpus=cpus,
+            accel=accel,
             memory=memory,
             devices=devices,
             extra_args=extra_args,

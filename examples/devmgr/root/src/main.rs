@@ -81,6 +81,10 @@ fn serve(
         sel4::r#yield();
         return;
     }
+    if platform.manager.execution_fault(&info, badge).expect("hosted execution fault") {
+        server.recv_slot.delete().unwrap();
+        return;
+    }
     if badge == FAULT_BADGE {
         fatal(reset, "supervisor stopped or faulted");
     }

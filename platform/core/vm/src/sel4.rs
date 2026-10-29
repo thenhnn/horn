@@ -5,7 +5,7 @@ use ::sel4::{
     Cap, CapTypeForObjectOfFixedSize, CapTypeForObjectOfVariableSize, ObjectBlueprint, Word, cap,
     cap_type,
 };
-use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
+use alloc::{collections::{BTreeMap, BTreeSet}, rc::Rc, vec::Vec};
 use core::{alloc::Layout, cell::RefCell, ops::Range};
 use sel4_abstract_allocator::{ByRange, basic::BasicAllocator};
 
@@ -22,6 +22,8 @@ struct Allocator {
     first_slot: usize,
     slots: ByRange<BasicAllocator>,
     nodes: Vec<Node>,
+    // Best fit by order, then node index, without scanning resident Used nodes.
+    free_nodes: BTreeSet<(usize, usize)>,
     objects: BTreeMap<usize, Lease>,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -69,7 +71,7 @@ impl Allocator {
         self.slots
             .allocate(Layout::new::<u8>())
             .map(|range| self.first_slot + range.start)
-            .map_err(|_| Error::Exhausted)
+            .map_err(|_| { ::sel4::debug_println!("ALLOC_SLOTS_EXHAUSTED first={} nodes={}",self.first_slot,self.nodes.len()); Error::Exhausted })
     }
     fn clear_slot(&self, slot: usize) -> Result<(), Error> {
         self.root
@@ -90,14 +92,9 @@ impl Allocator {
             .map_err(|_| Error::Backend)
     }
     fn acquire(&mut self, bits: usize) -> Result<usize, Error> {
-        let mut node = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, n)| n.state == State::Free && n.bits >= bits)
-            .min_by_key(|(_, n)| n.bits)
-            .map(|(i, _)| i)
-            .ok_or(Error::Exhausted)?;
+        let &(order, mut node) = self.free_nodes.range((bits, 0)..).next().ok_or_else(|| { ::sel4::debug_println!("ALLOC_RAM_EXHAUSTED nodes={} free={}",self.nodes.len(),self.free_nodes.len()); Error::Exhausted })?;
+        self.free_nodes.remove(&(order, node));
+        debug_assert!(self.nodes[node].state == State::Free);
         while self.nodes[node].bits > bits {
             let child_bits = self.nodes[node].bits - 1;
             let first = match self.reserve_slot() {
@@ -126,7 +123,8 @@ impl Allocator {
                     1,
                 )
             });
-            if result.is_err() {
+            if let Err(e) = result {
+                ::sel4::debug_println!("ALLOC_SPLIT_FAIL node={} bits={} error={:?}",node,self.nodes[node].bits,e);
                 if self.revoke(node).is_err() {
                     self.nodes[node].state = State::Quarantined;
                     return Err(Error::Backend);
@@ -156,6 +154,7 @@ impl Allocator {
             }
             self.nodes[node].children = Some(children);
             self.nodes[node].state = State::Split;
+            self.free_nodes.insert((child_bits, children[1]));
             node = children[0];
         }
         self.nodes[node].state = State::Used;
@@ -170,6 +169,9 @@ impl Allocator {
             if !children.iter().all(|&i| self.nodes[i].state == State::Free) {
                 break;
             }
+            // Neither child may remain selectable if parent revoke or cleanup
+            // fails and the subtree becomes quarantined.
+            for child in children { self.free_nodes.remove(&(self.nodes[child].bits, child)); }
             // Coalescing revokes the two child Untypeds before recycling their slots.
             if self.revoke(parent).is_err() {
                 // A failed revoke gives no assurance that child caps survived.
@@ -188,6 +190,7 @@ impl Allocator {
             self.nodes[parent].state = State::Free;
             node = parent;
         }
+        self.free_nodes.insert((self.nodes[node].bits, node));
         Ok(())
     }
 }
@@ -213,6 +216,7 @@ impl KernelAllocator {
                     state: State::Free,
                     owner: None
                 }],
+                free_nodes: BTreeSet::from([(size_bits, 0)]),
                 objects: BTreeMap::new(),
             })),
         }
@@ -222,7 +226,10 @@ impl KernelAllocator {
         self.account
             .set_limit(self.account.usage().limit + (1usize << bits))
             .expect("RAM capacity");
-        self.inner.borrow_mut().nodes.push(Node {
+        let mut inner = self.inner.borrow_mut();
+        let node = inner.nodes.len();
+        inner.free_nodes.insert((bits, node));
+        inner.nodes.push(Node {
             cap,
             bits,
             parent: None,

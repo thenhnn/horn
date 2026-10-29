@@ -1,5 +1,11 @@
 {
   "pins": {
+    "linux": {
+      "type": "Url",
+      "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.tar.xz",
+      "hash": "1iwhm85ys6vxwx6nn5nx6m3bwjl5pw7wxm1nyzj2a6nck7vy0nqp",
+      "unpack": true
+    },
     "nixpkgs": {
       "type": "Channel",
       "name": "nixos-unstable",

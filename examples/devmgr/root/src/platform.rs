@@ -25,6 +25,8 @@ pub struct Platform {
     poisoned: bool,
     #[cfg(feature = "boot-tests")]
     evictions: usize,
+    #[cfg(feature = "boot-tests")]
+    discovery_slots: usize,
     scratch: usize,
     rsdp: List<u8, 36>,
     pub ready: bool,
@@ -117,6 +119,8 @@ impl Platform {
             poisoned: false,
             #[cfg(feature = "boot-tests")]
             evictions: 0,
+            #[cfg(feature = "boot-tests")]
+            discovery_slots: TEMP_SLOTS,
             scratch,
             rsdp,
             ready: false,
@@ -223,7 +227,7 @@ impl Platform {
     #[cfg(feature = "boot-tests")]
     fn verify_returned_slots(&self) {
         assert!(self.active.is_none() && !self.poisoned && !self.bank.poisoned());
-        assert_eq!(self.bank.available_slots(), TEMP_SLOTS);
+        assert_eq!(self.bank.available_slots(), self.discovery_slots);
         sel4::debug_println!(
             "DEVMGR_PLATFORM_PASS bounded=true returned=true peak={} evictions={}",
             self.bank.peak_slots(),
@@ -346,6 +350,12 @@ impl DevicePlatform for Platform {
             return Err(DeviceError::Exhausted);
         }
         self.evict()?;
+        #[cfg(feature = "boot-tests")]
+        if !self.enabled {
+            // Discovery scratch mappings must be gone before the permanent
+            // system HPET lease changes the expected free-slot baseline.
+            assert_eq!(self.bank.available_slots(), self.discovery_slots);
+        }
         self.mmios
             .try_reserve(1)
             .map_err(|_| DeviceError::Exhausted)?;
@@ -361,6 +371,10 @@ impl DevicePlatform for Platform {
             )
             .map_err(vm_error)?;
         self.mmios.push((token, lease));
+        #[cfg(feature = "boot-tests")]
+        if !self.enabled {
+            self.discovery_slots = self.bank.available_slots();
+        }
         Ok(MmioGrant {
             token,
             memory: horn_ipc::Cap::from_ref(memory.as_ref()),

@@ -17,6 +17,7 @@ use horn_vm::{
 
 pub mod elf;
 mod loader;
+mod execution;
 mod placement;
 mod service;
 pub use service::LaunchPolicy;
@@ -94,6 +95,13 @@ struct Process {
     lifecycle: Option<(usize, sel4::Word)>,
     exit_signal: Option<usize>,
     fault_endpoint: Option<usize>,
+    lifecycle_source: Option<sel4::cap::Endpoint>,
+    execution: Option<execution::Execution>,
+    execution_poisoned: bool,
+    resident_end: usize,
+    sc: sel4::cap::SchedContext,
+    budget_us: u64,
+    period_us: u64,
 }
 pub struct Info<'a> {
     pub id: ProcessId,
@@ -263,9 +271,12 @@ impl Manager {
                 image.ipc_address as sel4::Word,
                 loaded.ipc,
             )?;
-            Ok::<_, Error>((loaded, cnode, tcb))
+            sel4::sel4_cfg_if! {
+                if #[sel4_cfg(DEBUG_BUILD)] { tcb.debug_name(config.name.as_bytes()); }
+            }
+            Ok::<_, Error>((loaded, cnode, tcb, sc))
         })();
-        let (loaded, cnode, tcb) = match result {
+        let (loaded, cnode, tcb, sc) = match result {
             Ok(value) => value,
             Err(error) => {
                 allocator.destroy_account().map_err(|_| Error::Cleanup)?;
@@ -290,6 +301,13 @@ impl Manager {
             lifecycle: None,
             exit_signal: None,
             fault_endpoint: None,
+            lifecycle_source: None,
+            execution: None,
+            execution_poisoned: false,
+            resident_end: image.ipc_address + PAGE_SIZE,
+            sc,
+            budget_us: config.cpu_budget_us,
+            period_us: config.cpu_period_us,
         });
         Ok(id)
     }
@@ -466,6 +484,7 @@ impl Manager {
             return Err(error.into());
         }
         p.lifecycle = Some((slot, badge));
+        p.lifecycle_source = Some(endpoint);
         Ok(sel4::Cap::from_bits(slot as _))
     }
     pub fn dispatch(
@@ -501,6 +520,9 @@ impl Manager {
         let p = self.process_mut(id)?;
         if !matches!(p.state, State::Created | State::Active | State::Stopping) {
             return Err(Error::InvalidState);
+        }
+        if let Some(execution) = &mut p.execution {
+            execution.stop_user()?;
         }
         // Raw bootstrap TCB copies must not permit a concurrent resume.
         p.allocator.root().absolute_cptr(p.tcb.cptr()).revoke()?;
@@ -550,6 +572,10 @@ impl Manager {
             }
         }
         p.vm = None;
+        if let Some(execution) = &mut p.execution {
+            if execution.cleanup().is_err() { p.state = State::Quarantined; return Err(Error::Cleanup); }
+        }
+        p.execution = None;
         for slot in [p.exit_signal.take(), p.fault_endpoint.take()]
             .into_iter()
             .flatten()

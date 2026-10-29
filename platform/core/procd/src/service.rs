@@ -26,7 +26,7 @@ pub(crate) struct Grant {
     policy: LaunchPolicy,
     events: Option<usize>,
 }
-fn error(e: Error) -> ProcessError {
+pub(crate) fn error(e: Error) -> ProcessError {
     match e {
         Error::InvalidElf => ProcessError::InvalidElf,
         Error::InvalidAbi => ProcessError::InvalidAbi,

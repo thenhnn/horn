@@ -2,8 +2,29 @@
 
 The chosen direction is a clean `ARCH=horn` paravirtualized Linux port.
 The previous `ARCH=sel4` port and l4h are references, not host implementations
-to import wholesale. This directory records the direction; it does not yet
-contain a Linux port or builder.
+to import wholesale. The in-progress port builds Linux 6.18 reproducibly with
+its own architecture directory and native Horn transport (not UML os-Linux).
+
+**Current milestone: embedded /init runs as PID 1.** The integer-only static
+init exercises trapped getpid/write/clock_gettime/nanosleep and reports successful
+monotonic time and sleep. Linux uses one logical CPU and 32 MiB admitted RAM.
+This is bring-up code, not a validated execution-resource or isolation
+implementation. Resource rollback, stop/fault races and negative isolation tests
+still need an independent audit.
+
+Linux retains the standard 30-second READY deadline. Diagnostic QEMU runs
+are limited separately to 15 seconds. The current console is output-only;
+user fork/FPU context switching and Linux SMP are not implemented. The ABI is x86-64 only, without IA32/x32.
+
+Build the experimental image with:
+```sh
+nix-build nix -A sel4.out -A root-task.package --argstr profile pc-dev \
+  --arg modules '[ ./platform/linux/module.nix ]' --no-out-link
+```
+
+Validation: `pytest -q tests/boot/test_linux.py` uses KVM (skips if unavailable)
+and checks PID 1 plus clock/sleep, then observes two more seconds without faults.
+TCG has not completed this milestone within the 15-second diagnostic bound.
 
 Linux applications use the Linux syscall ABI. Their seL4 TCBs opt into
 `seL4_TCBFlag_trapSyscalls`: every SYSCALL goes to the Linux fault handler,

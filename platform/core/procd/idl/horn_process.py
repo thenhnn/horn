@@ -58,6 +58,85 @@ class ProcessPlacement:
     cpu_count: U32
 
 
+@record
+class ExecutionRegisters:
+    ip: U64
+    sp: U64
+    flags: U64
+    ax: U64
+    bx: U64
+    cx: U64
+    dx: U64
+    si: U64
+    di: U64
+    bp: U64
+    r8: U64
+    r9: U64
+    r10: U64
+    r11: U64
+    r12: U64
+    r13: U64
+    r14: U64
+    r15: U64
+    fs: U64
+    gs: U64
+
+
+@enum(base=U32)
+class ExecutionReason:
+    Interrupted = 0
+    Syscall = 1
+    PageFault = 2
+    Exception = 3
+    Budget = 4
+
+
+@record
+class ExecutionExit:
+    reason: ExecutionReason
+    address: U64
+    code: U64
+    registers: ExecutionRegisters
+
+
+@iface("net.nhnn.horn.process.execution", version=(1, 0))
+class ProcessExecution:
+    # Fixed one-vCPU hosted execution domain; all backing is charged to self.
+    @method
+    def execution_configure(
+        self, base: U64, bytes: U64, wake: Cap[sel4.Notification, Borrow]
+    ) -> Result[None, ProcessError]: ...
+
+    @method
+    def execution_space(self) -> Result[U32, ProcessError]: ...
+
+    # Admit at most 64 pages per call; return the admitted end PFN.
+    @method
+    def execution_admit(self) -> Result[U32, ProcessError]: ...
+
+    @method
+    def execution_destroy(self, space: U32) -> Result[None, ProcessError]: ...
+
+    @method
+    def execution_map(
+        self, space: U32, address: U64, pfn: U64, rights: U32
+    ) -> Result[None, ProcessError]: ...
+
+    @method
+    def execution_unmap(
+        self, space: U32, address: U64, bytes: U64
+    ) -> Result[None, ProcessError]: ...
+
+    @method
+    def execution_start(
+        self, space: U32, registers: ExecutionRegisters
+    ) -> Result[None, ProcessError]: ...
+
+    # Stops the user TCB before returning; a previously captured fault wins.
+    @method
+    def execution_stop(self) -> Result[ExecutionExit, ProcessError]: ...
+
+
 @iface("net.nhnn.horn.process.lifecycle", version=(1, 0))
 class ProcessLifecycle:
     # Read-only topology/initial placement, never scheduling authority.
@@ -72,7 +151,7 @@ class ProcessLifecycle:
     def exit(self, status: U32) -> Result[None, ProcessError]: ...
 
 
-@object(implements=(ProcessLifecycle,))
+@object(implements=(ProcessLifecycle, ProcessExecution))
 class ProcessSelf:
     pass
 
@@ -221,7 +300,7 @@ class ProcessObserver:
     def list(self, after: U64) -> Result[ProcessPage, ProcessError]: ...
 
 
-@object(implements=(ProcessLifecycle, ProcessFactory, ProcessObserver, ProcessControl))
+@object(implements=(ProcessLifecycle, ProcessFactory, ProcessObserver, ProcessControl, ProcessExecution))
 class ProcessHost:
     pass
 
