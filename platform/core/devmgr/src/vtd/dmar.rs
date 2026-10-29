@@ -107,8 +107,13 @@ impl Dmar {
                         requesters[sid / 64] |= 1 << (sid % 64);
                     }
                     // Interrupt sources do not grant any DMA authority.
-                    4 if scope[4]==0 && scope[5]==0 => {
-                        if hpet_sid.replace(scope[6] as u16*8+scope[7] as u16).is_some(){return Err(DeviceError::Unsupported);}
+                    4 if scope[4] == 0 && scope[5] == 0 => {
+                        if hpet_sid
+                            .replace(scope[6] as u16 * 8 + scope[7] as u16)
+                            .is_some()
+                        {
+                            return Err(DeviceError::Unsupported);
+                        }
                     }
                     3 | 4 => {}
                     _ => return Err(DeviceError::Unsupported),

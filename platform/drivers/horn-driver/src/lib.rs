@@ -5,7 +5,7 @@
 //! pins stay retained; shutdown/reassignment policy belongs to devmgr/the driver.
 #![no_std]
 extern crate alloc;
-#[cfg(feature="virtio")]
+#[cfg(feature = "virtio")]
 pub mod virtio;
 
 use alloc::vec::Vec;
@@ -15,6 +15,7 @@ use horn_ipc::*;
 
 const PAGE: usize = 4096;
 const MAX_PAGES: usize = 16;
+const MAX_DMA_PAGES: usize = 16384;
 
 /// Permissions from the DEVICE's perspective, not CPU mapping protection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,7 +80,9 @@ impl DeviceSession {
         }
     }
     /// Caller-owned application IPC transport for additional scoped protocols.
-    pub fn transport(&mut self) -> &mut Sel4Transport<Sel4CapSpace> { &mut self.transport }
+    pub fn transport(&mut self) -> &mut Sel4Transport<Sel4CapSpace> {
+        &mut self.transport
+    }
     /// Scoped control only; never assignment, writable ECAM or RAM paddr access.
     pub fn control(&mut self) -> DeviceControlClient<&mut Sel4Transport<Sel4CapSpace>> {
         DeviceControlClient::new(&mut self.transport, Cap::from_ref(self.device.as_ref()))
@@ -151,6 +154,24 @@ impl DeviceSession {
             self.bars.push(Bar { physical, cpu });
         }
     }
+    /// Explicit bounded BAR window; never maps a giant ReBAR aperture wholesale.
+    pub fn bar_window(&mut self, index: u32, offset: u64, length: usize) -> NonNull<u8> {
+        assert!(length > 0 && length <= 65536 && length % PAGE == 0 && offset % PAGE as u64 == 0);
+        self.bars.try_reserve(1).expect("BAR window metadata");
+        let space = self.space;
+        let memory = self
+            .control()
+            .bar_window(index, offset, length as _, &space)
+            .expect("BAR window grant");
+        let cpu = self.map_cpu(memory, length);
+        let pointer = NonNull::new(cpu.address as *mut u8).expect("BAR window address");
+        // Window-only clients use the returned pointer, never physical lookup.
+        self.bars.push(Bar {
+            physical: u64::MAX,
+            cpu,
+        });
+        pointer
+    }
     /// Resolve only within CPU-mapped BAR grants. The numeric bus address is
     /// a selector, not authority to map arbitrary physical memory.
     pub fn mmio(&self, physical: u64, length: usize) -> NonNull<u8> {
@@ -177,9 +198,15 @@ impl DeviceSession {
             .expect("IRQ notification")
     }
     /// Use a caller-owned notification; signal and receive rights may be split.
-    pub fn interrupt_on(&mut self, signal: &Cap<Notification>, receive: Cap<Notification>) -> sel4::cap::Notification {
+    pub fn interrupt_on(
+        &mut self,
+        signal: &Cap<Notification>,
+        receive: Cap<Notification>,
+    ) -> sel4::cap::Notification {
         assert!(self.irq.is_none());
-        self.control().interrupt_to(signal).expect("remapped IRQ binding");
+        self.control()
+            .interrupt_to(signal)
+            .expect("remapped IRQ binding");
         self.irq = Some(receive);
         self.interrupt()
     }
@@ -206,20 +233,58 @@ impl DeviceSession {
         source: Option<(usize, usize, DeviceAccess)>,
     ) -> (u64, NonNull<u8>) {
         let length = allocation_length(pages);
+        let limits = self.control().dma_limits().expect("DMA limits");
+        assert!(
+            length as u64 <= limits.bytes,
+            "DMA allocation exceeds assignment budget"
+        );
         self.buffers.try_reserve(1).expect("DMA metadata");
         let memory = VmFactoryClient::new(&mut self.transport, self.factory)
             .allocate(length as _, VmBacking::Resident, VmProtection(3))
             .expect("resident DMA backing");
         let cpu = self.map_cpu(memory, length);
-        let dma = self
-            .control()
-            .map(
-                &Cap::from_ref(cpu.memory.as_ref()),
-                0,
-                length as _,
-                access as u32,
-            )
-            .expect("DMA map");
+        let dma = if pages <= MAX_PAGES {
+            self.control()
+                .map(
+                    &Cap::from_ref(cpu.memory.as_ref()),
+                    0,
+                    length as _,
+                    access as u32,
+                )
+                .expect("DMA map")
+        } else {
+            let dma = self
+                .control()
+                .reserve_dma(length as _, access as u32)
+                .expect("DMA reservation");
+            let result = (|| {
+                let mut offset = 0;
+                while offset < length {
+                    let chunk = (length - offset).min(MAX_PAGES * PAGE);
+                    let populated = DeviceMappingClient::new(
+                        &mut self.transport,
+                        Cap::from_ref(dma.mapping.as_ref()),
+                    )
+                    .append(
+                        &Cap::from_ref(cpu.memory.as_ref()),
+                        offset as _,
+                        chunk as _,
+                    )?;
+                    assert_eq!(populated, (offset + chunk) as u64);
+                    offset += chunk;
+                }
+                DeviceMappingClient::new(&mut self.transport, Cap::from_ref(dma.mapping.as_ref()))
+                    .finish()
+            })();
+            if result.is_err() {
+                DeviceMappingClient::new(&mut self.transport, Cap::from_ref(dma.mapping.as_ref()))
+                    .close()
+                    .expect("partial DMA rollback/drain");
+                self.transport.space.delete(dma.mapping.as_ref()).unwrap();
+                panic!("DMA population: {:?}", result);
+            }
+            dma
+        };
         let pointer = NonNull::new(cpu.address as *mut u8).expect("DMA CPU address");
         self.buffers.push(Buffer {
             cpu,
@@ -319,8 +384,8 @@ impl DeviceSession {
 }
 fn allocation_length(pages: usize) -> usize {
     assert!(
-        pages != 0 && pages <= MAX_PAGES,
-        "DMA allocation exceeds bounded pin range"
+        pages != 0 && pages <= MAX_DMA_PAGES,
+        "DMA allocation exceeds bounded mapping range"
     );
     pages * PAGE
 }

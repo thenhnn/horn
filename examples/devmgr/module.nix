@@ -19,7 +19,7 @@
         if v == null
         then "None"
         else "Some(${toString v})";
-    in ''      DriverConfig{name:${builtins.toJSON d.name},ram:${toString d.ram},namespace:${builtins.toJSON d.publish.namespace},badge:${toString d.publish.badge},rights:${toString d.publish.rights},elf:include_bytes!(${builtins.toJSON (toString d.elf)}),rule:horn_devmgr::matching::PciMatch{vendor:${option (d.pci.vendor or null)},device:${option (d.pci.device or null)},class:${toString (d.pci.class or 0)},class_mask:${toString (d.pci.classMask or 0)}}},
+    in ''      DriverConfig{name:${builtins.toJSON d.name},ram:${toString d.ram},dma:horn_devmgr::dma::DmaPolicy{bytes:${toString d.dmaBytes},objects:${toString d.dmaObjects}},namespace:${builtins.toJSON d.publish.namespace},badge:${toString d.publish.badge},rights:${toString d.publish.rights},elf:include_bytes!(${builtins.toJSON (toString d.elf)}),rule:horn_devmgr::matching::PciMatch{vendor:${option (d.pci.vendor or null)},device:${option (d.pci.device or null)},class:${toString (d.pci.class or 0)},class_mask:${toString (d.pci.classMask or 0)}}},
     '')
     config.devmgr.drivers
     + "];\n");
@@ -102,6 +102,14 @@ in {
         name = lib.mkOption {type = lib.types.str;};
         elf = lib.mkOption {type = lib.types.path;};
         ram = lib.mkOption {type = lib.types.ints.positive;};
+        dmaBytes = lib.mkOption {
+          type = lib.types.ints.between 4096 (64 * 1024 * 1024);
+          default = 12 * 65536;
+        };
+        dmaObjects = lib.mkOption {
+          type = lib.types.ints.between 1 64;
+          default = 12;
+        };
         pci = lib.mkOption {type = lib.types.attrsOf lib.types.int;};
         publish = lib.mkOption {type = lib.types.attrsOf lib.types.anything;};
       };

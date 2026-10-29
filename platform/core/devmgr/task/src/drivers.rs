@@ -18,6 +18,7 @@ struct DriverConfig {
     name: &'static str,
     rule: horn_devmgr::matching::PciMatch,
     ram: u64,
+    dma: horn_devmgr::dma::DmaPolicy,
     elf: &'static [u8],
     namespace: &'static str,
     badge: u64,
@@ -51,6 +52,7 @@ impl Drivers {
         };
         for cfg in DRIVERS {
             cfg.rule.validate().expect("PCI match configuration");
+            cfg.dma.validate().expect("DMA policy");
         }
         let devices: Vec<_> = service.devices().cloned().collect();
         for device in devices {
@@ -79,6 +81,9 @@ impl Drivers {
         let (device, badge) = service
             .claim_driver(pci.id)
             .expect("configured device assignment");
+        service
+            .driver_dma_policy(badge, cfg.dma)
+            .expect("trusted driver DMA policy");
         let io = &mut service.io().platform.transport;
         let image = BOOT.upload(io, cfg.elf);
         let mut request = s::ProcessLaunch::default();

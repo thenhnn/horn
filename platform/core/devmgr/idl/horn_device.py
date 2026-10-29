@@ -157,6 +157,13 @@ class PciResources:
     bar_lengths: List[U64, 6]
 
 
+@record
+class DeviceDmaLimits:
+    bytes: U64
+    objects: U32
+    chunk_bytes: U32
+
+
 @iface("net.nhnn.horn.device.control", version=(1, 0))
 class DeviceControl:
     @method
@@ -168,8 +175,27 @@ class DeviceControl:
     ) -> Result[Cap[VmMemoryObject, Move], DeviceError]: ...
 
     @method
+    def bar_window(
+        self,
+        index: U32,
+        offset: U64,
+        length: U64,
+        space: Cap[VmAddressSpaceObject, Borrow],
+    ) -> Result[Cap[VmMemoryObject, Move], DeviceError]: ...
+
+    @method
     def map(
         self, memory: Cap[VmMemoryObject, Borrow], offset: U64, length: U64, access: U32
+    ) -> Result[DeviceDma, DeviceError]: ...
+
+    @method
+    def dma_limits(self) -> Result[DeviceDmaLimits, DeviceError]: ...
+
+    # Reserve a contiguous IOVA window. Charge its whole size immediately.
+    # It is not usable until ordered append calls and finish have succeeded.
+    @method
+    def reserve_dma(
+        self, length: U64, access: U32
     ) -> Result[DeviceDma, DeviceError]: ...
 
     @method
@@ -192,6 +218,17 @@ class DeviceControl:
 
 @iface("net.nhnn.horn.device.mapping", version=(1, 0))
 class DeviceMapping:
+    # Fixed ordered chunks: min(chunk_bytes, remaining). On append failure the
+    # caller must close to roll back all earlier chunks. Never free pinned RAM
+    # on uncertain close/drain. Device teardown also retires pending windows.
+    @method
+    def append(
+        self, memory: Cap[VmMemoryObject, Borrow], offset: U64, length: U64
+    ) -> Result[U64, DeviceError]: ...
+
+    @method
+    def finish(self) -> Result[None, DeviceError]: ...
+
     @method
     def close(self) -> Result[None, DeviceError]: ...
 

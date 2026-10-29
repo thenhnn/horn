@@ -6,12 +6,26 @@ use crate::native::{Io, Mapping, target};
 use alloc::vec::Vec;
 use horn_devmgr::{
     Inventory,
+    dma::DmaPolicy,
     firmware::EcamRegion,
+    interrupt::{self, Config as _},
     protocol::*,
     vtd::{self, Domain, Interrupt, Vtd},
 };
 use horn_ipc::*;
 
+struct PciConfig<'a> {
+    io: &'a mut Io,
+    base: u64,
+}
+impl interrupt::Config for PciConfig<'_> {
+    fn read32(&mut self, o: u16) -> u32 {
+        self.io.config(self.base + o as u64)
+    }
+    fn write(&mut self, o: u16, w: u32, v: u32) {
+        self.io.write(self.base + o as u64, w, v as u64);
+    }
+}
 enum Hardware {
     ReadOnly(Io),
     Remapping(Vtd<Io>),
@@ -26,7 +40,6 @@ struct Irq {
     route: Interrupt,
     notification: CapRef,
     backing: Option<(Cap<VmUntypedObjectTag>, Cap<Untyped>)>,
-    table: usize,
 }
 struct Device {
     badge: u64,
@@ -35,9 +48,11 @@ struct Device {
     config: u64,
     domain: Domain,
     bars: Vec<Bar>,
-    msix: Mapping,
+    capabilities: interrupt::Capabilities,
+    msix: Option<Mapping>,
     msix_offset: usize,
-    msix_cap: u16,
+    dma_policy: DmaPolicy,
+    dma_bytes: u64,
     irq: Option<Irq>,
     mmios: Vec<u64>,
     next_iova: u64,
@@ -47,6 +62,14 @@ struct Dma {
     badge: u64,
     authority: CapRef,
     device: usize,
+    iova: u64,
+    length: u64,
+    access: u32,
+    reservation: Option<vtd::ReservedDma>,
+    committed: bool,
+    pins: Vec<Pin>,
+}
+struct Pin {
     token: u64,
     iova: u64,
     pages: usize,
@@ -91,6 +114,15 @@ impl Service {
             id,
         )?;
         Ok((grant, self.devices.last().unwrap().badge))
+    }
+    pub fn driver_dma_policy(&mut self, badge: u64, policy: DmaPolicy) -> Result<(), DeviceError> {
+        policy.validate()?;
+        let d = self.device(badge)?;
+        if self.devices[d].dma_bytes != 0 {
+            return Err(DeviceError::Busy);
+        }
+        self.devices[d].dma_policy = policy;
+        Ok(())
     }
     pub fn revoke_driver(&mut self, badge: u64) -> Result<(), DeviceError> {
         DeviceControl::close(&mut Caller {
@@ -273,17 +305,192 @@ impl Service {
             .position(|d| d.badge == badge && d.active)
             .ok_or(DeviceError::Denied)
     }
+    fn program_irq(&mut self, d: usize, route: Interrupt, token: u64) {
+        let device = &self.devices[d];
+        let config = device.config;
+        let caps = device.capabilities;
+        if let Some(map) = &device.msix {
+            let table = map.address + device.msix_offset;
+            unsafe {
+                (table as *mut u32).add(3).write_volatile(1);
+                (table as *mut u32).write_volatile(route.address() as u32);
+                (table as *mut u32)
+                    .add(1)
+                    .write_volatile((route.address() >> 32) as u32);
+                (table as *mut u32).add(2).write_volatile(route.data());
+            }
+            self.io()
+                .platform
+                .ack_irq(token)
+                .expect("IRQ arm before device enable");
+            let x = caps.msix.unwrap();
+            let mut cfg = PciConfig {
+                io: self.io(),
+                base: config,
+            };
+            let control = cfg.read32(x.offset) >> 16;
+            cfg.write(x.offset + 2, 2, (control | 0x8000) & !0x4000);
+            let _ = cfg.read32(x.offset);
+            unsafe {
+                (table as *mut u32).add(3).write_volatile(0);
+            }
+        } else {
+            let m = caps.msi.expect("message interrupt capability");
+            m.prepare(
+                &mut PciConfig {
+                    io: self.io(),
+                    base: config,
+                },
+                route.address(),
+                route.data(),
+            )
+            .expect("MSI format");
+            self.io()
+                .platform
+                .ack_irq(token)
+                .expect("IRQ arm before MSI enable");
+            m.enable(&mut PciConfig {
+                io: self.io(),
+                base: config,
+            });
+        }
+    }
     fn close_map(&mut self, index: usize) {
         let map = self.maps[index].take().unwrap();
         let domain = self.devices[map.device].domain;
-        self.unit()
-            .unmap(domain, map.iova, map.pages)
-            .expect("DMA invalidate/drain");
-        self.io()
-            .platform
-            .unpin(map.token)
-            .expect("DMA unpin after drain");
+        for pin in map.pins {
+            self.unit()
+                .unmap(domain, pin.iova, pin.pages)
+                .expect("DMA invalidate/drain");
+            self.io()
+                .platform
+                .unpin(pin.token)
+                .expect("DMA unpin after drain");
+        }
+        self.devices[map.device].dma_bytes -= map.length;
         self.retire(map.authority);
+    }
+    fn reserve_dma(
+        &mut self,
+        badge: u64,
+        length: u64,
+        access: u32,
+    ) -> Result<DeviceDma, DeviceError> {
+        let d = self.device(badge)?;
+        if access == 0 || access & !3 != 0 {
+            return Err(DeviceError::Invalid);
+        }
+        let objects = self.maps.iter().flatten().filter(|m| m.device == d).count();
+        let device = &self.devices[d];
+        device.dma_policy.admit(device.dma_bytes, objects, length)?;
+        let iova = device.next_iova;
+        let next = iova
+            .checked_add(length)
+            .filter(|end| *end <= 0x8000_0000)
+            .ok_or(DeviceError::Exhausted)?;
+        let domain = device.domain;
+        let mut pins = Vec::new();
+        pins.try_reserve_exact(length.div_ceil(65536) as usize)
+            .map_err(|_| DeviceError::Exhausted)?;
+        let index = if let Some(n) = self.maps.iter().position(Option::is_none) {
+            n
+        } else {
+            self.maps
+                .try_reserve(1)
+                .map_err(|_| DeviceError::Exhausted)?;
+            self.maps.push(None);
+            self.maps.len() - 1
+        };
+        let (id, authority, exported) = self.mint()?;
+        let reservation = match self.unit().reserve(domain, iova, (length / 4096) as usize) {
+            Ok(r) => r,
+            Err(e) => {
+                self.retire(authority);
+                self.io().space().delete(exported).unwrap();
+                return Err(failure(e));
+            }
+        };
+        self.devices[d].next_iova = next;
+        self.devices[d].dma_bytes += length;
+        self.maps[index] = Some(Dma {
+            badge: id,
+            authority,
+            device: d,
+            iova,
+            length,
+            access,
+            reservation: Some(reservation),
+            committed: false,
+            pins,
+        });
+        Ok(DeviceDma {
+            mapping: Cap::from_ref(exported),
+            iova,
+        })
+    }
+    fn append_dma(
+        &mut self,
+        badge: u64,
+        memory: Cap<VmMemoryObjectTag>,
+        offset: u64,
+        length: u64,
+    ) -> Result<u64, DeviceError> {
+        if memory.as_ref().unwrapped_badge().is_some() {
+            return Err(DeviceError::Denied);
+        }
+        let index = self
+            .maps
+            .iter()
+            .position(|m| m.as_ref().is_some_and(|m| m.badge == badge))
+            .ok_or(DeviceError::Denied)?;
+        let map = self.maps[index].as_ref().unwrap();
+        let r = map.reservation.as_ref().ok_or(DeviceError::Invalid)?;
+        if map.committed {
+            return Err(DeviceError::Busy);
+        }
+        let populated = r.populated() as u64 * 4096;
+        if length != (map.length - populated).min(65536)
+            || length == 0
+            || offset & 4095 != 0
+            || offset.checked_add(length).is_none()
+            || length > map.length - populated
+        {
+            return Err(DeviceError::Invalid);
+        }
+        let access = map.access;
+        let pin = match self.io().platform.pin(&memory, offset, length, access) {
+            Ok(p) => p,
+            Err(CallError::Remote(e)) => return Err(e),
+            Err(_) => panic!("DMA pin transport"),
+        };
+        assert_eq!(pin.pages.len as u64, length / 4096, "platform pin extent");
+        let mut map = self.maps[index].take().unwrap();
+        let iova = map.iova + populated;
+        let result = self.unit().map_reserved(
+            map.reservation.as_mut().unwrap(),
+            &pin.pages.data[..pin.pages.len as usize],
+            access as u8,
+        );
+        if let Err(e) = result {
+            // Keep all platform pins on uncertain hardware failure. No pin is
+            // released by dropping these numeric-token records.
+            if self.unit().poisoned() {
+                panic!("DMA map poisoned: {:?}", e);
+            }
+            self.io()
+                .platform
+                .unpin(pin.token)
+                .expect("unpublished pin release");
+            self.maps[index] = Some(map);
+            return Err(failure(e));
+        }
+        map.pins.push(Pin {
+            token: pin.token,
+            iova,
+            pages: pin.pages.len as usize,
+        });
+        self.maps[index] = Some(map);
+        Ok(populated + length)
     }
 }
 impl ClockSource for Caller<'_> {
@@ -348,7 +555,13 @@ impl DeviceAssignment for Caller<'_> {
         if d.address.segment != 0
             || d.address.bus != 0
             || d.address.function != 0
-            || d.header_type != 0
+            || d.header_type & 0x7f != 0
+            || self.service.inventory.devices().any(|p| {
+                p.address.segment == 0
+                    && p.address.bus == 0
+                    && p.address.device == d.address.device
+                    && p.address.function != 0
+            })
         {
             return Err(DeviceError::Unsupported);
         }
@@ -365,7 +578,9 @@ impl DeviceAssignment for Caller<'_> {
             .address(sid, 0)?;
         let io = self.service.io();
         let command = io.config(config + 4) as u16;
-        io.write(config + 4, 2, (command & !7) as u64);
+        io.write(config + 4, 2, ((command & !7) | 0x400) as u64);
+        let capabilities = interrupt::Capabilities::discover(&mut PciConfig { io, base: config })?;
+        capabilities.disable(&mut PciConfig { io, base: config });
         let mut bars = Vec::new();
         let mut index = 0;
         while index < 6 {
@@ -399,7 +614,7 @@ impl DeviceAssignment for Caller<'_> {
             let address = ((high as u64) << 32) | (low as u64 & !15);
             if length >= 4096
                 && length.is_power_of_two()
-                && length <= 65536
+                && length <= (1u64 << 47)
                 && address & (length - 1) == 0
                 && address >= 0x100000
                 && address.checked_add(length).is_some()
@@ -413,25 +628,31 @@ impl DeviceAssignment for Caller<'_> {
             index += if wide { 2 } else { 1 };
         }
         io.write(config + 4, 2, ((command & !5) | 2 | 0x400) as u64);
-        let mut cap = io.config(config + 0x34) as u8 & !3;
-        let mut msix = None;
-        for _ in 0..48 {
-            if cap == 0 {
-                break;
-            }
-            let word = io.config(config + cap as u64);
-            if word & 255 == 0x11 {
-                let table = io.config(config + cap as u64 + 4);
-                msix = Some((cap as u16, table & 7, (table & !7) as usize));
-            }
-            cap = ((word >> 8) as u8) & !3;
-        }
-        let (msix_cap, msix_bir, msix_offset) = msix.ok_or(DeviceError::Unsupported)?;
-        let bar = bars
-            .iter()
-            .find(|b| b.index == msix_bir && msix_offset + 16 <= b.length)
-            .ok_or(DeviceError::Invalid)?;
-        let msix = io.mmio(bar.address, bar.length).expect("MSI-X BAR");
+        let (msix, msix_offset) = if let Some(x) = capabilities.msix {
+            let bar = bars
+                .iter()
+                .find(|b| {
+                    b.index == x.bir
+                        && (x.table_offset as usize)
+                            .checked_add(16)
+                            .is_some_and(|end| end <= b.length)
+                })
+                .ok_or(DeviceError::Invalid)?;
+            let physical = bar.address + x.table_offset as u64;
+            let offset = (physical & 4095) as usize;
+            let length = (offset + 16).div_ceil(4096) * 4096;
+            (
+                Some(
+                    io.mmio(physical & !4095, length)
+                        .expect("MSI-X table window"),
+                ),
+                offset,
+            )
+        } else if capabilities.msi.is_some() {
+            (None, 0)
+        } else {
+            return Err(DeviceError::Unsupported);
+        };
         let domain = self.service.unit().attach(sid).map_err(failure)?;
         let (badge, authority, exported) = self.service.mint()?;
         self.service.devices.push(Device {
@@ -441,9 +662,11 @@ impl DeviceAssignment for Caller<'_> {
             config,
             domain,
             bars,
+            capabilities,
             msix,
             msix_offset,
-            msix_cap,
+            dma_policy: DmaPolicy::DEFAULT,
+            dma_bytes: 0,
             irq: None,
             mmios: Vec::new(),
             next_iova: 0x10000,
@@ -485,6 +708,22 @@ impl DeviceControl for Caller<'_> {
         space: Cap<VmAddressSpaceObjectTag>,
     ) -> Result<Cap<VmMemoryObjectTag>, DeviceError> {
         let d = self.service.device(self.badge)?;
+        let length = self.service.devices[d]
+            .bars
+            .iter()
+            .find(|b| b.index == index)
+            .ok_or(DeviceError::NotFound)?
+            .length;
+        self.bar_window(index, 0, length as u64, space)
+    }
+    fn bar_window(
+        &mut self,
+        index: u32,
+        offset: u64,
+        length: u64,
+        space: Cap<VmAddressSpaceObjectTag>,
+    ) -> Result<Cap<VmMemoryObjectTag>, DeviceError> {
+        let d = self.service.device(self.badge)?;
         if space.as_ref().unwrapped_badge().is_some() {
             return Err(DeviceError::Denied);
         }
@@ -493,15 +732,32 @@ impl DeviceControl for Caller<'_> {
             .iter()
             .find(|b| b.index == index)
             .ok_or(DeviceError::NotFound)?;
-        let (address, length) = (bar.address, bar.length);
+        if length == 0
+            || length > 65536
+            || offset & 4095 != 0
+            || length & 4095 != 0
+            || offset
+                .checked_add(length)
+                .is_none_or(|end| end > bar.length as u64)
+        {
+            return Err(DeviceError::Invalid);
+        }
+        let address = bar
+            .address
+            .checked_add(offset)
+            .ok_or(DeviceError::Invalid)?;
         if self.service.devices[d].mmios.len() >= 8 {
             return Err(DeviceError::Exhausted);
         }
+        self.service.devices[d]
+            .mmios
+            .try_reserve(1)
+            .map_err(|_| DeviceError::Exhausted)?;
         let grant = self
             .service
             .io()
             .platform
-            .mmio(&space, address, length as u64)
+            .mmio(&space, address, length)
             .map_err(|_| DeviceError::Invalid)?;
         self.service.devices[d].mmios.push(grant.token);
         Ok(grant.memory)
@@ -513,84 +769,65 @@ impl DeviceControl for Caller<'_> {
         length: u64,
         access: u32,
     ) -> Result<DeviceDma, DeviceError> {
-        let d = self.service.device(self.badge)?;
+        self.service.device(self.badge)?;
         // A cap unwrapped by OUR endpoint is not VM authority. It cannot be
         // forwarded to the root VM broker; reject it before minting resources
         // instead of turning a caller-supplied wrong object into a fatal RPC.
         if memory.as_ref().unwrapped_badge().is_some() {
             return Err(DeviceError::Denied);
         }
-        // Admit twelve active mappings per assignment; one driver cannot consume
-        // the other endpoint's allowance. Device RAM remains account-limited.
-        if self
+        if length > 65536 {
+            return Err(DeviceError::Invalid);
+        }
+        let grant = self.service.reserve_dma(self.badge, length, access)?;
+        let badge = self
             .service
             .maps
             .iter()
             .flatten()
-            .filter(|map| map.device == d)
-            .count()
-            >= 12
-        {
-            return Err(DeviceError::Exhausted);
-        }
-        let index = if let Some(index) = self.service.maps.iter().position(Option::is_none) {
-            index
-        } else {
-            self.service
-                .maps
-                .try_reserve(1)
-                .map_err(|_| DeviceError::Exhausted)?;
-            self.service.maps.push(None);
-            self.service.maps.len() - 1
-        };
-        let (badge, authority, exported) = self.service.mint()?;
-        let pin = match self
-            .service
-            .io()
-            .platform
-            .pin(&memory, offset, length, access)
-        {
-            Ok(pin) => pin,
-            Err(CallError::Remote(e)) => {
-                self.service.retire(authority);
-                self.service.io().space().delete(exported).unwrap();
-                return Err(e);
+            .find(|m| m.iova == grant.iova && self.service.devices[m.device].badge == self.badge)
+            .unwrap()
+            .badge;
+        match self.service.append_dma(badge, memory, offset, length) {
+            Ok(_) => {
+                let map = self
+                    .service
+                    .maps
+                    .iter_mut()
+                    .flatten()
+                    .find(|m| m.badge == badge)
+                    .unwrap();
+                map.committed = true;
+                Ok(grant)
             }
-            Err(_) => panic!("DMA pin transport"),
-        };
-        let domain = self.service.devices[d].domain;
-        let iova = self.service.devices[d].next_iova;
-        if let Err(error) = self.service.unit().map(
-            domain,
-            iova,
-            &pin.pages.data[..pin.pages.len as usize],
-            access as u8,
-        ) {
-            if self.service.unit().poisoned() {
-                panic!("DMA map poisoned: {:?}", error);
+            Err(e) => {
+                let index = self
+                    .service
+                    .maps
+                    .iter()
+                    .position(|m| m.as_ref().is_some_and(|m| m.badge == badge))
+                    .unwrap();
+                self.service.close_map(index);
+                self.service
+                    .io()
+                    .space()
+                    .delete(grant.mapping.as_ref())
+                    .unwrap();
+                Err(e)
             }
-            self.service
-                .io()
-                .platform
-                .unpin(pin.token)
-                .expect("unpublished pin release");
-            self.service.retire(authority);
-            self.service.io().space().delete(exported).unwrap();
-            return Err(failure(error));
         }
-        self.service.devices[d].next_iova += length;
-        self.service.maps[index] = Some(Dma {
-            badge,
-            authority,
-            device: d,
-            token: pin.token,
-            iova,
-            pages: pin.pages.len as usize,
-        });
-        Ok(DeviceDma {
-            mapping: Cap::from_ref(exported),
-            iova,
+    }
+    fn dma_limits(&mut self) -> Result<DeviceDmaLimits, DeviceError> {
+        let d = self.service.device(self.badge)?;
+        let p = self.service.devices[d].dma_policy;
+        Ok(DeviceDmaLimits {
+            bytes: p.bytes,
+            objects: p.objects as u32,
+            chunk_bytes: 65536,
         })
+    }
+    fn reserve_dma(&mut self, length: u64, access: u32) -> Result<DeviceDma, DeviceError> {
+        self.service.reserve_dma(self.badge, length, access)
     }
     fn interrupt(&mut self) -> Result<Cap<Notification>, DeviceError> {
         let d = self.service.device(self.badge)?;
@@ -634,26 +871,7 @@ impl DeviceControl for Caller<'_> {
             .unit()
             .interrupt(domain, irq.vector as u8, 0)
             .expect("interrupt remap");
-        let device = &self.service.devices[d];
-        let table = device.msix.address + device.msix_offset;
-        let control = device.config + device.msix_cap as u64 + 2;
-        unsafe {
-            (table as *mut u32).add(3).write_volatile(1);
-            (table as *mut u32).write_volatile(route.address() as u32);
-            (table as *mut u32)
-                .add(1)
-                .write_volatile((route.address() >> 32) as u32);
-            (table as *mut u32).add(2).write_volatile(route.data());
-        }
-        self.service.io().write(control, 2, 0x8000); // enable MSI-X, function mask clear
-        unsafe {
-            (table as *mut u32).add(3).write_volatile(0);
-        }
-        self.service
-            .io()
-            .platform
-            .ack_irq(irq.token)
-            .expect("IRQ arm");
+        self.service.program_irq(d, route, irq.token);
         let slot = self
             .service
             .io()
@@ -677,7 +895,6 @@ impl DeviceControl for Caller<'_> {
             route,
             notification,
             backing: Some((lease, untyped)),
-            table,
         });
         Ok(Cap::from_ref(exported))
     }
@@ -725,32 +942,12 @@ impl DeviceControl for Caller<'_> {
             .unit()
             .interrupt(domain, irq.vector as u8, 0)
             .expect("interrupt remap");
-        let device = &self.service.devices[d];
-        let table = device.msix.address + device.msix_offset;
-        let control = device.config + device.msix_cap as u64 + 2;
-        unsafe {
-            (table as *mut u32).add(3).write_volatile(1);
-            (table as *mut u32).write_volatile(route.address() as u32);
-            (table as *mut u32)
-                .add(1)
-                .write_volatile((route.address() >> 32) as u32);
-            (table as *mut u32).add(2).write_volatile(route.data());
-        }
-        self.service.io().write(control, 2, 0x8000);
-        unsafe {
-            (table as *mut u32).add(3).write_volatile(0);
-        }
-        self.service
-            .io()
-            .platform
-            .ack_irq(irq.token)
-            .expect("IRQ arm");
+        self.service.program_irq(d, route, irq.token);
         self.service.devices[d].irq = Some(Irq {
             token: irq.token,
             route,
             notification,
             backing: None,
-            table,
         });
         Ok(())
     }
@@ -770,7 +967,8 @@ impl DeviceControl for Caller<'_> {
     fn activate(&mut self) -> Result<(), DeviceError> {
         let d = self.service.device(self.badge)?;
         let device = &self.service.devices[d];
-        if device.irq.is_none() {
+        if device.irq.is_none()
+            || self.service.maps.iter().flatten().any(|m|m.device==d && !m.committed) {
             return Err(DeviceError::Busy);
         }
         let config = device.config;
@@ -798,10 +996,12 @@ impl DeviceControl for Caller<'_> {
         self.service
             .io()
             .write(config + 4, 2, (command & !4) as u64);
+        let caps = self.service.devices[d].capabilities;
+        caps.disable(&mut PciConfig {
+            io: self.service.io(),
+            base: config,
+        });
         if let Some(irq) = self.service.devices[d].irq.take() {
-            unsafe {
-                ((irq.table + 12) as *mut u32).write_volatile(1);
-            }
             self.service
                 .unit()
                 .remove_interrupt(domain, irq.route)
@@ -837,17 +1037,22 @@ impl DeviceControl for Caller<'_> {
                 .is_some_and(|m| m.device == d)
             {
                 let map = self.service.maps[index].take().unwrap();
-                self.service
-                    .io()
-                    .platform
-                    .unpin(map.token)
-                    .expect("detached DMA unpin");
+                for pin in map.pins {
+                    self.service
+                        .io()
+                        .platform
+                        .unpin(pin.token)
+                        .expect("detached DMA unpin");
+                }
+                self.service.devices[d].dma_bytes -= map.length;
                 self.service.retire(map.authority);
             }
         }
-        let msix = &self.service.devices[d].msix;
-        let (region, memory, token) = (msix.region, msix.memory, msix.token);
-        self.service.io().release_mmio(region, memory, token);
+        if let Some(msix) = self.service.devices[d].msix.take() {
+            self.service
+                .io()
+                .release_mmio(msix.region, msix.memory, msix.token);
+        }
         let authority = self.service.devices[d].authority;
         self.service.devices[d].active = false;
         self.service.retire(authority);
@@ -855,6 +1060,28 @@ impl DeviceControl for Caller<'_> {
     }
 }
 impl DeviceMapping for Caller<'_> {
+    fn append(
+        &mut self,
+        memory: Cap<VmMemoryObjectTag>,
+        offset: u64,
+        length: u64,
+    ) -> Result<u64, DeviceError> {
+        self.service.append_dma(self.badge, memory, offset, length)
+    }
+    fn finish(&mut self) -> Result<(), DeviceError> {
+        let map = self
+            .service
+            .maps
+            .iter_mut()
+            .flatten()
+            .find(|m| m.badge == self.badge)
+            .ok_or(DeviceError::Denied)?;
+        if !map.reservation.as_ref().is_some_and(|r| r.complete()) {
+            return Err(DeviceError::Busy);
+        }
+        map.committed = true;
+        Ok(())
+    }
     fn close(&mut self) -> Result<(), DeviceError> {
         let index = self
             .service

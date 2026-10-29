@@ -402,7 +402,9 @@ impl DevicePlatform for Platform {
         if !self.enabled {
             return Err(DeviceError::Denied);
         }
-        if self.pins.len() >= 128 {
+        // Global hard ceiling; devmgr additionally charges bytes/objects per
+        // assignment. Each retained pin still contains at most sixteen pages.
+        if self.pins.len() >= 4096 {
             return Err(DeviceError::Exhausted);
         }
         self.pins

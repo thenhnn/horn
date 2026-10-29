@@ -71,12 +71,56 @@ specific reset is not needed to promise reuse because **reuse is unsupported**.
 Supporting reassignment will require explicit reset/quiescence policy, not a
 claim that clearing PCI Bus Master Enable alone drains a device.
 
-The current provisioning profile is deliberately narrow: two segment-0,
-single-function root-bus endpoints, page-exclusive assigned memory BARs and
-MSI-X. Bridges/requester aliases, shared-page BARs, device reassignment and MSI
-fallback still need implementation. The intended interrupt policy remains
-MSI-X first, MSI second, never INTx fallback. Do not treat this profile as
-isolation support for arbitrary physical hardware.
+The provisioning profile remains narrow: two segment-0 root-bus function-zero
+endpoints, no enumerated sibling functions, and page-exclusive memory BARs.
+A multifunction header alone is accepted (e.g. VFIO's GPU-only guest function);
+an enumerated audio sibling is not assigned implicitly. Bridges/requester
+aliases, shared-page BARs and reassignment remain unsupported.
+
+Interrupt selection is **MSI-X entry zero first, remapped single MSI second,
+never INTx**. Both mechanisms are disabled before configuration changes; MSI
+uses MME=0, supports 32/64-bit address layouts and optional mask bits, and writes
+the data field as a WORD. The full-SID IRTE and bound, armed kernel IRQ precede
+device interrupt enable. Close disables both mechanisms before removing the
+route. This new MSI path has local layout/encoding evidence and builds, not yet
+GPU interrupt-delivery evidence.
+
+Large BARs are inventoried/sized without mapping them wholesale.
+`bar_window(index, offset, length, space)` grants only a page-aligned window,
+at most 64 KiB; each device retains at most eight exported MMIO leases.
+Legacy `bar()` still only accepts an entire BAR up to 64 KiB. The broker's
+private MSI-X map covers just entry zero's page(s). CPU MMIO decoding is enabled
+while bus mastering remains off, so a read-only probe needs no DMA activation.
+
+### Quota-bound DMA reservations
+
+The legacy `map()` and each physical pin/map operation stay bounded to sixteen
+pages (64 KiB). `reserve_dma(length, access)` allocates a contiguous monotonic
+IOVA window and charges its **entire** length and one object immediately,
+including unpopulated reservations. Its scoped mapping capability supports
+ordered `append(memory, offset, length)` chunks of exactly
+min(64 KiB, remaining), followed by `finish()`. Different reservations can be
+populated interleaved without reusing IOVAs. Finish rejects incomplete windows;
+initial DMA activation rejects pending reservations. Finish is bookkeeping,
+**not atomic hardware publication**: already populated prefixes are mapped.
+Drivers must not submit a new window to hardware before finishing it.
+
+On ordinary partial failure the caller must close the reservation: every
+published chunk is unmapped/drained before its pin is released. The common
+driver allocator performs this rollback before reporting a population failure.
+An uncertain map/drain/unpin is fail-stop and retains backing, never a
+successful cleanup. Device teardown also retires unfinished reservations.
+
+Trusted launch configuration supplies `dmaBytes` and `dmaObjects`; drivers
+cannot raise them through IPC. Defaults preserve virtio's 768 KiB / twelve
+mapping budget. Policy ceilings are 64 MiB / 64 objects per assignment; physical
+pins remain chunked and charged to the VM memory owner. The root platform has a
+separate global hard ceiling of 4096 retained pin records (previously 128), not
+an unbounded pin table. Fixed chunk sizing bounds metadata as well as bytes.
+The VT-d table-page ceiling and no-IOVA-reuse policy are unchanged. Exhaustion
+remains possible; these are not unlimited GPU allocations or tested GSP DMA.
+
+Do not treat this profile as isolation support for arbitrary physical hardware.
 
 ## Firmware and PCIe
 

@@ -70,6 +70,25 @@ pub struct FaultReport {
     pub fault: Option<Fault>,
     pub overflow: bool,
 }
+/// Private, non-copyable authority for one monotonic IOVA reservation.
+/// Only ordered prefixes may be populated; no unmap permits address reuse.
+pub struct ReservedDma {
+    domain: Domain,
+    base: u64,
+    pages: usize,
+    populated: usize,
+}
+impl ReservedDma {
+    pub fn base(&self) -> u64 {
+        self.base
+    }
+    pub fn populated(&self) -> usize {
+        self.populated
+    }
+    pub fn complete(&self) -> bool {
+        self.populated == self.pages
+    }
+}
 impl Interrupt {
     /// Remappable MSI format: interrupt index in address, SHV=0, data=0.
     pub fn address(self) -> u64 {
@@ -412,6 +431,56 @@ impl<H: Hardware> Vtd<H> {
     }
     /// Trusted broker only: physical pages must belong to a retained VM pin.
     /// IOVAs are monotonic and cannot be recycled even after unmap.
+    pub fn reserve(&mut self, domain: Domain, iova: u64, pages: usize) -> Result<ReservedDma> {
+        self.domain(domain)?;
+        if self.poisoned {
+            return Err(Error::Poisoned);
+        }
+        if pages == 0
+            || pages > 16384
+            || iova < 4096
+            || iova & 4095 != 0
+            || iova
+                .checked_add(pages as u64 * 4096)
+                .is_none_or(|end| end > 0x8000_0000)
+        {
+            return Err(Error::Invalid);
+        }
+        let high = &mut self
+            .domains
+            .iter_mut()
+            .find(|(d, _)| d.id == domain.id)
+            .unwrap()
+            .1;
+        if iova < *high {
+            return Err(Error::Invalid);
+        }
+        *high = iova + pages as u64 * 4096;
+        Ok(ReservedDma {
+            domain,
+            base: iova,
+            pages,
+            populated: 0,
+        })
+    }
+    pub fn map_reserved(
+        &mut self,
+        r: &mut ReservedDma,
+        physical: &[u64],
+        access: u8,
+    ) -> Result<()> {
+        if physical.is_empty() || physical.len() > r.pages - r.populated {
+            return Err(Error::Invalid);
+        }
+        self.map_chunk(
+            r.domain,
+            r.base + r.populated as u64 * 4096,
+            physical,
+            access,
+        )?;
+        r.populated += physical.len();
+        Ok(())
+    }
     pub fn map(
         &mut self,
         domain: Domain,
@@ -420,7 +489,6 @@ impl<H: Hardware> Vtd<H> {
         device_access: u8,
     ) -> Result<()> {
         self.domain(domain)?;
-        self.range(iova, physical.len())?;
         if iova
             < self
                 .domains
@@ -431,6 +499,23 @@ impl<H: Hardware> Vtd<H> {
         {
             return Err(Error::Invalid);
         }
+        self.map_chunk(domain, iova, physical, device_access)?;
+        self.domains
+            .iter_mut()
+            .find(|(d, _)| d.id == domain.id)
+            .unwrap()
+            .1 = iova + physical.len() as u64 * 4096;
+        Ok(())
+    }
+    fn map_chunk(
+        &mut self,
+        domain: Domain,
+        iova: u64,
+        physical: &[u64],
+        device_access: u8,
+    ) -> Result<()> {
+        self.domain(domain)?;
+        self.range(iova, physical.len())?;
         if device_access == 0
             || device_access & !3 != 0
             || physical
@@ -475,11 +560,6 @@ impl<H: Hardware> Vtd<H> {
                 s.io.write_page(page, index, paddr | device_access as u64)?;
             }
             s.invalidate()?;
-            s.domains
-                .iter_mut()
-                .find(|(d, _)| d.id == domain.id)
-                .unwrap()
-                .1 = iova + physical.len() as u64 * 4096;
             Ok(())
         })
     }
@@ -502,11 +582,11 @@ impl<H: Hardware> Vtd<H> {
         self.interrupt_source(domain.sid, vector, destination)
     }
     /// Firmware-validated interrupt-only source, not a DMA domain/assignment.
-    pub fn timer_interrupt(&mut self,vector:u8,destination:u8)->Result<Interrupt>{
-        let sid=self.hpet_sid.ok_or(Error::Unsupported)?;
-        self.interrupt_source(sid,vector,destination)
+    pub fn timer_interrupt(&mut self, vector: u8, destination: u8) -> Result<Interrupt> {
+        let sid = self.hpet_sid.ok_or(Error::Unsupported)?;
+        self.interrupt_source(sid, vector, destination)
     }
-    fn interrupt_source(&mut self,sid:u16,vector:u8,destination:u8)->Result<Interrupt>{
+    fn interrupt_source(&mut self, sid: u16, vector: u8, destination: u8) -> Result<Interrupt> {
         if !(0x30..=0xdf).contains(&vector) {
             return Err(Error::Invalid);
         }
@@ -519,11 +599,7 @@ impl<H: Hardware> Vtd<H> {
             s.next_interrupt += 1;
             s.routes.push(Some(sid));
             // SVT=01: validate the full requester SID, no function masking.
-            s.io.write_page(
-                s.interrupts,
-                index as usize * 2 + 1,
-                (1 << 18) | sid as u64,
-            )?;
+            s.io.write_page(s.interrupts, index as usize * 2 + 1, (1 << 18) | sid as u64)?;
             s.io.write_page(
                 s.interrupts,
                 index as usize * 2,
@@ -531,10 +607,7 @@ impl<H: Hardware> Vtd<H> {
             )?;
             s.submit(4, 0)?;
             s.sync()?;
-            Ok(Interrupt {
-                index,
-                sid,
-            })
+            Ok(Interrupt { index, sid })
         })
     }
     pub fn remove_interrupt(&mut self, domain: Domain, interrupt: Interrupt) -> Result<()> {

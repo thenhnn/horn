@@ -6,7 +6,9 @@ use alloc::vec::Vec;
 use horn_ipc::List;
 use protocol::*;
 
+pub mod dma;
 pub mod firmware;
+pub mod interrupt;
 pub mod matching;
 pub mod pci;
 pub mod vtd;
@@ -15,8 +17,8 @@ pub mod vtd;
 // role. Nonzero endpoint badges cannot be changed by deriving capabilities.
 pub const OBSERVER_BADGE: u64 = 1;
 pub const ASSIGNMENT_BADGE: u64 = 2;
-pub const CLOCK_SOURCE_BADGE:u64=1<<60;
-pub const TIMER_NOTIFICATION_BADGE:u64=1<<61;
+pub const CLOCK_SOURCE_BADGE: u64 = 1 << 60;
+pub const TIMER_NOTIFICATION_BADGE: u64 = 1 << 61;
 // Dedicated bound notification, disjoint from all endpoint authority badges.
 pub const FAULT_NOTIFICATION_BADGE: u64 = 1 << 63;
 #[cfg(test)]
