@@ -3,6 +3,7 @@
 #![no_std]
 #![no_main]
 extern crate alloc;
+mod prom;
 
 use core::ptr::NonNull;
 use horn_devmgr::{interrupt, protocol::*};
@@ -127,19 +128,60 @@ fn main() -> ! {
         bytes,
         msi.offset
     );
-    let mut bar = ProbeBar0 {
-        boot: session.bar_window(0, 0, 4096),
-        gfw: session.bar_window(0, 0x118000, 4096),
-        bytes,
+    let boot_window = session.mmio_window(0, 0, 4096);
+    let gfw_window = session.mmio_window(0, 0x118000, 4096);
+    let (gpu, gfw) = {
+        let mut bar = ProbeBar0 {
+            boot: boot_window.pointer(),
+            gfw: gfw_window.pointer(),
+            bytes,
+        };
+        let gpu = Ad106::identify(
+            PALIT_RTX_4060_TI,
+            actual,
+            (config[2] >> 16) as u16,
+            &mut bar,
+        )
+        .expect("AD106 identification");
+        let gfw = gpu.poll_gfw(&mut bar).expect("GFW snapshot");
+        (gpu, gfw)
     };
-    let gpu = Ad106::identify(
-        PALIT_RTX_4060_TI,
-        actual,
-        (config[2] >> 16) as u16,
-        &mut bar,
-    )
-    .expect("AD106 identification");
-    let gfw = gpu.poll_gfw(&mut bar).expect("GFW snapshot");
+    session.close_window(boot_window);
+    session.close_window(gfw_window);
+    // PROM is unusable until GFW completes. This diagnostic still does not wait
+    // or imply GSP readiness when the initial sample is locked/in progress.
+    let mut vbios_state = p::VbiosState::SkippedGfw;
+    let (mut fwsec_bytes, mut fwsec_engines, mut fwsec_ucode, mut fwsec_signature_versions) =
+        (0, 0, 0, 0);
+    if matches!(gfw, GfwStatus::Complete) {
+        let prom = prom::snapshot(&mut session, bytes).expect("bounded PROM snapshot");
+        match horn_nvidia_gsp::vbios::Fwsec::from_prom(&prom) {
+            Ok(fwsec) => {
+                vbios_state = p::VbiosState::FwsecParsed;
+                fwsec_bytes = fwsec.ucode.len() as u32;
+                fwsec_engines = fwsec.engine_mask as u32;
+                fwsec_ucode = fwsec.ucode_id as u32;
+                fwsec_signature_versions = fwsec.signature_versions as u32;
+                sel4::debug_println!(
+                    "NVIDIA_VBIOS_PARSED snapshot_bytes={} fwsec_bytes={} engines={:#x} ucode={} signatures={:#x} authenticated=false",
+                    prom.len(),
+                    fwsec_bytes,
+                    fwsec_engines,
+                    fwsec_ucode,
+                    fwsec_signature_versions
+                );
+            }
+            Err(error) => {
+                vbios_state = p::VbiosState::Rejected;
+                sel4::debug_println!(
+                    "NVIDIA_VBIOS_REJECTED error={:?} firmware_executed=false",
+                    error
+                );
+            }
+        }
+    } else {
+        sel4::debug_println!("NVIDIA_VBIOS_SKIPPED reason=gfw-not-complete");
+    }
     let (gfw_state, gfw_progress) = match gfw {
         GfwStatus::PrivilegeLocked => (p::GfwState::PrivilegeLocked, u32::MAX),
         GfwStatus::InProgress(n) => (p::GfwState::InProgress, n as u32),
@@ -152,6 +194,11 @@ fn main() -> ! {
         gfw_progress,
         bus_master: false,
         gsp_booted: false,
+        vbios_state,
+        fwsec_bytes,
+        fwsec_engines,
+        fwsec_ucode,
+        fwsec_signature_versions,
     };
     // READY means this diagnostic reader is available, NOT GSP/IRQ/DMA ready.
     sel4::debug_println!(

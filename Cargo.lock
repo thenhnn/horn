@@ -358,6 +358,7 @@ dependencies = [
  "horn-idl-build",
  "horn-ipc",
  "horn-nvidia",
+ "horn-nvidia-gsp",
  "horn-runtime",
  "horn-supervisor",
  "sel4",

@@ -1428,6 +1428,10 @@ rec {
             packageId = "horn-nvidia";
           }
           {
+            name = "horn-nvidia-gsp";
+            packageId = "horn-nvidia-gsp";
+          }
+          {
             name = "horn-runtime";
             packageId = "horn-runtime";
           }

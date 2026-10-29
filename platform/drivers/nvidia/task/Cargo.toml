@@ -2,7 +2,7 @@
 name = "horn-nvidia-task"
 version = "0.1.0"
 edition = "2024"
-license = "BSD-2-Clause"
+license = "GPL-2.0-only"
 
 [[bin]]
 name = "nvidia_probe"
@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 horn-nvidia = {path = ".."}
+horn-nvidia-gsp = {path = "../gsp"}
 horn-driver = {path = "../../horn-driver"}
 horn-devmgr = {path = "../../../core/devmgr"}
 horn-runtime = {path = "../../../runtime/rust/horn-runtime"}

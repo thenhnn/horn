@@ -21,7 +21,8 @@ adapters also use GPL-2.0-only. No files in work/nova are build dependencies.
 
 ## Runtime integration still required
 
-The library is not connected to the supervised native task. No register writes
+The VBIOS parser is connected to the supervised read-only task; the Falcon
+boot path is not. No register writes
 or DMA in this module have run against the board yet. A successful build is not
 authentication, reset, DMA-drain, interrupt-delivery or GSP-readiness evidence.
 
@@ -31,8 +32,10 @@ authentication, reset, DMA-drain, interrupt-delivery or GSP-readiness evidence.
 - A sysmembar page must be registered before either engine's first reset and
   retained through cleanup. Existing WPR2 is rejected, not automatically reset.
   The soft GA102 RESET_READY wait is not a general timeout/retry exception.
-- PROM acquisition needs bounded, reusable MMIO leases (there are currently
-  eight retained exports). No huge BAR mapping or PCI option-ROM execution.
+- PROM acquisition now uses individually revocable MMIO leases (still at most
+  eight exports). The native adapter reads one 64-KiB window at a time into a
+  bounded 1-MiB private snapshot, only after GFW reports complete. No huge BAR
+  mapping or PCI option-ROM execution. Physical PROM/parser evidence is pending.
 - Explicit ELF/runtime/DMA budgets must cover the 60.6-MiB image, working copies,
   bootloader/signatures/radix/LibOS/WPR metadata, logs and queues.
 - GIN source155 must use the assigned shared single-MSI route and correct

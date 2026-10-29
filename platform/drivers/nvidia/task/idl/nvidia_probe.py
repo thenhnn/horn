@@ -15,6 +15,13 @@ class GfwState:
     Complete = 2
 
 
+@enum(base=U32)
+class VbiosState:
+    SkippedGfw = 0
+    FwsecParsed = 1
+    Rejected = 2
+
+
 @record
 class ProbeSnapshot:
     boot0: U32
@@ -24,6 +31,12 @@ class ProbeSnapshot:
     gfw_progress: U32
     bus_master: BOOL
     gsp_booted: BOOL
+    # Parsing is not GPU authentication or execution. Fields valid only when parsed.
+    vbios_state: VbiosState
+    fwsec_bytes: U32
+    fwsec_engines: U32
+    fwsec_ucode: U32
+    fwsec_signature_versions: U32
 
 
 @iface("net.nhnn.horn.nvidia.probe", version=(1, 0))

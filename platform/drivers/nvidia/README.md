@@ -42,7 +42,9 @@ VBIOS snapshot parser locates production FWSEC and prepares FRTS/SB working
 copies; no board VBIOS snapshot has been exercised yet. The Falcon core now
 ports AD106 reset, DMA load, RSA3K BROM parameters and FWSEC-FRTS/SB execution
 checks, with a mandatory retained sysmembar DMA page. Its native MMIO/clock/DMA
-adapter is not connected; this is **not** hardware initialization evidence.
+boot adapter is not connected; this is **not** hardware initialization evidence.
+The native read-only task now uses the parser on a real PROM snapshot when GFW
+is complete; no such snapshot has yet been read on the physical board.
 Every wait has a fixed deadline; uncertain failures quarantine both engines.
 The four register/deadline unit checks do not emulate firmware or RPC.
 
@@ -63,13 +65,24 @@ explicitly with the boot adapter. Source inputs in `work/` are not dependencies.
 VM-backed runtime and generic supervisor. `module.nix` selects only 10de:2803
 display devices; the task rejects any subsystem other than 1569:f306 **before
 MMIO**. It reads real BOOT0/BOOT42 and one privilege-gated GFW snapshot through
-two 4-KiB UC BAR0 windows (offsets 0 and 0x118000). It never maps BAR1/BAR3 or
-enables bus mastering, DMA, MSI delivery, firmware upload or reset.
+two 4-KiB UC BAR0 windows (offsets 0 and 0x118000), then explicitly closes them.
+Only if that sample reports GFW complete, it copies the bounded 1-MiB BAR0 PROM
+shadow (0x300000) through **one reusable 64-KiB window at a time**. Every close
+acknowledges all-alias revocation and releases VM/cap resources before the next
+map. No PCI ROM BAR is enabled and no x86/EFI code is executed. It never maps
+BAR1/BAR3 or enables bus mastering, DMA, MSI delivery, firmware upload or reset.
+
+The combined task binary is **GPL-2.0-only**, because it now uses the separate
+NOVA-derived parser; original BSD guard/glue source keeps its own license.
+See [GPL text and provenance](gsp/PORTING.md).
 
 `NVIDIA_PROBE_READY` and publication under
 `/diagnostics/nvidia/<guest-BDF>` mean **the read-only diagnostic is available**,
 not GSP readiness. Its small diagnostic IDL returns the cached initial sample,
-including explicit `bus_master=false` / `gsp_booted=false`. GFW may still be
+including explicit `bus_master=false` / `gsp_booted=false` and VBIOS state
+(skipped for incomplete GFW, production FWSEC parsed, or rejected). Parsed size,
+engine/ucode IDs and signature bitmap are metadata, **not authentication**.
+`NVIDIA_VBIOS_PARSED` likewise never means firmware ran. GFW may still be
 locked/in progress; this task does not pretend a single sample is a timed GFW
 wait. GSP bring-up needs named clock/alarm grants and the firmware/lifetime
 adapter next. A STOP closes the assignment through devmgr's acknowledged
