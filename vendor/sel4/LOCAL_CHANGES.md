@@ -90,6 +90,12 @@ contents. Larger TCB objects use SDK-visible sizes. Rootserver objects are
 allocated in descending alignment order, preserving exact size accounting
 without assuming a TCB fits in a page.
 
+On x86-64, save/restore use the REX.W (64-suffixed) instructions so the legacy
+area contains full-width x87 FIP/FDP, matching the 64-bit signal/ptrace ABI.
+The native fixture restores nonzero high bits in x87 FIP/FDP through hardware
+and checks their full-width round trip (plain FLD alone is not portable to AMD
+CPUs which update those pointers only on exceptions).
+
 The small KVM `tests/boot/test_fpu_state.py` fixture checks fresh state,
 self and live remote read/write, AVX and available AVX-512 (ZMM/opmask),
 offset/capability bounds, read-only source/destination rights, invalid-header

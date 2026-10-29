@@ -15,6 +15,13 @@
 
 #define MXCSR_INIT_VALUE               0x1f80
 
+/* REX.W is required to preserve full FIP/FDP in the legacy save area. */
+#ifdef CONFIG_ARCH_X86_64
+#define X86_FPU_IMAGE_WIDTH "64"
+#else
+#define X86_FPU_IMAGE_WIDTH ""
+#endif
+
 /* Initialise the FPU. */
 bool_t Arch_initFpu(void);
 
@@ -43,15 +50,15 @@ static inline void saveFpuState(tcb_t *thread)
     }
 #endif
     if (config_set(CONFIG_FXSAVE)) {
-        asm volatile("fxsave %[dest]" : [dest] "=m"(*dest));
+        asm volatile("fxsave" X86_FPU_IMAGE_WIDTH " %[dest]" : [dest] "=m"(*dest));
     } else if (config_set(CONFIG_XSAVE_XSAVEOPT)) {
-        asm volatile("xsaveopt %[dest]" : [dest] "=m"(*dest) : "d"(xsave_features_high()), "a"(xsave_features_low()));
+        asm volatile("xsaveopt" X86_FPU_IMAGE_WIDTH " %[dest]" : [dest] "=m"(*dest) : "d"(xsave_features_high()), "a"(xsave_features_low()));
     } else if (config_set(CONFIG_XSAVE_XSAVE)) {
-        asm volatile("xsave %[dest]" : [dest] "=m"(*dest) : "d"(xsave_features_high()), "a"(xsave_features_low()));
+        asm volatile("xsave" X86_FPU_IMAGE_WIDTH " %[dest]" : [dest] "=m"(*dest) : "d"(xsave_features_high()), "a"(xsave_features_low()));
     } else if (config_set(CONFIG_XSAVE_XSAVEC)) {
-        asm volatile("xsavec %[dest]" : [dest] "=m"(*dest) : "d"(xsave_features_high()), "a"(xsave_features_low()));
+        asm volatile("xsavec" X86_FPU_IMAGE_WIDTH " %[dest]" : [dest] "=m"(*dest) : "d"(xsave_features_high()), "a"(xsave_features_low()));
     } else if (config_set(CONFIG_XSAVE_XSAVES)) {
-        asm volatile("xsaves %[dest]" : [dest] "=m"(*dest) : "d"(xsave_features_high()), "a"(xsave_features_low()));
+        asm volatile("xsaves" X86_FPU_IMAGE_WIDTH " %[dest]" : [dest] "=m"(*dest) : "d"(xsave_features_high()), "a"(xsave_features_low()));
     }
 }
 
@@ -67,12 +74,12 @@ static inline void loadFpuState(const tcb_t *thread)
     }
 #endif
     if (config_set(CONFIG_FXSAVE)) {
-        asm volatile("fxrstor %[src]" :: [src] "m"(*src));
+        asm volatile("fxrstor" X86_FPU_IMAGE_WIDTH " %[src]" :: [src] "m"(*src));
     } else if (config_set(CONFIG_XSAVE)) {
         if (config_set(CONFIG_XSAVE_XSAVES)) {
-            asm volatile("xrstors %[src]" :: [src] "m"(*src), "d"(xsave_features_high()), "a"(xsave_features_low()));
+            asm volatile("xrstors" X86_FPU_IMAGE_WIDTH " %[src]" :: [src] "m"(*src), "d"(xsave_features_high()), "a"(xsave_features_low()));
         } else {
-            asm volatile("xrstor %[src]" :: [src] "m"(*src), "d"(xsave_features_high()), "a"(xsave_features_low()));
+            asm volatile("xrstor" X86_FPU_IMAGE_WIDTH " %[src]" :: [src] "m"(*src), "d"(xsave_features_high()), "a"(xsave_features_low()));
         }
     }
 }

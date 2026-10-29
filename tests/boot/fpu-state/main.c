@@ -54,6 +54,21 @@ void probe_main(seL4_BootInfo *bi) {
  CHECK(*(uint16_t *)raw==0x037f && *(uint32_t *)(raw+24)==0x1f80,"initial controls");
  CHECK(*(uint64_t *)(raw+512)==0,"initial xstate");
  bytes(raw+160,256,0);
+ /* Restore full-width pointers through hardware. AMD may update FIP/FDP
+  * only on exceptions, so a plain FLD at a high address is not a portable test. */
+ __asm__ volatile("fld1");
+ OK(seL4_TCB_ReadFPU(seL4_CapInitThreadTCB,frame,0),"x87 snapshot");
+ *(uint64_t *)(raw+512)|=1;
+ *(uint16_t *)raw &= ~1u;
+ *(uint16_t *)(raw+2) |= 0x81; /* AMD pointer state is meaningful for exceptions. */
+ *(uint64_t *)(raw+8)=0x1000000000ull;
+ *(uint64_t *)(raw+16)=0x1000000040ull;
+ OK(seL4_TCB_WriteFPU(seL4_CapInitThreadTCB,frame,0),"full-width x87 restore");
+ OK(seL4_TCB_ReadFPU(seL4_CapInitThreadTCB,frame,0),"full-width x87 save");
+ CHECK(*(uint64_t *)(raw+8)==0x1000000000ull,"64-bit x87 FIP");
+ CHECK(*(uint64_t *)(raw+16)==0x1000000040ull,"64-bit x87 FDP");
+ *(uint16_t *)raw=0x037f;*(uint16_t *)(raw+2)&=~0xffu;
+ OK(seL4_TCB_WriteFPU(seL4_CapInitThreadTCB,frame,0),"clear pending exception");
  __asm__ volatile("vpcmpeqd %ymm0,%ymm0,%ymm0");
  if((mask&0xe7)==0xe7) {
   __asm__ volatile("vpternlogd $255,%%zmm0,%%zmm0,%%zmm0; vpternlogd $255,%%zmm16,%%zmm16,%%zmm16; mov $255,%%eax; kmovw %%eax,%%k1" ::: "eax");
