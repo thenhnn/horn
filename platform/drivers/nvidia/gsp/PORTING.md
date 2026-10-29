@@ -10,6 +10,9 @@ registration, DMA allocation/free, kernel threads, or driver Drop semantics.
 
 | Local | Upstream drivers/gpu/nova-core/ | Adaptation |
 | --- | --- | --- |
+| src/abi.rs | gsp/fw/r570_144/bindings.rs | checked-in layouts; core::ffi, remove Linux MaybeZeroable derives, explicit Rust 2024 unsafe blocks; no build-time transformation |
+| src/boot.rs | fb.rs, gsp.rs, gsp/fw.rs, firmware/radix3.rs | checked AD106 framebuffer/WPR, radix3, LibOS/args/log/queue builders; numerical spans are not grants; zero PTEs beyond committed queue pages |
+| src/wire.rs | gsp/{fw,cmdq,commands}.rs, gsp/cmdq/continuation.rs | bounded 64-KiB frames/checksums, distinct transport/inner sequences, bounded outgoing continuations and static-info payload validation; not a live RPC transport |
 | src/tlv.rs | firmware/tlv.rs | no kernel dependencies; fixed 32-tag bound; duplicate rejection; exact version |
 | src/falcon.rs | falcon.rs, falcon/{gsp,sec2}.rs, falcon/hal/ga102.rs, fb/{regs,hal/ga100}.rs, gpu/hal/tu102.rs, gsp/hal/tu102.rs, regs.rs | AD106-only reset/DMA/RSA3K/boot, explicit retained sysmem-flush grant, mailbox/FRTS checks; absolute clock deadlines, global software quarantine |
 | src/vbios.rs | vbios.rs, firmware/fwsec.rs, firmware.rs | bounded snapshot, IFR/PCIR/NPDE/BIT, production V3 descriptor only, FRTS/SB staging; no ROM execution |

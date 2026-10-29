@@ -2,10 +2,15 @@
 //! Native AD106 GSP port. Parsing is not evidence of firmware boot/authentication.
 #![no_std]
 extern crate alloc;
+mod abi;
+pub mod boot;
 pub mod falcon;
 pub mod firmware;
+#[cfg(test)]
+mod format_tests;
 pub mod tlv;
 pub mod vbios;
+pub mod wire;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
