@@ -16,8 +16,8 @@ use horn_vm::{
 };
 
 pub mod elf;
-mod loader;
 mod execution;
+mod loader;
 mod placement;
 mod service;
 pub use service::LaunchPolicy;
@@ -133,6 +133,7 @@ pub struct Manager {
     allocator: KernelAllocator,
     caller_vspace: sel4::cap::VSpace,
     scratch: usize,
+    scratch_poisoned: bool,
     asid_pool: sel4::cap::AsidPool,
     schedulers: Vec<sel4::cap::SchedControl>,
     host_cpu: usize,
@@ -165,6 +166,7 @@ impl Manager {
             allocator,
             caller_vspace,
             scratch,
+            scratch_poisoned: false,
             asid_pool,
             schedulers,
             host_cpu,
@@ -193,6 +195,9 @@ impl Manager {
         config: Config<'_>,
         parent: Option<ProcessId>,
     ) -> Result<ProcessId, Error> {
+        if self.scratch_poisoned {
+            return Err(Error::Cleanup);
+        }
         if self.processes.len() >= 64 {
             return Err(Error::Resource(horn_vm::Error::MetadataExhausted));
         }
@@ -573,7 +578,10 @@ impl Manager {
         }
         p.vm = None;
         if let Some(execution) = &mut p.execution {
-            if execution.cleanup().is_err() { p.state = State::Quarantined; return Err(Error::Cleanup); }
+            if execution.cleanup().is_err() {
+                p.state = State::Quarantined;
+                return Err(Error::Cleanup);
+            }
         }
         p.execution = None;
         for slot in [p.exit_signal.take(), p.fault_endpoint.take()]

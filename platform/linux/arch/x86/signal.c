@@ -15,6 +15,7 @@
 #include <frame_kern.h>
 #include <registers.h>
 #include <skas.h>
+#include <horn.h>
 
 #include <linux/regset.h>
 #include <asm/sigframe.h>
@@ -88,9 +89,30 @@ static int copy_sc_from_user(struct pt_regs *regs,
 	from_fp64 = (void __user *)sc.fpstate;
 #endif
 
-	err = copy_from_user(regs->regs.fp, from_fp64, host_fp_size);
-	if (err)
+	if (!from_fp64) {
+		horn_fp_init(regs->regs.fp);
+		return 0;
+	}
+	/* Stage before validation; never trust a header read from user memory. */
+	if (copy_from_user(regs->regs.fp, from_fp64, sizeof(struct _fpstate_64)))
 		return 1;
+	struct _fpstate_64 *legacy = (void *)regs->regs.fp;
+	if (legacy->sw_reserved.magic1 == FP_XSTATE_MAGIC1) {
+		if (copy_from_user(regs->regs.fp, from_fp64, host_fp_size))
+			return 1;
+		unsigned int magic;
+		if (legacy->sw_reserved.magic1 != FP_XSTATE_MAGIC1 ||
+		    legacy->sw_reserved.xstate_size != host_fp_size ||
+		    legacy->sw_reserved.extended_size != host_fp_size + FP_XSTATE_MAGIC2_SIZE ||
+		    legacy->sw_reserved.xfeatures & ~horn_fp_features() ||
+		    get_user(magic, (unsigned int __user *)((void __user *)from_fp64 + host_fp_size)) ||
+		    magic != FP_XSTATE_MAGIC2 || !horn_fp_valid(regs->regs.fp))
+			return 1;
+	} else {
+		/* Legacy sigreturn restores x87/SSE and initializes extended state. */
+		memset((char *)regs->regs.fp + 512, 0, host_fp_size - 512);
+		*(u64 *)((char *)regs->regs.fp + 512) = 3;
+	}
 
 #ifdef CONFIG_X86_32
 	/* Data is duplicated and this copy is the important one */
@@ -203,6 +225,7 @@ static int copy_sc_to_user(struct sigcontext __user *to,
 		   &to_fp64->fpstate.sw_reserved.extended_size);
 #endif
 	__put_user(host_fp_size, &to_fp64->fpstate.sw_reserved.xstate_size);
+	__put_user(horn_fp_features(), &to_fp64->fpstate.sw_reserved.xfeatures);
 
 	__put_user(FP_XSTATE_MAGIC1, &to_fp64->fpstate.sw_reserved.magic1);
 	__put_user(FP_XSTATE_MAGIC2,
@@ -372,18 +395,12 @@ int setup_signal_stack_si(unsigned long stack_top, struct ksignal *ksig,
 	int err = 0, sig = ksig->sig;
 	unsigned long fp_to;
 
-	frame = (void __user *)stack_top - sizeof(struct rt_sigframe);
+	/* Keep the interrupted red zone and a 64-byte-aligned XSAVE image.
+	 * The handler stack still satisfies the x86-64 function-entry ABI. */
+	fp_to = round_down(stack_top - 128 - math_size, 64);
+	frame = (void __user *)(round_down(fp_to - sizeof(*frame), 16) - 8);
 
-	/* Add required space for math frame */
-	frame = (void __user *)((unsigned long)frame - math_size);
-
-	/* ABI requires 16 byte boundary alignment */
-	frame = (void __user *)round_down((unsigned long)frame, 16);
-
-	/* Subtract 128 for a red zone and 8 for proper alignment */
-	frame = (struct rt_sigframe __user *) ((unsigned long) frame - 128 - 8);
-
-	if (!access_ok(frame, sizeof(*frame) + math_size))
+	if (!access_ok(frame, fp_to + math_size - (unsigned long)frame))
 		goto out;
 
 	if (ksig->ka.sa.sa_flags & SA_SIGINFO) {
@@ -393,11 +410,9 @@ int setup_signal_stack_si(unsigned long stack_top, struct ksignal *ksig,
 	}
 
 	/* Create the ucontext.  */
-	err |= __put_user(0, &frame->uc.uc_flags);
+	err |= __put_user(UC_FP_XSTATE, &frame->uc.uc_flags);
 	err |= __put_user(NULL, &frame->uc.uc_link);
 	err |= __save_altstack(&frame->uc.uc_stack, PT_REGS_SP(regs));
-
-	fp_to = (unsigned long)frame + sizeof(*frame);
 
 	err |= copy_sc_to_user(&frame->uc.uc_mcontext,
 			       (struct _xstate __user *)fp_to,
@@ -439,6 +454,7 @@ int setup_signal_stack_si(unsigned long stack_top, struct ksignal *ksig,
 	PT_REGS_SI(regs) = (unsigned long) &frame->info;
 	PT_REGS_DX(regs) = (unsigned long) &frame->uc;
 	PT_REGS_IP(regs) = (unsigned long) ksig->ka.sa.sa_handler;
+	horn_fp_init(regs->regs.fp);
  out:
 	return err;
 }

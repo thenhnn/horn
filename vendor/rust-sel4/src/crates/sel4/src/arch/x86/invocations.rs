@@ -11,6 +11,27 @@ use crate::{
     TranslationTableObjectType, VmAttributes, Word, cap::*, cap_type, sel4_cfg_wrap_match,
 };
 
+#[sel4_cfg(ARCH_X86_64)]
+impl<C: InvocationContext> Tcb<C> {
+    /// Horn extension: bounded standard FP image through a RAM frame.
+    pub fn tcb_read_fpu(self, frame: Granule, offset: usize) -> Result<()> {
+        Error::wrap(self.invoke(|cptr, ipc_buffer| {
+            ipc_buffer
+                .inner_mut()
+                .seL4_TCB_ReadFPU(cptr.bits(), frame.bits(), offset as Word)
+        }))
+    }
+
+    /// Import is validated by the kernel before changing target state.
+    pub fn tcb_write_fpu(self, frame: Granule, offset: usize) -> Result<()> {
+        Error::wrap(self.invoke(|cptr, ipc_buffer| {
+            ipc_buffer
+                .inner_mut()
+                .seL4_TCB_WriteFPU(cptr.bits(), frame.bits(), offset as Word)
+        }))
+    }
+}
+
 #[sel4_cfg(VTX)]
 impl<C: InvocationContext> VCpu<C> {
     /// Corresponds to `seL4_X86_VCPU_SetTCB`.

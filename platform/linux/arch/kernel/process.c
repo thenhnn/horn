@@ -149,7 +149,7 @@ int copy_thread(struct task_struct * p, const struct kernel_clone_args *args)
 	void (*handler)(void);
 	int ret = 0;
 
-	/* One userspace task until per-task FPU state transport is implemented. */
+	/* User clone remains gated until MM/TLS/lifecycle multi-task validation. */
 	if (!args->fn) return -EOPNOTSUPP;
 	p->thread = (struct thread_struct) INIT_THREAD;
 

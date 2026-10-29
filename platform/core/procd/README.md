@@ -35,6 +35,19 @@ ASID, scheduling authority or TCB capability. The name is display data (nonempty
 UTF-8, at most 64 bytes, no NUL), not a binary selector. Runtime/bootstrap layout
 must match the application's contract; the ELF tag is not that layout.
 
+## Hosted FP state (prototype)
+
+The x86-64 `ProcessExecution` domain owns a private, caller-accounted FP staging
+frame and user TCB. `execution_fp_info` reports the active standard XSAVE byte
+size and enabled XCR0 mask; the kernel's 4096-byte transfer capacity is not a
+hardcoded userspace layout size. Read chunks use one stopped-TCB snapshot.
+Write chunks are ordered, restart at zero, and cannot run until a complete
+image is committed through the validating kernel API. Neither raw TCB nor frame
+authority is returned. An uncertain scratch map/unmap poisons the manager's
+scratch window and prevents further hosted starts/launches rather than reusing
+an uncertain mapping. This remains prototype resource/lifetime code, not an
+independently validated isolation boundary.
+
 ## ELF ownership and RAM
 
 Launch maps sealed source pages read-only and NX into a root-reserved reader

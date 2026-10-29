@@ -18,6 +18,13 @@ int horn_run(unsigned long space,struct horn_registers *registers,unsigned long 
 int horn_clock_pending(void);
 void horn_enter_user(void *regs);
 void horn_host_init(void);
+unsigned long horn_fp_bytes(void);
+unsigned long long horn_fp_features(void);
+int horn_fp_save(void *buffer);
+int horn_fp_load(const void *buffer);
+void horn_fp_init(void *buffer);
+int horn_fp_valid(const void *buffer);
+int horn_fp_exception_code(const void *buffer, unsigned vector);
 void horn_shutdown(unsigned status) __attribute__((noreturn));
 void horn_ready(void);
 void horn_timer_interrupt(void);

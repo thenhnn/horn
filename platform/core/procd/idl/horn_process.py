@@ -1,6 +1,8 @@
 """Scoped launch/observation, per-process control, and child-only lifecycle."""
 
 from horn_idl import (
+    BOOL,
+    U8,
     U32,
     U64,
     Borrow,
@@ -99,6 +101,12 @@ class ExecutionExit:
     registers: ExecutionRegisters
 
 
+@record
+class ExecutionFpInfo:
+    bytes: U32
+    features: U64
+
+
 @iface("net.nhnn.horn.process.execution", version=(1, 0))
 class ProcessExecution:
     # Fixed one-vCPU hosted execution domain; all backing is charged to self.
@@ -130,6 +138,22 @@ class ProcessExecution:
     @method
     def execution_start(
         self, space: U32, registers: ExecutionRegisters
+    ) -> Result[None, ProcessError]: ...
+
+    @method
+    def execution_fp_info(self) -> Result[ExecutionFpInfo, ProcessError]: ...
+
+    # Stable stopped-TCB snapshot, cached until execution_start or write.
+    @method
+    def execution_fp_read(
+        self, offset: U32, length: U32
+    ) -> Result[List[U8, 256], ProcessError]: ...
+
+    # Ordered chunks beginning at zero; commit requires the full active image.
+    # Nothing reaches the user TCB until successful commit.
+    @method
+    def execution_fp_write(
+        self, offset: U32, data: List[U8, 256], commit: BOOL
     ) -> Result[None, ProcessError]: ...
 
     # Stops the user TCB before returning; a previously captured fault wins.
@@ -300,7 +324,15 @@ class ProcessObserver:
     def list(self, after: U64) -> Result[ProcessPage, ProcessError]: ...
 
 
-@object(implements=(ProcessLifecycle, ProcessFactory, ProcessObserver, ProcessControl, ProcessExecution))
+@object(
+    implements=(
+        ProcessLifecycle,
+        ProcessFactory,
+        ProcessObserver,
+        ProcessControl,
+        ProcessExecution,
+    )
+)
 class ProcessHost:
     pass
 

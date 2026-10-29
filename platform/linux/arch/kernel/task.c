@@ -20,7 +20,7 @@ void new_thread(void *stack,jmp_buf *buf,void (*handler)(void)) {
  (*buf)[0].__rsp=sp;
 }
 void switch_threads(jmp_buf *from,jmp_buf *to) { if (!setjmp(*from)) longjmp(*to,1); }
-void get_safe_registers(unsigned long *gp,unsigned long *fp) { memset(gp,0,27*sizeof(long)); if(fp) memset(fp,0,512); }
+void get_safe_registers(unsigned long *gp,unsigned long *fp) { memset(gp,0,27*sizeof(long)); if(fp) horn_fp_init(fp); }
 void initial_jmpbuf_lock(void) {}
 void initial_jmpbuf_unlock(void) {}
 void arch_flush_tls(struct task_struct *t) {}

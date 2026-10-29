@@ -17,6 +17,9 @@ extern char _end[];
 #define USER_EVENT 1
 #define CLOCK_EVENT 2
 static unsigned long pending;
+static horn_ExecutionFpInfo_t fp_info;
+static unsigned char fp_last[4096];
+static int fp_last_valid;
 static horn_cap_t cap(unsigned slot) { return (horn_cap_t){slot,HORN_CAP_COPY,15}; }
 static void die(void) {
 #ifdef CONFIG_PRINTING
@@ -61,6 +64,10 @@ void horn_host_init(void) {
  __sel4_ipc_buffer=(void *)_end;
  horn_process_execution_execution_configure_result_t r;
  CHECK(horn_process_execution_execution_configure(&transport,0,LIFE,0x20000000,32*1024*1024,cap(HORN_LINUX_CAPS_SLOT_USER_SIGNAL),&r),r);
+ horn_process_execution_execution_fp_info_result_t info;
+ CHECK(horn_process_execution_execution_fp_info(&transport,0,LIFE,&info),info);
+ fp_info=info.value.ok;
+ if(fp_info.bytes<576 || fp_info.bytes>sizeof fp_last || (fp_info.features&7)!=7) die();
  for (;;) {
   horn_process_execution_execution_admit_result_t admitted;
   CHECK(horn_process_execution_execution_admit(&transport,0,LIFE,&admitted),admitted);
@@ -69,6 +76,33 @@ void horn_host_init(void) {
  horn_clock_interface_alarm_result_t a;
  CHECK(horn_clock_interface_alarm(&transport,0,cap(HORN_LINUX_CAPS_SLOT_CLOCK),&a),a);
  if(a.value.ok.slot!=RECV || seL4_CNode_Move(SELF,ALARM,HORN_LINUX_CAPS_SIZE_BITS,SELF,RECV,HORN_LINUX_CAPS_SIZE_BITS)) die();
+}
+unsigned long horn_fp_bytes(void) { return fp_info.bytes; }
+unsigned long long horn_fp_features(void) { return fp_info.features; }
+int horn_fp_save(void *buffer) {
+ for(unsigned offset=0;offset<fp_info.bytes;) {
+  unsigned length=fp_info.bytes-offset; if(length>256) length=256;
+  horn_process_execution_execution_fp_read_result_t r;
+  CHECK(horn_process_execution_execution_fp_read(&transport,0,LIFE,offset,length,&r),r);
+  if(r.value.ok.len!=length) die();
+  memcpy((char *)buffer+offset,r.value.ok.data,length);
+  offset+=length;
+ }
+ memcpy(fp_last,buffer,fp_info.bytes);fp_last_valid=1;return 0;
+}
+int horn_fp_load(const void *buffer) {
+ if(fp_last_valid && !memcmp(buffer,fp_last,fp_info.bytes)) return 0;
+ fp_last_valid=0;
+ for(unsigned offset=0;offset<fp_info.bytes;) {
+  horn_list_256_u8_t data={0};data.len=fp_info.bytes-offset;if(data.len>256)data.len=256;
+  memcpy(data.data,(const char *)buffer+offset,data.len);
+  horn_process_execution_execution_fp_write_result_t r;
+  horn_status_t status=horn_process_execution_execution_fp_write(&transport,0,LIFE,offset,data,offset+data.len==fp_info.bytes,&r);
+  if(status!=HORN_OK) die();
+  if(r.tag!=HORN_RESULT_OK) return -22;
+  offset+=data.len;
+ }
+ memcpy(fp_last,buffer,fp_info.bytes);fp_last_valid=1;return 0;
 }
 unsigned long horn_ram_bytes(void) { return 32*1024*1024; }
 int horn_map(unsigned long space,unsigned long va,unsigned long pfn,unsigned int rights) {

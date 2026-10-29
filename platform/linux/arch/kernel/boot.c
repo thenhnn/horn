@@ -55,6 +55,7 @@ static int start_linux(void *unused) { extern void start_kernel(void); start_ker
 void horn_start(void)
 {
  horn_host_init();
+ host_fp_size=horn_fp_bytes();
  cpu_tasks[0] = &init_task;
  register_console(&horn_early_console);
  init_task.thread.request.thread.proc = start_linux;

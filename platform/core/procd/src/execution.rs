@@ -5,7 +5,7 @@ use super::*;
 use crate::protocol::*;
 use crate::service::error;
 use alloc::collections::{BTreeMap, BTreeSet};
-use horn_ipc::{Cap, Notification};
+use horn_ipc::{Cap, List, Notification};
 
 const PAGE: usize = PAGE_SIZE;
 const MAX_RAM: usize = 64 * 1024 * 1024;
@@ -43,6 +43,13 @@ pub(crate) struct Execution {
     next_space: u32,
     kernel_maps: BTreeMap<usize, Mapping>,
     user: sel4::cap::Tcb,
+    fp_frame: sel4::cap::Granule,
+    fp_bytes: usize,
+    fp_features: u64,
+    fp_snapshot: bool,
+    fp_cursor: usize,
+    fp_active: bool,
+    fp_broken: bool,
     native_sc: sel4::cap::SchedContext,
     scheduler: sel4::cap::SchedControl,
     budget_us: u64,
@@ -123,11 +130,43 @@ impl Execution {
     }
     pub(crate) fn cleanup(&mut self) -> Result<(), Error> {
         self.stop_user()?;
+        if self.fp_active {
+            self.fp_frame.frame_unmap()?;
+            self.fp_active = false;
+        }
         while let Some(slot) = self.copied_slots.first().copied() {
             self.allocator.release_slot(slot)?;
             self.copied_slots.remove(&slot);
         }
         Ok(())
+    }
+    fn fp_access<T>(
+        &mut self,
+        root: sel4::cap::VSpace,
+        scratch: usize,
+        f: impl FnOnce(&mut [u8]) -> T,
+    ) -> Result<T, Error> {
+        if self.fp_broken || self.fp_active {
+            return Err(Error::Cleanup);
+        }
+        if let Err(err) = self.fp_frame.frame_map(
+            root,
+            scratch,
+            sel4::CapRights::read_write(),
+            sel4::VmAttributes::EXECUTE_NEVER,
+        ) {
+            self.fp_broken = true;
+            return Err(err.into());
+        }
+        self.fp_active = true;
+        // Manager's exclusive scratch page, serialized with loader/other callers.
+        let result = f(unsafe { core::slice::from_raw_parts_mut(scratch as *mut u8, PAGE) });
+        if let Err(err) = self.fp_frame.frame_unmap() {
+            self.fp_broken = true;
+            return Err(err.into());
+        }
+        self.fp_active = false;
+        Ok(result)
     }
     fn frame(&self, pfn: usize) -> Result<&Frame, Error> {
         self.frames
@@ -384,6 +423,22 @@ impl ProcessExecution for Caller<'_> {
                 p.loaded.vspace,
                 base + first * PAGE..base + bytes as usize,
             )?;
+            let fp_frame = a.allocate_fixed_sized::<sel4::cap_type::Granule>()?;
+            let fp_bytes = unsafe { core::arch::x86_64::__cpuid_count(13, 0) }.ebx as usize;
+            let (lo, hi): (u32, u32);
+            unsafe {
+                core::arch::asm!("xgetbv", in("ecx") 0u32, out("eax") lo, out("edx") hi,
+                options(nomem, nostack));
+            }
+            let fp_features = ((hi as u64) << 32) | lo as u64;
+            if fp_bytes < 576
+                || fp_bytes > PAGE
+                || fp_bytes > sel4::sel4_cfg_usize!(XSAVE_SIZE)
+                || fp_features & !0xe7 != 0
+                || fp_features & 7 != 7
+            {
+                return Err(Error::Denied);
+            }
             let frames = Vec::new();
             Ok(Execution {
                 allocator: a,
@@ -397,6 +452,13 @@ impl ProcessExecution for Caller<'_> {
                 next_space: 1,
                 kernel_maps: BTreeMap::new(),
                 user,
+                fp_frame,
+                fp_bytes,
+                fp_features,
+                fp_snapshot: false,
+                fp_cursor: 0,
+                fp_active: false,
+                fp_broken: false,
                 native_sc: p.sc,
                 scheduler,
                 budget_us: p.budget_us,
@@ -586,11 +648,126 @@ impl ProcessExecution for Caller<'_> {
         }
         Ok(())
     }
+    fn execution_fp_info(&mut self) -> Result<ExecutionFpInfo, ProcessError> {
+        let id = self.id()?;
+        let e = self
+            .manager
+            .process(id)
+            .map_err(error)?
+            .execution
+            .as_ref()
+            .ok_or(ProcessError::State)?;
+        Ok(ExecutionFpInfo {
+            bytes: e.fp_bytes as u32,
+            features: e.fp_features,
+        })
+    }
+    fn execution_fp_read(
+        &mut self,
+        offset: u32,
+        length: u32,
+    ) -> Result<List<u8, 256>, ProcessError> {
+        if self.manager.scratch_poisoned {
+            return Err(ProcessError::Quarantined);
+        }
+        let id = self.id()?;
+        let (root, scratch) = (self.manager.caller_vspace, self.manager.scratch);
+        let e = self
+            .manager
+            .process_mut(id)
+            .map_err(error)?
+            .execution
+            .as_mut()
+            .ok_or(ProcessError::State)?;
+        let (offset, length) = (offset as usize, length as usize);
+        if e.running || e.fp_cursor != 0 {
+            return Err(ProcessError::State);
+        }
+        if length == 0 || length > 256 || offset > e.fp_bytes || length > e.fp_bytes - offset {
+            return Err(ProcessError::Invalid);
+        }
+        if !e.fp_snapshot {
+            e.user
+                .tcb_read_fpu(e.fp_frame, 0)
+                .map_err(|err| error(err.into()))?;
+            e.fp_snapshot = true;
+        }
+        let result = e
+            .fp_access(root, scratch, |bytes| {
+                let mut output = List::default();
+                output.len = length as u32;
+                output.data[..length].copy_from_slice(&bytes[offset..offset + length]);
+                output
+            })
+            .map_err(error);
+        if e.fp_broken {
+            self.manager.scratch_poisoned = true;
+        }
+        result
+    }
+    fn execution_fp_write(
+        &mut self,
+        offset: u32,
+        data: List<u8, 256>,
+        commit: bool,
+    ) -> Result<(), ProcessError> {
+        if self.manager.scratch_poisoned {
+            return Err(ProcessError::Quarantined);
+        }
+        let id = self.id()?;
+        let (root, scratch) = (self.manager.caller_vspace, self.manager.scratch);
+        let e = self
+            .manager
+            .process_mut(id)
+            .map_err(error)?
+            .execution
+            .as_mut()
+            .ok_or(ProcessError::State)?;
+        let offset = offset as usize;
+        let length = data.len as usize;
+        if e.running {
+            return Err(ProcessError::State);
+        }
+        if length == 0
+            || length > 256
+            || (offset != 0 && offset != e.fp_cursor)
+            || offset > e.fp_bytes
+            || length > e.fp_bytes - offset
+            || (commit && offset + length != e.fp_bytes)
+        {
+            return Err(ProcessError::Invalid);
+        }
+        let result = e
+            .fp_access(root, scratch, |bytes| {
+                if offset == 0 {
+                    bytes.fill(0);
+                }
+                bytes[offset..offset + length].copy_from_slice(&data.data[..length]);
+            })
+            .map_err(error);
+        if e.fp_broken {
+            self.manager.scratch_poisoned = true;
+            return result;
+        }
+        result?;
+        e.fp_snapshot = false;
+        e.fp_cursor = offset + length;
+        if commit {
+            e.fp_cursor = 0;
+            e.user
+                .tcb_write_fpu(e.fp_frame, 0)
+                .map_err(|err| error(err.into()))?;
+        }
+        Ok(())
+    }
     fn execution_start(
         &mut self,
         space: u32,
         registers: ExecutionRegisters,
     ) -> Result<(), ProcessError> {
+        if self.manager.scratch_poisoned {
+            return Err(ProcessError::Quarantined);
+        }
         let id = self.id()?;
         let e = self
             .manager
@@ -600,6 +777,8 @@ impl ProcessExecution for Caller<'_> {
             .as_mut()
             .ok_or(ProcessError::State)?;
         if e.running
+            || e.fp_cursor != 0
+            || e.fp_broken
             || e.exit.is_some()
             || registers.ip < PAGE as u64
             || registers.ip >= USER_END as u64
@@ -635,6 +814,7 @@ impl ProcessExecution for Caller<'_> {
         e.user
             .tcb_write_all_registers(true, &mut c)
             .map_err(|x| error(x.into()))?;
+        e.fp_snapshot = false;
         e.running = true;
         Ok(())
     }
