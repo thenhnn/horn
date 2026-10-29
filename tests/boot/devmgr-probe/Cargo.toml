@@ -13,3 +13,7 @@ horn-supervisor = { path = "../../../platform/core/supervisor" }
 horn-runtime = { path = "../../../platform/runtime/rust/horn-runtime" }
 horn-ipc = { path = "../../../platform/runtime/rust/horn-ipc", features = ["sel4"] }
 sel4 = { path = "../../../vendor/rust-sel4/src/crates/sel4" }
+
+[build-dependencies]
+horn-idl-build.workspace = true
+

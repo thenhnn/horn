@@ -123,6 +123,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-idl-build" = rec {
+      packageId = "horn-idl-build";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-idl-build";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-ipc" = rec {
       packageId = "horn-ipc";
       build = internal.buildRustCrateWithFeatures {
@@ -976,6 +986,12 @@ rec {
             packageId = "horn-ipc";
           }
         ];
+        buildDependencies = [
+          {
+            name = "horn-idl-build";
+            packageId = "horn-idl-build";
+          }
+        ];
 
       };
       "horn-console" = rec {
@@ -988,6 +1004,12 @@ rec {
           {
             name = "horn-ipc";
             packageId = "horn-ipc";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "horn-idl-build";
+            packageId = "horn-idl-build";
           }
         ];
 
@@ -1007,6 +1029,12 @@ rec {
           {
             name = "horn-ipc";
             packageId = "horn-ipc";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "horn-idl-build";
+            packageId = "horn-idl-build";
           }
         ];
 
@@ -1044,6 +1072,12 @@ rec {
           {
             name = "sel4";
             packageId = "sel4";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "horn-idl-build";
+            packageId = "horn-idl-build";
           }
         ];
 
@@ -1087,6 +1121,12 @@ rec {
           {
             name = "sel4";
             packageId = "sel4";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "horn-idl-build";
+            packageId = "horn-idl-build";
           }
         ];
         features = {
@@ -1157,6 +1197,14 @@ rec {
         ];
 
       };
+      "horn-idl-build" = rec {
+        crateName = "horn-idl-build";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./tools/idl/build; };
+        libName = "horn_idl_build";
+
+      };
       "horn-ipc" = rec {
         crateName = "horn-ipc";
         version = "0.1.0";
@@ -1222,6 +1270,12 @@ rec {
           {
             name = "horn-ipc";
             packageId = "horn-ipc";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "horn-idl-build";
+            packageId = "horn-idl-build";
           }
         ];
 
@@ -1306,6 +1360,12 @@ rec {
             packageId = "sel4";
           }
         ];
+        buildDependencies = [
+          {
+            name = "horn-idl-build";
+            packageId = "horn-idl-build";
+          }
+        ];
 
       };
       "horn-registry" = rec {
@@ -1318,6 +1378,12 @@ rec {
           {
             name = "horn-ipc";
             packageId = "horn-ipc";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "horn-idl-build";
+            packageId = "horn-idl-build";
           }
         ];
 
@@ -1412,6 +1478,12 @@ rec {
             packageId = "sel4";
           }
         ];
+        buildDependencies = [
+          {
+            name = "horn-idl-build";
+            packageId = "horn-idl-build";
+          }
+        ];
 
       };
       "horn-supervisor" = rec {
@@ -1429,6 +1501,12 @@ rec {
             name = "sel4";
             packageId = "sel4";
             optional = true;
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "horn-idl-build";
+            packageId = "horn-idl-build";
           }
         ];
         features = {
@@ -1673,6 +1751,12 @@ rec {
             optional = true;
           }
         ];
+        buildDependencies = [
+          {
+            name = "horn-idl-build";
+            packageId = "horn-idl-build";
+          }
+        ];
         features = {
           "protocol" = [ "dep:horn-ipc" ];
           "rpc" = [ "sel4" "protocol" "horn-ipc/sel4" ];
@@ -1729,6 +1813,12 @@ rec {
             packageId = "sel4";
           }
         ];
+        buildDependencies = [
+          {
+            name = "horn-idl-build";
+            packageId = "horn-idl-build";
+          }
+        ];
 
       };
       "idl-demo-root" = rec {
@@ -1765,6 +1855,12 @@ rec {
           {
             name = "sel4-root-task";
             packageId = "sel4-root-task";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "horn-idl-build";
+            packageId = "horn-idl-build";
           }
         ];
 

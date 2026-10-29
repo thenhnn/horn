@@ -230,6 +230,7 @@ dependencies = [
 name = "horn-clock"
 version = "0.1.0"
 dependencies = [
+ "horn-idl-build",
  "horn-ipc",
 ]
 
@@ -237,6 +238,7 @@ dependencies = [
 name = "horn-console"
 version = "0.1.0"
 dependencies = [
+ "horn-idl-build",
  "horn-ipc",
 ]
 
@@ -245,6 +247,7 @@ name = "horn-devmgr"
 version = "0.1.0"
 dependencies = [
  "acpi",
+ "horn-idl-build",
  "horn-ipc",
 ]
 
@@ -253,6 +256,7 @@ name = "horn-devmgr-probe"
 version = "0.1.0"
 dependencies = [
  "horn-devmgr",
+ "horn-idl-build",
  "horn-ipc",
  "horn-runtime",
  "horn-supervisor",
@@ -265,6 +269,7 @@ version = "0.1.0"
 dependencies = [
  "acpi",
  "horn-devmgr",
+ "horn-idl-build",
  "horn-ipc",
  "horn-runtime",
  "horn-supervisor",
@@ -292,6 +297,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "horn-idl-build"
+version = "0.1.0"
+
+[[package]]
 name = "horn-ipc"
 version = "0.1.0"
 dependencies = [
@@ -314,6 +323,7 @@ dependencies = [
 name = "horn-net"
 version = "0.1.0"
 dependencies = [
+ "horn-idl-build",
  "horn-ipc",
 ]
 
@@ -335,6 +345,7 @@ dependencies = [
 name = "horn-procd"
 version = "0.1.0"
 dependencies = [
+ "horn-idl-build",
  "horn-ipc",
  "horn-vm",
  "object",
@@ -345,6 +356,7 @@ dependencies = [
 name = "horn-registry"
 version = "0.1.0"
 dependencies = [
+ "horn-idl-build",
  "horn-ipc",
 ]
 
@@ -368,6 +380,7 @@ version = "0.1.0"
 dependencies = [
  "horn-console",
  "horn-devmgr",
+ "horn-idl-build",
  "horn-ipc",
  "horn-procd",
  "horn-registry",
@@ -379,6 +392,7 @@ dependencies = [
 name = "horn-supervisor"
 version = "0.1.0"
 dependencies = [
+ "horn-idl-build",
  "horn-ipc",
  "sel4",
 ]
@@ -448,6 +462,7 @@ dependencies = [
 name = "horn-vm"
 version = "0.1.0"
 dependencies = [
+ "horn-idl-build",
  "horn-ipc",
  "sel4",
  "sel4-abstract-allocator",
@@ -458,6 +473,7 @@ name = "idl-demo-child"
 version = "0.1.0"
 dependencies = [
  "cfg-if",
+ "horn-idl-build",
  "horn-ipc",
  "horn-mimalloc",
  "horn-procd",
@@ -470,6 +486,7 @@ dependencies = [
 name = "idl-demo-root"
 version = "0.1.0"
 dependencies = [
+ "horn-idl-build",
  "horn-ipc",
  "horn-procd",
  "horn-vm",

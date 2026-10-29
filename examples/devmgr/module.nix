@@ -10,11 +10,8 @@
     pkgs.pkgsBuildBuild.runCommand "${name}-runtime.elf" {
       nativeBuildInputs = [pkgs.pkgsBuildBuild.llvmPackages.llvm];
     } ''llvm-objcopy --strip-debug ${package}/bin/${name}.elf "$out"'';
-  bootstrap = schema:
-    pkgs.pkgsBuildBuild.runCommand "horn-bootstrap.json" {
-      nativeBuildInputs = [pkgs.pkgsBuildBuild.python3];
-      PYTHONPATH = lib.concatStringsSep ":" (map (p: "${p}") [../../tools/idl ../../platform/core/vm/idl ../../platform/core/procd/idl ../../platform/core/devmgr/idl ../../platform/core/console/idl ../../platform/core/clock/idl]);
-    } ''python3 -B -m horn_idl ${schema} --capsets "$out"'';
+  idl = import ../../tools/idl {pkgs = pkgs.pkgsBuildBuild;};
+  bootstrap = idl.capsets;
   driverCatalog = pkgs.pkgsBuildBuild.writeText "horn-drivers.rs" (''      static DRIVERS: &[DriverConfig] = &[
     ''
     + lib.concatMapStrings (d: let
@@ -27,15 +24,6 @@
     config.devmgr.drivers
     + "];\n");
   mimalloc = import ../../platform/runtime/mimalloc {pkgs = pkgs.pkgsBuildBuild;};
-  protocol = old: {
-    HORN_IDL = "${../../tools/idl}";
-    HORN_VM_IDL = "${../../platform/core/vm/idl}";
-    HORN_PROCESS_IDL = "${../../platform/core/procd/idl}";
-    HORN_DEVICE_IDL = "${../../platform/core/devmgr/idl}";
-    HORN_CLOCK_IDL = "${../../platform/core/clock/idl}";
-    HORN_CONSOLE_IDL = "${../../platform/core/console/idl}";
-    nativeBuildInputs = (old.nativeBuildInputs or []) ++ [pkgs.python3];
-  };
   console = import ../../platform/drivers/virtio/console {
     workspace = config.rust.workspace;
     pkgs = pkgs.pkgsBuildBuild;
@@ -48,45 +36,29 @@
   childWorkspace = config.rust.workspace.override {
     target = "sel4";
     crateOverrides = {
-      horn-devmgr = protocol;
-      horn-procd = protocol;
-      horn-supervisor = protocol;
-      horn-vm = protocol;
       memchr = old: {features = ["alloc"];};
-      horn-console = protocol;
-      horn-registry = protocol;
-      horn-clock = protocol;
-      horn-net = protocol;
-      horn-shell = protocol;
-      horn-devmgr-probe = protocol;
-      horn-devmgr-task = old:
-        (protocol old)
-        // {
-          features = (old.features or []) ++ lib.optional config.devmgr-demo.boot-tests "boot-tests";
-          HORN_DEVICE_TEST_IDL =
-            if config.devmgr-demo.boot-tests
-            then "${../../tests/boot/devmgr-probe/schema.py}"
-            else "";
-          DEVMGR_TEST_FAULT =
-            if config.devmgr-demo.inject-fault
-            then "1"
-            else "0";
-          DEVMGR_TEST_EARLY_FAULT =
-            if config.devmgr-demo.early-fault
-            then "1"
-            else "0";
-          DEVMGR_TEST_NO_READY =
-            if config.devmgr-demo.withhold-ready
-            then "1"
-            else "0";
-          # QEMU HPET uses system-memory MSI, outside PCI DMA translation.
-          HORN_CLOCK_ROUTE = "qemu-system-msi";
-          DEVMGR_DRIVER_CATALOG = "${driverCatalog}";
-          DEVMGR_PROBE_ELF =
-            if config.devmgr-demo.boot-tests
-            then "${runtimeElf childWorkspace.members.horn-devmgr-probe "devmgr_probe"}"
-            else "";
-        };
+      horn-devmgr-task = old: {
+        features = (old.features or []) ++ lib.optional config.devmgr-demo.boot-tests "boot-tests";
+        DEVMGR_TEST_FAULT =
+          if config.devmgr-demo.inject-fault
+          then "1"
+          else "0";
+        DEVMGR_TEST_EARLY_FAULT =
+          if config.devmgr-demo.early-fault
+          then "1"
+          else "0";
+        DEVMGR_TEST_NO_READY =
+          if config.devmgr-demo.withhold-ready
+          then "1"
+          else "0";
+        # QEMU HPET uses system-memory MSI, outside PCI DMA translation.
+        HORN_CLOCK_ROUTE = "qemu-system-msi";
+        DEVMGR_DRIVER_CATALOG = "${driverCatalog}";
+        DEVMGR_PROBE_ELF =
+          if config.devmgr-demo.boot-tests
+          then "${runtimeElf childWorkspace.members.horn-devmgr-probe "devmgr_probe"}"
+          else "";
+      };
       horn-netd = old: {
         HORN_TCP_BUFFER_BYTES = toString config.devmgr-demo.tcp-buffer-bytes;
         HORN_TCP_CONNECTIONS = toString config.devmgr-demo.tcp-connections;
@@ -106,10 +78,6 @@
   rootWorkspace = config.rust.workspace.override {
     target = "sel4-roottask";
     crateOverrides = {
-      horn-devmgr = protocol;
-      horn-procd = protocol;
-      horn-supervisor = protocol;
-      horn-vm = protocol;
       devmgr-demo-root = old: {
         features = (old.features or []) ++ lib.optional config.devmgr-demo.boot-tests "boot-tests";
         SUPERVISOR_ELF = "${runtimeElf childWorkspace.members.horn-supervisor-task "supervisor"}";
@@ -230,7 +198,7 @@ in {
     services.definitions = {
       devmgr = {
         elf = runtimeElf childWorkspace.members.horn-devmgr-task "devmgr";
-        bootstrap = bootstrap ../../platform/core/devmgr/idl/horn_device.py;
+        bootstrap = bootstrap "horn_device";
         capset = "DeviceCaps";
         activation = "boot";
         ram = 64 * 1024 * 1024;
@@ -286,7 +254,7 @@ in {
       };
       timerd = {
         elf = runtimeElf childWorkspace.members.horn-timerd "timerd";
-        bootstrap = bootstrap ../../platform/core/clock/idl/horn_clock.py;
+        bootstrap = bootstrap "horn_clock";
         capset = "TimerCaps";
         ram = 8 * 1024 * 1024;
         requires.source = {path = "/devices/platform/clock";};
@@ -318,7 +286,7 @@ in {
       };
       netd = lib.mkIf config.devmgr-demo.net {
         elf = runtimeElf childWorkspace.members.horn-netd "netd";
-        bootstrap = bootstrap ../../platform/core/net/idl/horn_net.py;
+        bootstrap = bootstrap "horn_net";
         capset = "NetdCaps";
         ram = 32 * 1024 * 1024;
         requires = {
@@ -360,7 +328,7 @@ in {
       };
       http-demo = lib.mkIf config.devmgr-demo.net {
         elf = runtimeElf childWorkspace.members.horn-http-demo "http_demo";
-        bootstrap = bootstrap ../../platform/core/net/idl/horn_net.py;
+        bootstrap = bootstrap "horn_net";
         capset = "HttpCaps";
         ram = 8 * 1024 * 1024;
         requires.tcp = {path = "/services/net/tcp";};
@@ -374,7 +342,7 @@ in {
       };
       horn-shell = lib.mkIf config.devmgr-demo.console {
         elf = runtimeElf childWorkspace.members.horn-shell "shell";
-        bootstrap = bootstrap ../../platform/apps/shell/idl/horn_shell.py;
+        bootstrap = bootstrap "horn_shell";
         capset = "ShellCaps";
         ram = 8 * 1024 * 1024;
         requires = {

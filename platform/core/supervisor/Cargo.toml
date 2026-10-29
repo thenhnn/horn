@@ -9,3 +9,7 @@ client = ["horn-ipc/sel4", "dep:sel4"]
 [dependencies]
 horn-ipc = { path = "../../runtime/rust/horn-ipc" }
 sel4 = { path = "../../../vendor/rust-sel4/src/crates/sel4", optional = true }
+
+[build-dependencies]
+horn-idl-build.workspace = true
+

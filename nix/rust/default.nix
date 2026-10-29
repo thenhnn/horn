@@ -9,6 +9,7 @@
 }: let
   inherit (pkgs) lib;
   build = pkgs.pkgsBuildBuild;
+  idl = import ../../tools/idl {pkgs = build;};
   cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
   arch = {riscv64 = "riscv64imac";}.${cpu} or cpu;
   targetName = "${arch}-${target}";
@@ -148,8 +149,9 @@
         inherit packageId features;
         buildRustCrateForPkgsFunc = pkgs: args: let
           override = crateOverrides.${args.crateName} or (_: {});
+          configured = args // lib.optionalAttrs (builtins.any (dep: dep.crateName == "horn-idl-build") (args.buildDependencies or [])) (idl.crate args);
         in
-          builder pkgs (args // override args);
+          builder pkgs (configured // override configured);
         makeTarget = makeTarget release;
         runTests = false;
       };

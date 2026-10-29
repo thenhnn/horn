@@ -8,3 +8,7 @@ horn-ipc = { path = "../../runtime/rust/horn-ipc", features = ["sel4"] }
 horn-vm = { path = "../vm", features = ["rpc"] }
 sel4 = { path = "../../../vendor/rust-sel4/src/crates/sel4" }
 object = { version = "0.40.0", default-features = false, features = ["read"] }
+
+[build-dependencies]
+horn-idl-build.workspace = true
+

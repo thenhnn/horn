@@ -7,6 +7,7 @@ from pathlib import Path
 from .compile import compile_path
 from .emit.c import emit as emit_c
 from .emit.rust import emit as emit_rust
+from .sources import cargo_dependencies, configure_sources
 
 
 def main() -> None:
@@ -18,9 +19,14 @@ def main() -> None:
     parser.add_argument(
         "--capsets", type=Path, help="Export named bootstrap slots as JSON"
     )
+    parser.add_argument(
+        "--cargo-deps", action="store_true", help="Print Cargo rebuild inputs"
+    )
     args = parser.parse_args()
 
-    schema = compile_path(args.schema)
+    catalog, sources = configure_sources()
+    path = sources.get(str(args.schema), args.schema)
+    schema = compile_path(path)
     if args.capsets:
         args.capsets.parent.mkdir(parents=True, exist_ok=True)
         args.capsets.write_text(
@@ -50,6 +56,8 @@ def main() -> None:
         if args.c:
             args.c.parent.mkdir(parents=True, exist_ok=True)
             args.c.write_text(source)
+    if args.cargo_deps:
+        cargo_dependencies(catalog, sources, path)
 
 
 if __name__ == "__main__":

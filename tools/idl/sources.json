@@ -1,0 +1,16 @@
+{
+  "root": "../..",
+  "schemas": {
+    "horn_vm": "platform/core/vm/idl/horn_vm.py",
+    "horn_process": "platform/core/procd/idl/horn_process.py",
+    "horn_supervisor": "platform/core/supervisor/idl/horn_supervisor.py",
+    "horn_device": "platform/core/devmgr/idl/horn_device.py",
+    "horn_console": "platform/core/console/idl/horn_console.py",
+    "horn_registry": "platform/core/registry/idl/horn_registry.py",
+    "horn_clock": "platform/core/clock/idl/horn_clock.py",
+    "horn_net": "platform/core/net/idl/horn_net.py",
+    "horn_shell": "platform/apps/shell/idl/horn_shell.py",
+    "idl_demo": "examples/idl/demo/schema.py",
+    "devmgr_probe": "tests/boot/devmgr-probe/schema.py"
+  }
+}
