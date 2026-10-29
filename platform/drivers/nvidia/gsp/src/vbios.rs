@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
+// SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 //! Adapted from NOVA 3497a403, vbios.rs and firmware/fwsec.rs.
 //! Parse a bounded PROM snapshot, without executing x86/EFI option-ROM code.
 //! The hardware adapter uses BAR0 PROM reads; it does not require a ROM BAR.
@@ -236,7 +237,7 @@ impl<'a> Fwsec<'a> {
         let imem_size = u32_at(data, 20)?;
         let dmem_size = u32_at(data, 32)?;
         let payload_size = imem_size.checked_add(dmem_size).ok_or(Error::Range)? as usize;
-        // No guessed decompression; current AD106 FWSEC is stored uncompressed.
+        // No guessed decompression: only uncompressed, block-aligned payloads.
         if u32_at(data, 4)? as usize != payload_size
             || imem_size == 0
             || dmem_size == 0
@@ -281,7 +282,12 @@ impl<'a> Fwsec<'a> {
     }
     /// Prepare both FRTS and SB *before* starting either firmware. Production
     /// signature selection follows the descriptor bitmap, never the debug path.
-    pub fn prepare(&self, fuse: u32, command: Command, staging: &mut [u8]) -> Result<()> {
+    pub fn prepare<'s>(
+        &self,
+        fuse: u32,
+        command: Command,
+        staging: &'s mut [u8],
+    ) -> Result<crate::falcon::Prepared<'s>> {
         if fuse >= 16 || self.signature_versions & (1 << fuse) == 0 {
             return Err(Error::Unsupported);
         }
@@ -382,7 +388,27 @@ impl<'a> Fwsec<'a> {
             .get_mut(patch..patch_end)
             .ok_or(Error::Range)?
             .copy_from_slice(signature);
-        Ok(())
+        crate::falcon::Prepared::new(
+            staging,
+            crate::falcon::Engine::Gsp,
+            crate::firmware::Segment {
+                source: 0,
+                destination: self.imem_destination,
+                length: self.imem_size,
+            },
+            crate::firmware::Segment {
+                source: self.imem_size,
+                destination: self.dmem_destination,
+                length: self.dmem_size,
+            },
+            crate::falcon::Brom {
+                pkc: self.pkc_data_offset,
+                engines: self.engine_mask,
+                ucode: self.ucode_id,
+            },
+            0,
+            Some(command),
+        )
     }
 }
 #[derive(Clone, Copy)]

@@ -28,7 +28,7 @@ nix-shell --run 'cargo test --offline -p horn-nvidia'
 ```
 
 Seven focused host tests exercise those guards, not hardware behavior.
-There is still no public GPU API or GSP boot implementation. A matching
+There is still no public GPU API or connected native GSP boot/RPC path. A matching
 570.144 firmware package is now pinned; see below.
 In particular there is no fake successful `boot()`.
 See [DESIGN.md](DESIGN.md) for the port plan, blockers and exact source map.
@@ -39,7 +39,12 @@ See [DESIGN.md](DESIGN.md) for the port plan, blockers and exact source map.
 probe library. See [source/license provenance](gsp/PORTING.md). It parses the
 pinned 570.144 TLVs and prepares original production booter signatures. The
 VBIOS snapshot parser locates production FWSEC and prepares FRTS/SB working
-copies; no board VBIOS snapshot has been exercised yet.
+copies; no board VBIOS snapshot has been exercised yet. The Falcon core now
+ports AD106 reset, DMA load, RSA3K BROM parameters and FWSEC-FRTS/SB execution
+checks, with a mandatory retained sysmembar DMA page. Its native MMIO/clock/DMA
+adapter is not connected; this is **not** hardware initialization evidence.
+Every wait has a fixed deadline; uncertain failures quarantine both engines.
+The four register/deadline unit checks do not emulate firmware or RPC.
 
 ```sh
 nix-build nix -A nvidia.firmware --argstr profile pc-dev \

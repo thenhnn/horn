@@ -127,7 +127,11 @@ impl<'a> Booter<'a> {
     }
     /// CPU-exclusive staging only. Install an original production signature at
     /// its designated slot; do not modify redistributed files. No dev fallback.
-    pub fn prepare(&self, hardware_fuse: u32, staging: &mut [u8]) -> Result<()> {
+    pub fn prepare<'s>(
+        &self,
+        hardware_fuse: u32,
+        staging: &'s mut [u8],
+    ) -> Result<crate::falcon::Prepared<'s>> {
         let signature = self.tlv.signature(hardware_fuse)?;
         if staging.len() != self.blob.len() {
             return Err(Error::Range);
@@ -139,7 +143,19 @@ impl<'a> Booter<'a> {
             .get_mut(at..end)
             .ok_or(Error::Range)?
             .copy_from_slice(signature);
-        Ok(())
+        crate::falcon::Prepared::new(
+            staging,
+            crate::falcon::Engine::Sec2,
+            self.imem,
+            self.dmem,
+            crate::falcon::Brom {
+                pkc: self.pkc_data_offset,
+                engines: self.engine_mask,
+                ucode: self.ucode_id,
+            },
+            self.imem.source,
+            None,
+        )
     }
 }
 pub struct Bundle<'a> {

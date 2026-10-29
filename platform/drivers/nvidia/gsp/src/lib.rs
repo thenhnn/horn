@@ -2,6 +2,7 @@
 //! Native AD106 GSP port. Parsing is not evidence of firmware boot/authentication.
 #![no_std]
 extern crate alloc;
+pub mod falcon;
 pub mod firmware;
 pub mod tlv;
 pub mod vbios;
@@ -16,5 +17,11 @@ pub enum Error {
     Checksum,
     FirmwareStatus(u32),
     Quarantined,
+    Backend,
+    Unavailable,
+    State,
+    Timeout,
+    ClockRegressed,
+    ClockStopped,
 }
 pub type Result<T> = core::result::Result<T, Error>;
