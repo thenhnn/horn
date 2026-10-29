@@ -215,6 +215,30 @@ class DeviceControl:
     @method
     def close(self) -> Result[None, DeviceError]: ...
 
+    # Same bounds as bar_window, with independent acknowledged revocation.
+    @method
+    def map_bar_window(
+        self, index: U32, offset: U64, length: U64,
+        space: Cap[VmAddressSpaceObject, Borrow],
+    ) -> Result[Cap[DeviceMmioObject, Move], DeviceError]: ...
+
+
+@iface("net.nhnn.horn.device.mmio", version=(1, 0))
+class DeviceMmio:
+    # One-shot retrieval: at most one transferred capability per seL4 message.
+    @method
+    def memory(self) -> Result[Cap[VmMemoryObject, Move], DeviceError]: ...
+
+    # Revoke EVERY CPU alias before releasing the export quota/authority.
+    # This is not a device reset or a DMA-drain acknowledgment.
+    @method
+    def close(self) -> Result[None, DeviceError]: ...
+
+
+@object(implements=(DeviceMmio,))
+class DeviceMmioObject:
+    pass
+
 
 @iface("net.nhnn.horn.device.mapping", version=(1, 0))
 class DeviceMapping:
@@ -249,6 +273,7 @@ class DeviceMappingObject:
         DeviceAssignment,
         DeviceControl,
         DeviceMapping,
+        DeviceMmio,
         ClockSource,
     )
 )

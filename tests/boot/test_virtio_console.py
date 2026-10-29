@@ -123,7 +123,9 @@ def test_virtio_console_denied_dma(system, probe):
         if probe == "stale":
             read_prompt(connection, vm)
             connection.sendall(b"help\n")
-        vm.serial.wait_for(b"DEVICE_CAP_CHECK_PASS wrong_vm_object=denied")
+        # This later marker follows the wrong-cap assertions too. The early
+        # diagnostic can interleave bytewise with timerd startup on debug UART.
+        vm.serial.wait_for(b"DEVICE_MMIO_LEASE_PASS quota=8 cycles=16 scoped=true")
         vm.serial.wait_for(f"DMA_PROBE {probe}=true".encode())
         vm.serial.wait_for(b"VTD_FAULT source=0020", timeout=60)
         vm.serial.wait_for(b"read=true overflow=false", timeout=60)

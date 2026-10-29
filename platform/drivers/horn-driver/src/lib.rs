@@ -51,6 +51,22 @@ struct Bar {
     cpu: CpuMapping,
 }
 
+/// Explicitly closed, bounded UC window. Raw aliases must not outlive close
+/// or assignment revocation. No Drop performs hardware/VM cleanup.
+#[must_use = "explicitly close the MMIO window or retain it until assignment teardown"]
+pub struct MmioWindow {
+    cpu: CpuMapping,
+    lease: Cap<DeviceMmioObjectTag>,
+}
+impl MmioWindow {
+    pub fn pointer(&self) -> NonNull<u8> {
+        NonNull::new(self.cpu.address as *mut u8).expect("MMIO address")
+    }
+    pub fn length(&self) -> usize {
+        self.cpu.length
+    }
+}
+
 /// One assigned function and the caller's own VM authority. Not a driver base
 /// class: no globals, virtio knowledge, probing/matching, reset or supervisor.
 pub struct DeviceSession {
@@ -171,6 +187,46 @@ impl DeviceSession {
             cpu,
         });
         pointer
+    }
+    /// Independently revocable window, with the same 64-KiB/page bounds.
+    /// Dropping the handle alone does not release the broker's retained lease.
+    pub fn mmio_window(&mut self, index: u32, offset: u64, length: usize) -> MmioWindow {
+        assert!(length > 0 && length <= 65536 && length % PAGE == 0 && offset % PAGE as u64 == 0);
+        let space = self.space;
+        let grant = self
+            .control()
+            .map_bar_window(index, offset, length as _, &space)
+            .expect("scoped MMIO window");
+        let memory = DeviceMmioClient::new(&mut self.transport, Cap::from_ref(grant.as_ref()))
+            .memory()
+            .expect("MMIO memory grant");
+        let cpu = self.map_cpu(memory, length);
+        MmioWindow { cpu, lease: grant }
+    }
+    /// Revokes all CPU aliases first, then releases this virtual reservation and
+    /// local cap slots. Failure aborts; do not reuse raw pointers or the session.
+    /// This does NOT reset hardware or establish DMA quiescence.
+    pub fn close_window(&mut self, window: MmioWindow) {
+        DeviceMmioClient::new(&mut self.transport, Cap::from_ref(window.lease.as_ref()))
+            .close()
+            .expect("MMIO window revoke acknowledgement");
+        VmRegionClient::new(
+            &mut self.transport,
+            Cap::from_ref(window.cpu.region.as_ref()),
+        )
+        .destroy()
+        .expect("MMIO virtual reservation release");
+        self.transport
+            .space
+            .delete(window.cpu.region.as_ref())
+            .unwrap();
+        // Root already closed/revoked the memory and lease authorities. Only
+        // empty/local descendant slots remain: do not RPC through revoked caps.
+        self.transport
+            .space
+            .delete(window.cpu.memory.as_ref())
+            .unwrap();
+        self.transport.space.delete(window.lease.as_ref()).unwrap();
     }
     /// Resolve only within CPU-mapped BAR grants. The numeric bus address is
     /// a selector, not authority to map arbitrary physical memory.

@@ -54,9 +54,15 @@ struct Device {
     dma_policy: DmaPolicy,
     dma_bytes: u64,
     irq: Option<Irq>,
-    mmios: Vec<u64>,
+    mmios: Vec<Mmio>,
     next_iova: u64,
     active: bool,
+}
+struct Mmio {
+    token: u64,
+    badge: u64,
+    authority: CapRef,
+    memory: Option<Cap<VmMemoryObjectTag>>,
 }
 struct Dma {
     badge: u64,
@@ -298,6 +304,34 @@ impl Service {
             .revoke()
             .expect("authority revoke");
         self.io().space().delete(authority).unwrap();
+    }
+    /// Retain metadata and quota until root acknowledges all-alias revocation.
+    /// Uncertain cleanup is fail-stop, never slot reuse or an ordinary error.
+    fn close_mmio(&mut self, device: usize, index: usize) {
+        let token = self.devices[device].mmios[index].token;
+        self.io()
+            .platform
+            .revoke_mmio(token)
+            .expect("MMIO revoke acknowledgement");
+        let mmio = self.devices[device].mmios.swap_remove(index);
+        if let Some(memory) = mmio.memory {
+            self.io().space().delete(memory.as_ref()).unwrap();
+        }
+        self.retire(mmio.authority);
+    }
+    fn mmio_index(&self, badge: u64) -> Result<(usize, usize), DeviceError> {
+        self.devices
+            .iter()
+            .enumerate()
+            .filter(|(_, device)| device.active)
+            .find_map(|(d, device)| {
+                device
+                    .mmios
+                    .iter()
+                    .position(|m| m.badge == badge)
+                    .map(|i| (d, i))
+            })
+            .ok_or(DeviceError::Denied)
     }
     fn device(&self, badge: u64) -> Result<usize, DeviceError> {
         self.devices
@@ -723,6 +757,27 @@ impl DeviceControl for Caller<'_> {
         length: u64,
         space: Cap<VmAddressSpaceObjectTag>,
     ) -> Result<Cap<VmMemoryObjectTag>, DeviceError> {
+        let lease = self.map_bar_window(index, offset, length, space)?;
+        // Calls are serialized: this is the window just appended above.
+        // Legacy clients receive only its memory and retain until device close.
+        let d = self.service.device(self.badge)?;
+        let memory = self.service.devices[d]
+            .mmios
+            .last_mut()
+            .unwrap()
+            .memory
+            .take()
+            .unwrap();
+        self.service.io().space().delete(lease.as_ref()).unwrap();
+        Ok(memory)
+    }
+    fn map_bar_window(
+        &mut self,
+        index: u32,
+        offset: u64,
+        length: u64,
+        space: Cap<VmAddressSpaceObjectTag>,
+    ) -> Result<Cap<DeviceMmioObjectTag>, DeviceError> {
         let d = self.service.device(self.badge)?;
         if space.as_ref().unwrapped_badge().is_some() {
             return Err(DeviceError::Denied);
@@ -753,14 +808,26 @@ impl DeviceControl for Caller<'_> {
             .mmios
             .try_reserve(1)
             .map_err(|_| DeviceError::Exhausted)?;
-        let grant = self
-            .service
-            .io()
-            .platform
-            .mmio(&space, address, length)
-            .map_err(|_| DeviceError::Invalid)?;
-        self.service.devices[d].mmios.push(grant.token);
-        Ok(grant.memory)
+        // Reserve metadata/endpoint slots before creating any CPU aliases.
+        let (badge, authority, exported) = self.service.mint()?;
+        let grant = match self.service.io().platform.mmio(&space, address, length) {
+            Ok(grant) => grant,
+            Err(CallError::Remote(error))
+                if error != DeviceError::Quarantined && error != DeviceError::Backend =>
+            {
+                self.service.retire(authority);
+                self.service.io().space().delete(exported).unwrap();
+                return Err(error);
+            }
+            Err(error) => panic!("uncertain MMIO import: {:?}", error),
+        };
+        self.service.devices[d].mmios.push(Mmio {
+            token: grant.token,
+            badge,
+            authority,
+            memory: Some(grant.memory),
+        });
+        Ok(Cap::from_ref(exported))
     }
     fn map(
         &mut self,
@@ -987,13 +1054,9 @@ impl DeviceControl for Caller<'_> {
     fn close(&mut self) -> Result<(), DeviceError> {
         let d = self.service.device(self.badge)?;
         // Stop the CPU from issuing new device commands BEFORE touching DMA.
-        let mmios = core::mem::take(&mut self.service.devices[d].mmios);
-        for token in mmios {
-            self.service
-                .io()
-                .platform
-                .revoke_mmio(token)
-                .expect("MMIO revoke acknowledgement");
+        while !self.service.devices[d].mmios.is_empty() {
+            let index = self.service.devices[d].mmios.len() - 1;
+            self.service.close_mmio(d, index);
         }
         let device = &self.service.devices[d];
         let config = device.config;
@@ -1062,6 +1125,20 @@ impl DeviceControl for Caller<'_> {
         let authority = self.service.devices[d].authority;
         self.service.devices[d].active = false;
         self.service.retire(authority);
+        Ok(())
+    }
+}
+impl DeviceMmio for Caller<'_> {
+    fn memory(&mut self) -> Result<Cap<VmMemoryObjectTag>, DeviceError> {
+        let (device, index) = self.service.mmio_index(self.badge)?;
+        self.service.devices[device].mmios[index]
+            .memory
+            .take()
+            .ok_or(DeviceError::NotFound)
+    }
+    fn close(&mut self) -> Result<(), DeviceError> {
+        let (device, index) = self.service.mmio_index(self.badge)?;
+        self.service.close_mmio(device, index);
         Ok(())
     }
 }

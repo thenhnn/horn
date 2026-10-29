@@ -88,7 +88,14 @@ GPU interrupt-delivery evidence.
 Large BARs are inventoried/sized without mapping them wholesale.
 `bar_window(index, offset, length, space)` grants only a page-aligned window,
 at most 64 KiB; each device retains at most eight exported MMIO leases.
-Legacy `bar()` still only accepts an entire BAR up to 64 KiB. The broker's
+`map_bar_window` returns a scoped `DeviceMmio` lease; its one-shot `memory()`
+returns the bounded memory (one transferred cap per seL4 message). Its `close()` acknowledges removal of **every CPU alias** before the
+export quota and close authority are retired. Numeric tokens are private to
+devmgr/root, not caller-supplied authority. Close failure is fail-stop; metadata
+is not recycled before acknowledgment. Assignment close also revokes surviving
+leases. This is neither a device reset nor DMA quiescence. Legacy `bar_window`
+retains its window until assignment close, and `bar()` still only accepts an
+entire BAR up to 64 KiB. The broker's
 private MSI-X map covers just entry zero's page(s). CPU MMIO decoding is enabled
 while bus mastering remains off, so a read-only probe needs no DMA activation.
 

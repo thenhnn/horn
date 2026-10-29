@@ -22,10 +22,17 @@ virtio-console      upstream Hal forwarding and console protocol
 - `map_bars(resources)` imports/maps the assigned memory BARs. `mmio(address,
   size)` resolves only inside those retained grants, with checked bounds.
   Bus addresses select grants; they do not authorize arbitrary MMIO mapping.
+- `mmio_window(index, offset, length)` returns a non-Copy scoped `MmioWindow`
+  (page aligned, at most 64 KiB). `close_window(window)` first acknowledges
+  broker revocation of every CPU alias, then releases its virtual reservation
+  and cap slots. Raw pointers must not survive close/assignment revocation.
+  Drop alone retains the lease; close does not establish DMA quiescence.
 - `interrupt()` obtains/retains a read-only notification; repeated calls reuse
   it. `activate()` enables the assigned device and `ack_interrupt()` rearms it.
 - `dma_alloc(pages, access)` returns fresh zeroed resident pages plus **IOVA**, not
-  RAM physical address. The current bounded pin profile permits 1..16 4KiB pages.
+  RAM physical address. Each pin/chunk is at most sixteen 4-KiB pages; larger
+  allocations use a charged contiguous IOVA reservation up to the assignment's
+  trusted budget (hard ceiling 64 MiB), populated in fixed chunks.
   `DeviceAccess::{Read, Write, ReadWrite}` names DEVICE permissions.
 - Unsafe `share`/`unshare` use independent directional bounce buffers for caller
   stack/heap memory. Sources stay live and CPU-exclusive until matching unshare.

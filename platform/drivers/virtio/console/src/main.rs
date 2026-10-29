@@ -61,6 +61,87 @@ fn main() -> ! {
             .control()
             .resources()
             .expect("assigned PCI resources");
+        #[cfg(feature = "dma-probe")]
+        {
+            // Exercise reusable broker/VM/cap slots without touching registers.
+            let bar = resources
+                .bar_lengths
+                .data
+                .iter()
+                .position(|n| *n >= 4096)
+                .expect("test memory BAR") as u32;
+            let space =
+                hal::target::<VmAddressSpaceObjectTag>(DEVICE_DRIVER_CAPS_ADDRESS_SPACE_SLOT);
+            assert!(matches!(
+                DeviceMmioClient::new(
+                    state.session.transport(),
+                    hal::target(DEVICE_DRIVER_CAPS_DEVICE_SLOT)
+                )
+                .close(),
+                Err(CallError::Remote(DeviceError::Denied))
+            ));
+            // Closing an unopened lease must also retire its server-held memory.
+            let unopened = state
+                .session
+                .control()
+                .map_bar_window(bar, 0, 4096, &space)
+                .unwrap();
+            DeviceMmioClient::new(state.session.transport(), Cap::from_ref(unopened.as_ref()))
+                .close()
+                .unwrap();
+            state
+                .session
+                .transport()
+                .space
+                .delete(unopened.as_ref())
+                .unwrap();
+            let lease = state
+                .session
+                .control()
+                .map_bar_window(bar, 0, 4096, &space)
+                .unwrap();
+            let memory =
+                DeviceMmioClient::new(state.session.transport(), Cap::from_ref(lease.as_ref()))
+                    .memory()
+                    .unwrap();
+            assert!(matches!(
+                DeviceMmioClient::new(state.session.transport(), Cap::from_ref(lease.as_ref()))
+                    .memory(),
+                Err(CallError::Remote(DeviceError::NotFound))
+            ));
+            DeviceMmioClient::new(state.session.transport(), Cap::from_ref(lease.as_ref()))
+                .close()
+                .unwrap();
+            state
+                .session
+                .transport()
+                .space
+                .delete(memory.as_ref())
+                .unwrap();
+            state
+                .session
+                .transport()
+                .space
+                .delete(lease.as_ref())
+                .unwrap();
+            let mut windows = alloc::vec::Vec::new();
+            for _ in 0..8 {
+                windows.push(state.session.mmio_window(bar, 0, 4096));
+            }
+            assert!(matches!(
+                state.session.control().map_bar_window(bar, 0, 4096, &space),
+                Err(CallError::Remote(DeviceError::Exhausted))
+            ));
+            for window in windows {
+                state.session.close_window(window);
+            }
+            for _ in 0..16 {
+                let window = state.session.mmio_window(bar, 0, 4096);
+                assert_eq!(window.length(), 4096);
+                state.session.close_window(window);
+            }
+            sel4::debug_println!("DEVICE_MMIO_LEASE_PASS quota=8 cycles=16 scoped=true");
+        }
         state.session.map_bars(&resources);
         resources
     });
