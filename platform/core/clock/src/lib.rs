@@ -27,7 +27,8 @@ impl From<protocol::ClockCalibration> for ClockPage {
     }
 }
 impl ClockPage {
-    /// Valid only with invariant TSC and the current CPU-0-pinned task profile.
+    /// Valid only when the provider explicitly enables the calibrated TSC domain.
+    /// Currently enabled only on single-CPU, invariant-TSC, non-migrating boots.
     pub fn fast_now(&self) -> Option<u64> {
         if self.version != 1 || self.flags & 1 == 0 || self.span_cycles == 0 {
             return None;

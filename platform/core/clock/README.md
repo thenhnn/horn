@@ -19,8 +19,11 @@ Initialization calibrates against one 100-ms HPET wakeup, not a busy wait.
 
 ## Read-only time page
 
-When CPUID advertises invariant TSC, the current CPU-0-pinned task profile can
-read time locally using the base/ratio and a serialized TSC read. KVM uses
+On single-CPU boots, when CPUID advertises invariant TSC, tasks can read time
+locally using the base/ratio and a serialized TSC read. timerd obtains the actual
+boot CPU count through its scoped lifecycle capability. On SMP it clears the
+fast-path flag for itself and every client: invariant TSC is not a proof of
+cross-CPU synchronization. All public time/deadline values then use HPET/RPC. KVM uses
 `-cpu host,migratable=off`: it exposes host suitability rather than forcing an
 unsupported invariant-TSC flag. TCG normally uses the RPC fallback.
 
@@ -29,8 +32,19 @@ writable mapping, installs WRITE/GROW/SHRINK/SEAL seals, then maps it READ-only.
 This is an immutable **local copy**, not shared physical backing: the current
 native VM backend does not implement memory duplication/cross-process sharing.
 It costs one page in the client's RAM account and needs no subsequent updates.
-The fast path must be reconsidered before adding CPU migration, arbitrary
-affinity, live migration or mutable calibration. This is not wall-clock time.
+A cross-CPU fast path needs a separate validated synchronization/offset policy.
+CPU migration, live migration or mutable calibration also require revisiting it. This is not wall-clock time.
+
+## TODO: measured SMP fast-time optimization
+
+- [ ] Measure clock RPC cost under realistic load before adding a new fast path.
+  If justified, validate cross-CPU TSC suitability and implement genuinely shared
+  backing: provider-writable, client-read-only time data with base/coefficients,
+  sequence counter and a centrally changeable clock mode. Readers must retry
+  inconsistent snapshots and fall back to RPC when the fast path is disabled.
+  Immutable client-local copies cannot propagate that disable operation. Keep
+  HPET/RPC on SMP meanwhile; neither shared VM backing nor this optimization is
+  a prerequisite for further SMP or Linux work.
 
 ## Platform boundary
 

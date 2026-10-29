@@ -17,6 +17,7 @@ use horn_vm::{
 
 pub mod elf;
 mod loader;
+mod placement;
 mod service;
 pub use service::LaunchPolicy;
 #[cfg(test)]
@@ -82,6 +83,7 @@ struct Process {
     control: Option<(usize, sel4::Word)>,
     launch: Option<service::Grant>,
     name: String,
+    cpu: usize,
     state: State,
     exit: Option<Exit>,
     allocator: KernelAllocator,
@@ -124,7 +126,8 @@ pub struct Manager {
     caller_vspace: sel4::cap::VSpace,
     scratch: usize,
     asid_pool: sel4::cap::AsidPool,
-    scheduler: sel4::cap::SchedControl,
+    schedulers: Vec<sel4::cap::SchedControl>,
+    host_cpu: usize,
     processes: Vec<Process>,
     pending_exit: Option<ProcessId>,
     next_id: u64,
@@ -137,19 +140,26 @@ impl Manager {
     /// `caller_vspace` must remain current while using this manager. `scratch`
     /// must be an exclusively reserved, unmapped page with translation tables
     /// for the manager's lifetime; it must not overlap Rust allocations.
+    /// `schedulers[cpu]` must be that logical CPU's boot SchedControl capability.
+    /// The host remains on `host_cpu`; all manager/allocator access stays serialized.
     pub unsafe fn new(
         allocator: KernelAllocator,
         caller_vspace: sel4::cap::VSpace,
         scratch: usize,
         asid_pool: sel4::cap::AsidPool,
-        scheduler: sel4::cap::SchedControl,
+        schedulers: Vec<sel4::cap::SchedControl>,
+        host_cpu: usize,
     ) -> Self {
+        assert!(
+            (1..=placement::MAX_CPUS).contains(&schedulers.len()) && host_cpu < schedulers.len()
+        );
         Self {
             allocator,
             caller_vspace,
             scratch,
             asid_pool,
-            scheduler,
+            schedulers,
+            host_cpu,
             processes: Vec::new(),
             pending_exit: None,
             next_id: 1,
@@ -157,6 +167,13 @@ impl Manager {
             launch_poisoned: false,
             outgoing: None,
         }
+    }
+    pub fn cpu_count(&self) -> usize {
+        self.schedulers.len()
+    }
+    /// Read-only initial placement; neither this number nor a PID grants authority.
+    pub fn cpu(&self, id: ProcessId) -> Result<usize, Error> {
+        Ok(self.process(id)?.cpu)
     }
     /// Build a suspended process. The trusted launcher installs bootstrap caps, then calls start.
     pub fn create(&mut self, bytes: &[u8], config: Config<'_>) -> Result<ProcessId, Error> {
@@ -199,6 +216,14 @@ impl Manager {
             config.ram_limit / PAGE_SIZE,
         )?;
         let mut allocator = self.allocator.for_account(account);
+        let cpu = placement::initial_cpu(
+            self.cpu_count(),
+            self.host_cpu,
+            self.processes
+                .iter()
+                .filter(|p| matches!(p.state, State::Created | State::Active))
+                .map(|p| p.cpu),
+        );
         let result = (|| {
             let loaded = loader::load(
                 &mut allocator,
@@ -214,7 +239,7 @@ impl Manager {
             let sc = allocator.allocate_variable_sized::<sel4::cap_type::SchedContext>(
                 sel4::sys::seL4_MinSchedContextBits as usize,
             )?;
-            self.scheduler.sched_control_configure_flags(
+            self.schedulers[cpu].sched_control_configure_flags(
                 sc,
                 config.cpu_budget_us,
                 config.cpu_period_us,
@@ -254,6 +279,7 @@ impl Manager {
             control: None,
             launch: None,
             name: config.name.to_string(),
+            cpu,
             state: State::Created,
             exit: None,
             allocator,
@@ -524,7 +550,10 @@ impl Manager {
             }
         }
         p.vm = None;
-        for slot in [p.exit_signal.take(), p.fault_endpoint.take()].into_iter().flatten() {
+        for slot in [p.exit_signal.take(), p.fault_endpoint.take()]
+            .into_iter()
+            .flatten()
+        {
             p.allocator.release_slot(slot)?;
         }
         self.close_grant(id)?;
@@ -561,6 +590,16 @@ impl Caller<'_> {
     }
 }
 impl protocol::ProcessLifecycle for Caller<'_> {
+    fn placement(&mut self) -> Result<protocol::ProcessPlacement, protocol::ProcessError> {
+        let cpu = self
+            .manager
+            .cpu(self.id()?)
+            .map_err(|_| protocol::ProcessError::State)?;
+        Ok(protocol::ProcessPlacement {
+            cpu: cpu as u32,
+            cpu_count: self.manager.cpu_count() as u32,
+        })
+    }
     fn info(&mut self) -> Result<protocol::ProcessUsage, protocol::ProcessError> {
         let usage = self
             .manager

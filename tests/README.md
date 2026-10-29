@@ -6,7 +6,7 @@ run inside `nix-shell`:
 pytest -q
 ```
 
-Focused network smoke (one TCG boot, not a profile matrix):
+Focused network smoke (single-CPU and two-CPU TCG boots, not a profile matrix):
 
 ```sh
 pytest -q tests/boot/test_network.py -s

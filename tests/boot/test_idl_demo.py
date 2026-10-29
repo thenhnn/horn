@@ -12,13 +12,17 @@ def test_idl_child_process_demo(system, release):
     vm.serial.wait_for(
         b"MEMORY_BACKING_PASS zeroed=true rollback=true reclaimed=true", timeout=60
     )
+    vm.serial.wait_for(b"SMP_PLACEMENT_PASS cpus=2", timeout=30)
+    vm.serial.wait_for(b"SMP_CLEANUP_PASS backing=true accounts=true")
     vm.serial.wait_for(b"NX_EXECUTE_NEVER_PASS fault=true")
     vm.serial.wait_for(b"IDL_DEMO_PASS value=41")
     vm.serial.wait_for(b"LAUNCH_CHILD_PASS bootstrap=true")
     vm.serial.wait_for(
         b"LAUNCH_RPC_PASS sealed=true quota=true pagination=true control=true cleanup=true"
     )
-    vm.serial.wait_for(b"VM_CLIENT_CPU id=1")
+    vm.serial.wait_for(b"VM_CLIENT_CPU id=")
+    cpu = int(vm.serial.wait_for(b"\n").strip())
+    assert 0 <= cpu < 2
     vm.serial.wait_for(
         b"VM_SEALS_PASS aliases=true future_write=true immutable=true cleanup=true"
     )

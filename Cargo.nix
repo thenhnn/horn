@@ -213,6 +213,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-smp-probe" = rec {
+      packageId = "horn-smp-probe";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-smp-probe";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-supervisor" = rec {
       packageId = "horn-supervisor";
       build = internal.buildRustCrateWithFeatures {
@@ -1486,6 +1496,47 @@ rec {
         ];
 
       };
+      "horn-smp-probe" = rec {
+        crateName = "horn-smp-probe";
+        version = "0.1.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "smp_worker";
+            path = "src/worker.rs";
+            requiredFeatures = [ "worker" ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./tests/boot/smp-probe; };
+        libName = "horn_smp_probe";
+        dependencies = [
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            optional = true;
+            features = [ "sel4" ];
+          }
+          {
+            name = "horn-procd";
+            packageId = "horn-procd";
+            optional = true;
+          }
+          {
+            name = "horn-runtime";
+            packageId = "horn-runtime";
+            optional = true;
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+            optional = true;
+          }
+        ];
+        features = {
+          "worker" = [ "dep:horn-runtime" "dep:horn-procd" "dep:horn-ipc" "dep:sel4" ];
+        };
+        resolvedDefaultFeatures = [ "worker" ];
+      };
       "horn-supervisor" = rec {
         crateName = "horn-supervisor";
         version = "0.1.0";
@@ -1842,6 +1893,10 @@ rec {
           {
             name = "horn-procd";
             packageId = "horn-procd";
+          }
+          {
+            name = "horn-smp-probe";
+            packageId = "horn-smp-probe";
           }
           {
             name = "horn-vm";

@@ -155,9 +155,10 @@ fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
             sel4::init_thread::slot::VSPACE.cap(),
             scratch,
             sel4::init_thread::slot::ASID_POOL.cap(),
-            boot.sched_control()
-                .index(boot.inner().numNodes as usize - 1)
-                .cap(),
+            (0..boot.inner().numNodes as usize)
+                .map(|cpu| boot.sched_control().index(cpu).cap())
+                .collect(),
+            boot.inner().nodeID as usize,
         )
     };
     unsafe {

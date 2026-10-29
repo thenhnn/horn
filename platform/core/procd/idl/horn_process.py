@@ -52,8 +52,18 @@ class ProcessUsage:
     quarantined_bytes: U64
 
 
+@record
+class ProcessPlacement:
+    cpu: U32
+    cpu_count: U32
+
+
 @iface("net.nhnn.horn.process.lifecycle", version=(1, 0))
 class ProcessLifecycle:
+    # Read-only topology/initial placement, never scheduling authority.
+    @method
+    def placement(self) -> Result[ProcessPlacement, ProcessError]: ...
+
     @method
     def info(self) -> Result[ProcessUsage, ProcessError]: ...
 

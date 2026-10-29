@@ -19,6 +19,7 @@
       idl-demo-root = old: {
         CHILD_ELF = "${child}/bin/task.elf";
         LAUNCH_ELF = "${child}/bin/launched.elf";
+        SMP_ELF = "${childWorkspace.members.horn-smp-probe.override {features = ["worker"];}}/bin/smp_worker.elf";
       };
       memchr = old: {features = ["alloc"];};
     };

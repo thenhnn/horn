@@ -1,0 +1,18 @@
+[package]
+name = "horn-smp-probe"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+worker = ["dep:horn-runtime", "dep:horn-procd", "dep:horn-ipc", "dep:sel4"]
+
+[[bin]]
+name = "smp_worker"
+path = "src/worker.rs"
+required-features = ["worker"]
+
+[dependencies]
+horn-runtime = { path = "../../../platform/runtime/rust/horn-runtime", optional = true }
+horn-procd = { path = "../../../platform/core/procd", optional = true }
+horn-ipc = { path = "../../../platform/runtime/rust/horn-ipc", features = ["sel4"], optional = true }
+sel4 = { path = "../../../vendor/rust-sel4/src/crates/sel4", optional = true }

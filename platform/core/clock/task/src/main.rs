@@ -152,6 +152,12 @@ impl AlarmInterface for Caller<'_> {
 }
 fn main() -> ! {
     let mut io = horn_runtime::transport(root(), SLOTS.application()).unwrap();
+    let placement = horn_supervisor::protocol::ProcessLifecycleClient::new(
+        &mut io,
+        cap(TIMER_CAPS_LIFECYCLE_SLOT),
+    )
+    .placement()
+    .unwrap();
     let start = hardware_now(&mut io);
     let t0 = cycles();
     ClockSourceClient::new(&mut io, cap(TIMER_CAPS_SOURCE_SLOT))
@@ -163,7 +169,9 @@ fn main() -> ! {
     assert!(end > start && t1 > t0);
     let page = ClockPage {
         version: 1,
-        flags: invariant_tsc() as u64,
+        // Invariant TSC alone does not establish cross-CPU synchronization.
+        // Every client uses the hardware/RPC domain until that is validated.
+        flags: (placement.cpu_count == 1 && invariant_tsc()) as u64,
         base_cycles: t1,
         base_us: end,
         span_cycles: t1 - t0,

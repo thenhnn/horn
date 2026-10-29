@@ -10,7 +10,8 @@ curl --noproxy '*' http://127.0.0.1:8080/
 
 QEMU user networking forwards **127.0.0.1:8080 → guest TCP 80**, without TAP or
 root. `restrict=on` limits guest networking; the forward binds localhost only.
-Port 8080 must be free. Exit the console with **Ctrl-A, then x**.
+The launcher defaults to two virtual CPUs, with automatic process placement;
+`just shell kvm 1` retains a single-CPU boot. Port 8080 must be free. Exit the console with **Ctrl-A, then x**.
 Kernel/service logs are in `work/horn-debug.log`; `ps` and `registry` show the
 new processes/endpoints.
 

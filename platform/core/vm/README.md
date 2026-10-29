@@ -98,8 +98,9 @@ CPU clients. It never forcibly removes mappings during seal. No raw managed
 frame caps are exported, and every managed alias is tracked here. This invariant
 must also cover future address spaces and non-mapping writers; arbitrary private
 Untyped frames and DMA are not sealable through this API. Poisoned backing cannot
-be sealed. Debug/release QEMU boots run the server on CPU 0 and the client on CPU 1,
-checking aliases, MAYWRITE preservation, future-write denial and reclamation.
+be sealed. QEMU boot probes check aliases, MAYWRITE preservation, future-write
+denial and reclamation. Placement is automatic; a separate two-worker probe
+exercises remote-CPU private heaps and explicitly root-mapped shared backing.
 This is not yet a same-process multi-thread or concurrent-writer stress test.
 
 ## Lifetimes and accounting

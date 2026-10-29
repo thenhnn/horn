@@ -16,6 +16,7 @@ use horn_vm::{
 };
 use sel4_root_task::{Never, root_task};
 mod memory_probe;
+mod smp_probe;
 #[allow(dead_code, unused_imports, non_camel_case_types)]
 mod protocol {
     include!(concat!(env!("OUT_DIR"), "/protocol.rs"));
@@ -47,6 +48,9 @@ enum Request {
 #[root_task(stack_size = 1024 * 256, heap_size = 1024 * 1024 * 4)]
 fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
     ::sel4::debug_println!("idl demo root: start");
+    // Managed processes may share this CPU; yield only helps at the same priority.
+    let root_tcb = ::sel4::init_thread::slot::TCB.cap();
+    root_tcb.tcb_set_priority(root_tcb, 0).unwrap();
     ::sel4::debug_println!("VM_SERVICE_CPU id={}", unsafe {
         core::arch::x86_64::__cpuid(1).ebx >> 24
     });
@@ -93,15 +97,28 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
             ::sel4::init_thread::slot::VSPACE.cap(),
             scratch,
             ::sel4::init_thread::slot::ASID_POOL.cap(),
-            // Exercise remote-CPU mappings when more than one CPU is available.
-            bootinfo
-                .sched_control()
-                .index(bootinfo.inner().numNodes as usize - 1)
-                .cap(),
+            (0..bootinfo.inner().numNodes as usize)
+                .map(|cpu| bootinfo.sched_control().index(cpu).cap())
+                .collect(),
+            bootinfo.inner().nodeID as usize,
         )
     };
 
     unsafe { processes.enable_launch(0x8000_0000..0x8100_0000) }.unwrap();
+    let frequency = bootinfo
+        .extra()
+        .find(|e| e.id == ::sel4::BootInfoExtraId::X86TscFreq)
+        .unwrap();
+    let mhz = u32::from_le_bytes(frequency.content()[..4].try_into().unwrap()) as u64;
+    space = smp_probe::run(
+        &mut processes,
+        &mut allocator,
+        space,
+        system,
+        system_reply,
+        scratch,
+        mhz,
+    );
     let system_charge = allocator.account().usage().charged;
 
     // Independent accounts share physical RAM, not their individual quotas.

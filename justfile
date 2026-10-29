@@ -20,7 +20,7 @@ demo:
     pytest -q tests/boot/test_idl_demo.py -s
 
 # Interactive virtio console; kernel/debug output goes to work/horn-debug.log.
-shell accel="kvm":
+shell accel="kvm" cpus="2":
     #!/usr/bin/env bash
     set -euo pipefail
     case '{{ accel }}' in
@@ -33,14 +33,15 @@ shell accel="kvm":
         cpu=host,migratable=off
         ;;
       tcg) machine=q35; cpu=max ;;
-      *) echo 'Usage: just shell [kvm|tcg]' >&2; exit 1 ;;
+      *) echo 'Usage: just shell [kvm|tcg] [cpus: 1..64]' >&2; exit 1 ;;
     esac
+    [[ '{{ cpus }}' =~ ^[1-9][0-9]*$ ]] && (( {{ cpus }} <= 64 )) || { echo 'CPU count must be 1..64' >&2; exit 1; }
     mkdir -p work
     mapfile -t images < <(nix-build nix -A sel4.out -A root-task.package \
       --argstr profile pc-dev --arg modules '[ ./examples/devmgr/console.nix ]' \
       --no-out-link)
     [[ ${#images[@]} == 2 ]]
-    exec qemu-system-x86_64 -machine "$machine" -accel '{{ accel }}' -cpu "$cpu" -m 512 -smp 1 \
+    exec qemu-system-x86_64 -machine "$machine" -accel '{{ accel }}' -cpu "$cpu" -m 512 -smp '{{ cpus }}' \
       -nodefaults -no-user-config -nic none -display none -monitor none -no-reboot \
       -global hpet.msi=on \
       -netdev user,id=net0,restrict=on,hostfwd=tcp:127.0.0.1:8080-:80 \

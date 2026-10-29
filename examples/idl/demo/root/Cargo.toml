@@ -8,6 +8,7 @@ name = "task"
 path = "src/main.rs"
 
 [dependencies]
+horn-smp-probe = { path = "../../../../tests/boot/smp-probe" }
 horn-procd = { path = "../../../../platform/core/procd" }
 horn-vm = { path = "../../../../platform/core/vm", features = ["rpc"] }
 horn-ipc = { path = "../../../../platform/runtime/rust/horn-ipc", features = ["sel4"] }

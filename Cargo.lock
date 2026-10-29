@@ -389,6 +389,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "horn-smp-probe"
+version = "0.1.0"
+dependencies = [
+ "horn-ipc",
+ "horn-procd",
+ "horn-runtime",
+ "sel4",
+]
+
+[[package]]
 name = "horn-supervisor"
 version = "0.1.0"
 dependencies = [
@@ -489,6 +499,7 @@ dependencies = [
  "horn-idl-build",
  "horn-ipc",
  "horn-procd",
+ "horn-smp-probe",
  "horn-vm",
  "sel4",
  "sel4-root-task",

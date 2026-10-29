@@ -2,8 +2,8 @@
 
 `horn-procd` owns resident ELF processes and their VM services. The root server
 composes generated `ProcessHost` and `VmHost` dispatchers. Each process currently
-has one initial TCB and SC. Debug/release boots run root on CPU 0 and clients on
-CPU 1; a same-process thread runtime and musl are not part of this implementation.
+has one initial TCB and SC. Processes receive automatic initial CPU placement;
+a same-process thread runtime and musl are not part of this implementation.
 
 ## Capability API
 
@@ -18,7 +18,8 @@ CPU 1; a same-process thread runtime and musl are not part of this implementatio
 - `ProcessControl`: info, start, set_limit, terminate, close. Info reports ID, name,
   state, exit reason and RAM usage. Close retires an exited record and revokes all
   control-cap copies; dropping a cap alone does not retire a record.
-- `ProcessLifecycle`: the child's own RAM usage and exit(status), not parent
+- `ProcessLifecycle`: the child's own RAM usage, read-only `placement()`
+  (assigned logical CPU and boot CPU count), and exit(status), not parent
   authority. Successful self-exit stops execution and receives no reply.
 
 `Manager::provision_launch` binds factory and observer badges to an owner and a
@@ -71,6 +72,39 @@ hardened. See `../vm/README.md` for allocator/quarantine and DMA limitations.
 CPU budget/period are fixed trusted per-child SC parameters, not a hierarchical
 aggregate CPU account. The retained-child bound also limits SC grants; this is
 not CPU admission control or aggregate CPU-time reporting.
+
+## Initial CPU placement
+
+Root passes all boot-provided SchedControl capabilities and its boot CPU index
+to the manager. A pure policy in `src/placement.rs` chooses the least-reserved
+logical CPU, with a reservation for the root-hosted server and deterministic
+CPU-index tie breaking. Created/suspended children reserve placement too.
+Failed creation publishes no reservation. Confirmed stop releases it; exited/
+quarantined records do not count. Single-CPU boots simply share that CPU.
+
+The mechanism configures each fresh SC through that CPU's SchedControl before
+binding it to the TCB. Launch requests/service definitions contain no CPU number;
+neither PIDs nor reported placement grant scheduling authority. There is no
+migration after creation. This is initial distribution, **not utilization-based
+load balancing**: sleeping services still count, SMT/NUMA topology is not yet
+considered, and there is no aggregate CPU admission control.
+
+seL4 schedules runnable threads on each CPU. Root/procd/VM remain one serialized
+server, not multiple workers; their Rc/RefCell allocator/account structures are
+never concurrently accessed by other service processes. Other processes own
+private writable ELF, TLS, IPC buffers, heaps and capability metadata. Blocking
+RPC does not make a process multithreaded. Root servers must not spin at a higher
+priority than clients sharing their CPU; both demo roots use priority zero.
+IRQs retain their existing CPU-0 route; notifications can wake remote TCBs.
+Local control deadlines use a fixed CPU's TSC; public timerd time disables the
+TSC fast path on SMP and uses HPET/RPC instead.
+
+The IDL boot fixture includes test-only workers and one explicitly root-mapped
+shared page. Distinct QEMU APIC IDs, stable assigned CPUs, per-worker heap checks,
+and simultaneous progress without syscalls/yields exercise cross-CPU execution.
+Backing is retained until both workers are stopped, aliases are unmapped before
+reclaim, and charges return to baseline. This does **not** implement general
+VM sharing. No probe executable/marker is part of the ordinary desktop demo.
 
 ## ELF and execution policy
 

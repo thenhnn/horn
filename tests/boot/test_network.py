@@ -4,6 +4,8 @@ import socket
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 
+import pytest
+
 REQUEST = b"GET / HTTP/1.1\r\nHost: horn\r\n\r\n"
 
 
@@ -42,12 +44,14 @@ def exercise_http(port):
         request(i)
 
 
-def test_http_event_loop_and_growing_pool(system):
+@pytest.mark.parametrize("cpus", [1, 2], ids=["up", "smp"])
+def test_http_event_loop_and_growing_pool(system, cpus):
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
     vm = system(
         modules=("examples/devmgr/console.nix",),
+        cpus=cpus,
         extra_args=(
             "-device",
             "intel-iommu,intremap=on,caching-mode=on,device-iotlb=off,aw-bits=48",
@@ -68,3 +72,5 @@ def test_http_event_loop_and_growing_pool(system):
     exercise_http(port)
     log = vm.serial.path.read_text()
     assert "panicked" not in log and "VTD_FAULT source=" not in log, log
+    if cpus > 1:
+        assert "fast_tsc=false" in log, log
