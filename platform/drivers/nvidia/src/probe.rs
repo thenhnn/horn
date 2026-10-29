@@ -36,6 +36,8 @@ pub const PALIT_RTX_4060_TI: TargetBoard = TargetBoard(PciIdentity {
 });
 
 pub trait ReadBar0 {
+    /// Logical BAR extent, not necessarily one contiguous CPU mapping. Reads
+    /// outside retained register windows may still return InvalidRange.
     fn length(&self) -> usize;
     fn read32(&mut self, offset: usize) -> Result<u32, Error>;
 }

@@ -1,4 +1,4 @@
-# Native NVIDIA / AD106 sketch
+# Native NVIDIA / AD106 bring-up
 
 **Not a working GPU driver. No firmware has been uploaded or GPU passed through.**
 Linux bring-up is parked; this is a separate native Horn driver effort.
@@ -9,7 +9,8 @@ not rendering, CUDA, display, or Mesa compatibility.
 
 Only Ada **AD106**, initially the user's Palit RTX 4060 Ti. Exact PCI device and
 subsystem IDs are host-confirmed: **10de:2803 / 1569:f306**. The
-`PALIT_RTX_4060_TI` allowlist exists, but no assignment rule is enabled.
+`PALIT_RTX_4060_TI` allowlist is enforced by an opt-in native probe task;
+no NVIDIA assignment is enabled in the default profile.
 No match-all NVIDIA driver, guessed VRAM size, or hardcoded BAR physical address.
 
 `horn-nvidia` is an allocation-free `no_std` library in the workspace:
@@ -26,10 +27,53 @@ No match-all NVIDIA driver, guessed VRAM size, or hardcoded BAR physical address
 nix-shell --run 'cargo test --offline -p horn-nvidia'
 ```
 
-Seven focused host tests exercise those guards, not hardware behavior. There is
-no service executable, activation module, public GPU IDL, firmware pin or GSP
-boot implementation yet. In particular there is no fake successful `boot()`.
+Seven focused host tests exercise those guards, not hardware behavior.
+There is still no public GPU API, firmware pin or GSP boot implementation.
+In particular there is no fake successful `boot()`.
 See [DESIGN.md](DESIGN.md) for the port plan, blockers and exact source map.
+
+## Native read-only task (opt-in)
+
+`task/` builds `nvidia_probe.elf`, using named `DeviceDriverCaps`, the normal
+VM-backed runtime and generic supervisor. `module.nix` selects only 10de:2803
+display devices; the task rejects any subsystem other than 1569:f306 **before
+MMIO**. It reads real BOOT0/BOOT42 and one privilege-gated GFW snapshot through
+two 4-KiB UC BAR0 windows (offsets 0 and 0x118000). It never maps BAR1/BAR3 or
+enables bus mastering, DMA, MSI delivery, firmware upload or reset.
+
+`NVIDIA_PROBE_READY` and publication under
+`/diagnostics/nvidia/<guest-BDF>` mean **the read-only diagnostic is available**,
+not GSP readiness. Its small diagnostic IDL returns the cached initial sample,
+including explicit `bus_master=false` / `gsp_booted=false`. GFW may still be
+locked/in progress; this task does not pretend a single sample is a timed GFW
+wait. GSP bring-up needs named clock/alarm grants and the firmware/lifetime
+adapter next. A STOP closes the assignment through devmgr's acknowledged
+MMIO revocation/teardown before signaling STOPPED.
+
+Build kernel and root ELF (no GPU/host access performed):
+```sh
+nix-build nix -A sel4.out -A root-task.package --argstr profile pc-dev \
+  --arg modules '[ ./platform/drivers/nvidia/module.nix ]' --no-out-link
+```
+
+Both seL4-target task and embedded root build successfully. No passthrough run
+has been performed. A missing GPU does not synthesize one or emit probe READY.
+
+The module gives this assignment explicit 64-MiB DMA / 64-object ceilings for
+the upcoming GSP adapter, without changing virtio defaults. No DMA is allocated
+by the read-only task. Devmgr now supports remapped single MSI and fixed-chunk
+contiguous IOVA reservations; GIN handling and actual GPU IRQ/DMA still need
+hardware validation.
+
+For the first VFIO run use KVM/Q35 with split irqchip, virtual Intel VT-d
+(`intremap=on,caching-mode=on,device-iotlb=off,aw-bits=48`) and put **only the
+GPU function on the guest root bus**, not behind a PCIe bridge. Disable guest
+option-ROM exposure with `rombar=0`; do not enable legacy `x-vga`. Guest BDF/BARs
+are discovered, not copied from the host. Root-bus sibling functions are not
+supported by this provisioning profile. Coordinate host display/audio shutdown,
+VFIO binding and reset scope explicitly first; this module performs none of
+those operations. Preserve serial `NVIDIA_*`, supervisor and IOMMU diagnostics;
+a build is not physical-device evidence.
 
 ## Reference, not a build dependency
 

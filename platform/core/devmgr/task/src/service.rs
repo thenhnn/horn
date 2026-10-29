@@ -968,7 +968,13 @@ impl DeviceControl for Caller<'_> {
         let d = self.service.device(self.badge)?;
         let device = &self.service.devices[d];
         if device.irq.is_none()
-            || self.service.maps.iter().flatten().any(|m|m.device==d && !m.committed) {
+            || self
+                .service
+                .maps
+                .iter()
+                .flatten()
+                .any(|m| m.device == d && !m.committed)
+        {
             return Err(DeviceError::Busy);
         }
         let config = device.config;

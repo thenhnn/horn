@@ -183,6 +183,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-nvidia-task" = rec {
+      packageId = "horn-nvidia-task";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-nvidia-task";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-procd" = rec {
       packageId = "horn-procd";
       build = internal.buildRustCrateWithFeatures {
@@ -1358,6 +1368,58 @@ rec {
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/drivers/nvidia; };
         libName = "horn_nvidia";
+
+      };
+      "horn-nvidia-task" = rec {
+        crateName = "horn-nvidia-task";
+        version = "0.1.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "nvidia_probe";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/drivers/nvidia/task; };
+        dependencies = [
+          {
+            name = "horn-devmgr";
+            packageId = "horn-devmgr";
+          }
+          {
+            name = "horn-driver";
+            packageId = "horn-driver";
+          }
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "horn-nvidia";
+            packageId = "horn-nvidia";
+          }
+          {
+            name = "horn-runtime";
+            packageId = "horn-runtime";
+          }
+          {
+            name = "horn-supervisor";
+            packageId = "horn-supervisor";
+            features = [ "client" ];
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "horn-idl-build";
+            packageId = "horn-idl-build";
+          }
+        ];
 
       };
       "horn-procd" = rec {

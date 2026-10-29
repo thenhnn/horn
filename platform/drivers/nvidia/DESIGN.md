@@ -1,7 +1,8 @@
 # AD106 → first GSP reply
 
-Status: design + host-testable guards, not an active driver. Target is only the
-host-confirmed Palit RTX 4060 Ti `10de:2803 / 1569:f306` (AD106). No seL4 changes
+Status: native read-only probe builds, plus host-testable guards; no VFIO run
+or GSP boot yet. Target is only the
+host-confirmed Palit RTX 4060 Ti `10de:2803 / 1569:f306` (AD106). No seL4 source changes
 or host device operations are part of this change.
 
 ## Ownership and layering
@@ -71,20 +72,19 @@ Horn just to make NOVA source compile.
 
 ## Horn gaps to fix before firmware DMA
 
-These are explicit future changes, not hidden behind a pretend platform backend:
+Generic resource support now exists; device-specific work and hardware
+validation remain explicit, not hidden behind a pretend platform backend:
 
 ### 1. MSI for this exact board
 
 Host inventory confirms **MSI, Count=1/1, 64-bit, Maskable-**, no MSI-X.
-Current `platform/core/devmgr/task/src/service.rs` claim requires MSI-X, and its
-IRQ setup programs table entry zero. It cannot currently drive this GPU.
-
-Add a generic, bounded, SID-remapped **single MSI** route to devmgr; do not
-introduce INTx. Keep existing virtio MSI-X behavior. Disable MSI while changing
-address/data, force a single message, install the IRTE before enabling delivery,
-and coordinate GIN/device rearm with the seL4 notification/ack path. No per-vector
-mask register may be assumed. The IRQ address/data come from devmgr, not the GPU
-client. The MSI-X alternative would also need entry selection: source 155 routes
+Devmgr now prefers MSI-X entry zero, otherwise programs a generic SID-remapped
+single MSI, with MSI disabled during updates and MME=0. The IRTE and armed
+kernel IRQ precede device interrupt enable. Both 32/64-bit layouts and optional
+mask bits are supported; no INTx fallback exists. Address/data come only from
+devmgr. Native builds and local layout guards pass, not physical GPU delivery.
+The probe does not yet request an IRQ. Port GIN/device rearm and coordinate it
+with the seL4 notification/ack path before enabling GSP interrupts. The MSI-X alternative would also need entry selection: source 155 routes
 to entry 2, not our current hardcoded entry 0.
 
 ### 2. Selective MMIO
@@ -92,25 +92,30 @@ to entry 2, not our current hardcoded entry 0.
 `DeviceSession::map_bars` maps every BAR. It is inappropriate for this board:
 BAR1 is an 8 GiB ReBAR aperture, BAR3 32 MiB, and BAR5 is legacy IO.
 Start with only UC BAR0, not all BARs, no IO ports and no writable global ECAM.
-Current `DeviceControl.bar` grants the whole requested BAR; bounded subrange
-leases/lazy backing will be needed before using VRAM apertures. Keep CPU VA,
-BAR bus address and VRAM offset distinct. Never map the full BAR1 as resident RAM.
+The probe uses two 4-KiB BAR0 windows through the new bounded
+`DeviceControl.bar_window` (at most 64 KiB / eight leases). Legacy `bar` still
+grants only whole small BARs. Larger VRAM-access policy is not implemented.
+Keep CPU VA, BAR bus address and VRAM offset distinct. Never map full BAR1 as
+resident RAM.
 
 ### 3. Larger DMA objects, bounded operations
 
-Today `DmaBacking.pages` and `horn-driver` allocation are limited to 16 pages,
-and devmgr admits 12 active mappings per assignment. NOVA's queue object alone
+Physical pin/map chunks remain at most sixteen pages. Devmgr now admits
+larger contiguous IOVA reservations under trusted per-assignment byte/object
+quotas, with fixed ordered append chunks and explicit finish/close. NOVA's queue object alone
 has a 4 KiB PTE page and two roughly 256 KiB queue areas (63 data pages each),
-plus separate log/argument buffers and a large firmware image. The current
-virtio-oriented limits are not a GSP allocator.
-
-Design an assignment-owned DMA lease reserving a quota-limited IOVA interval;
-map backing into it in bounded chunks (not giant IPC payloads), with each grant
-retained and charged. The device-visible contiguous interval must be guaranteed,
-not inferred from consecutive allocator return values. Firmware radix3/SG may
+plus separate log/argument buffers and a large firmware image. These
+new generic primitives still need a GSP-specific allocator/lifetime adapter.
+The native module grants a provisional 64-MiB / 64-object ceiling; virtio keeps
+its existing 768-KiB / twelve-object budget. The common allocator uses the new
+reservation for allocations over 64 KiB and rolls back partial population through
+acknowledged close. Finish is not atomic publication: drivers must not submit
+a partially populated window to hardware. Contiguous IOVA is reserved by the
+broker, not inferred from consecutive allocations. Firmware radix3/SG may
 reference separate IOVA pages; none of those entries is a CPU physical address.
-Do not just raise the global 12/16 limits. Limit mapped bytes, object count and
-metadata by a per-device grant, preserving other drivers' existing bounds.
+Fixed chunk sizing also bounds pin metadata. Root has a separate global
+4096-record hard ceiling; VT-d table pages and monotonic address space remain
+bounded. Firmware sizing and GPU DMA behavior have not been validated yet.
 
 Close means unmap/invalidate/drain acknowledgment before CPU backing release.
 Partial admission/rollback keeps uncertain mappings pinned. Validate the entire
@@ -136,6 +141,9 @@ backing. Retain/quarantine until supervisor/devmgr cleanup acknowledges it.
 
 ## Boot control flow sketch (NOT implemented)
 
+This is future **GSP** readiness. The present probe publishes only the separate
+read-only diagnostic service, never a GPU/GSP-ready capability.
+
 ```text
 receive named bootstrap device / VM / clock / supervisor capabilities
   validate assigned function against the Palit allowlist
@@ -151,7 +159,7 @@ receive named bootstrap device / VM / clock / supervisor capabilities
   wait RISC-V active; service sequencer requests and asynchronous boot messages
   wait GspInitDone; enable/rearm GSP interrupt path; drain early queued messages
   issue GetGspStaticInfo; validate headers, status, framing and FB ranges
-  log real name / chipset / reported usable VRAM; only now signal READY
+  log real name / chipset / reported usable VRAM; only now signal GSP READY
 ```
 
 The ordering inside FWSEC/Falcon/SEC2 operations must follow the source, not the
@@ -220,11 +228,11 @@ explained device-cleanup failure inside Horn.
 
 ## Implementation order / completion evidence
 
-1. Add generic single-MSI support + bounded BAR access in their own coherent
-   changes; no GPU-specific microkernel API.
-2. Native assigned-device task: real read-only probe on VFIO, actual BOOT42 and
-   GFW samples, no success simulated by a host mock.
-3. DMA lease/firmware port, starting with VBIOS and validated file formats;
+1. Generic single MSI, bounded BAR windows and quota-bound chunked DMA are
+   implemented together in devmgr; no GPU-specific microkernel API.
+2. Native assigned-device task and opt-in build module now build. Run the
+   read-only probe on VFIO for actual BOOT42/GFW samples; no mock substitute.
+3. GSP DMA/lifetime and firmware port, starting with VBIOS and validated formats;
    prepare both start and cleanup paths before allowing GSP to DMA.
 4. Execute the source-ordered Ada boot and obtain an actual decoded static-info
    response; retain serial traces and IOMMU fault logs, then exercise cleanup.

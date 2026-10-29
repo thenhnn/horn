@@ -346,6 +346,20 @@ name = "horn-nvidia"
 version = "0.1.0"
 
 [[package]]
+name = "horn-nvidia-task"
+version = "0.1.0"
+dependencies = [
+ "horn-devmgr",
+ "horn-driver",
+ "horn-idl-build",
+ "horn-ipc",
+ "horn-nvidia",
+ "horn-runtime",
+ "horn-supervisor",
+ "sel4",
+]
+
+[[package]]
 name = "horn-procd"
 version = "0.1.0"
 dependencies = [
