@@ -1,0 +1,8 @@
+[package]
+name = "horn-nvidia"
+version = "0.1.0"
+edition = "2024"
+license = "BSD-2-Clause"
+description = "AD106 probe and protocol guards for the native NVIDIA driver sketch"
+
+[dependencies]

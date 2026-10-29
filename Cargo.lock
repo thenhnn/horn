@@ -342,6 +342,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "horn-nvidia"
+version = "0.1.0"
+
+[[package]]
 name = "horn-procd"
 version = "0.1.0"
 dependencies = [

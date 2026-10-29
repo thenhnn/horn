@@ -173,6 +173,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-nvidia" = rec {
+      packageId = "horn-nvidia";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-nvidia";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-procd" = rec {
       packageId = "horn-procd";
       build = internal.buildRustCrateWithFeatures {
@@ -1340,6 +1350,14 @@ rec {
             features = [ "alloc" "medium-ethernet" "proto-ipv4" "proto-dhcpv4" "socket-tcp" "socket-dhcpv4" ];
           }
         ];
+
+      };
+      "horn-nvidia" = rec {
+        crateName = "horn-nvidia";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/drivers/nvidia; };
+        libName = "horn_nvidia";
 
       };
       "horn-procd" = rec {
