@@ -3,7 +3,10 @@
 #![no_std]
 #![no_main]
 extern crate alloc;
+#[allow(dead_code)] // Boot backend; firmware/RPC execution is not yet connected.
+mod native;
 mod prom;
+mod time;
 
 use core::ptr::NonNull;
 use horn_devmgr::{interrupt, protocol::*};
@@ -120,6 +123,11 @@ fn main() -> ! {
     );
     let bytes = usize::try_from(resources.bar_lengths.data[0]).expect("BAR0 size");
     assert_eq!(bytes, horn_nvidia::probe::BAR0_BYTES, "unexpected BAR0");
+    let mut time = time::Time::new(&mut session).expect("named clock/alarm");
+    let now = time.now(&mut session).expect("monotonic time");
+    time.sleep_until(&mut session, now.checked_add(100).expect("alarm deadline"))
+        .expect("monotonic alarm");
+    sel4::debug_println!("NVIDIA_CLOCK source=timerd alarm=one-shot gsp_booted=false");
     sel4::debug_println!(
         "NVIDIA_PCI bdf={:02x}:{:02x}.{} board=10de:2803/1569:f306 bar0={} msi_cap={:#x}",
         resources.address.bus,
@@ -225,6 +233,7 @@ fn main() -> ! {
                     // No DMA was started. Broker close revokes/acknowledges
                     // all CPU aliases before detaching. Never use raw BAR
                     // views after this acknowledgment.
+                    time.cancel(&mut session).expect("probe alarm cancel");
                     session.control().close().expect("probe assignment close");
                     stopped = true;
                     sel4::debug_println!("NVIDIA_PROBE_STOPPED dma_started=false");

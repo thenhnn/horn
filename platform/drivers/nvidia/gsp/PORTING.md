@@ -19,6 +19,17 @@ registration, DMA allocation/free, kernel threads, or driver Drop semantics.
 NVIDIA copyright notices are preserved on adapted modules. New checks/platform
 adapters also use GPL-2.0-only. No files in work/nova are build dependencies.
 
+## Native adapter status
+
+The task now receives named clock/alarm-signal capabilities after timerd READY.
+Its read-only probe checks timerd time/alarm and cancels the alarm on STOP.
+`task/src/native.rs` implements the Falcon Platform over seven scoped UC windows,
+accounted directional chunked DMA, explicit IRQ binding and bus-master activation.
+The backend is compiled but **not connected to firmware execution**: no DMA,
+IRQ activation, reset, or GSP boot is performed by the current diagnostic task.
+Falcon failure also poisons the backend; neither layer frees pins on uncertainty.
+Raw DMA views have no Drop and require retained mapping/queue ownership for access.
+
 ## Runtime integration still required
 
 The VBIOS parser is connected to the supervised read-only task; the Falcon
@@ -26,9 +37,8 @@ boot path is not. No register writes
 or DMA in this module have run against the board yet. A successful build is not
 authentication, reset, DMA-drain, interrupt-delivery or GSP-readiness evidence.
 
-- The adapter must supply actual scoped UC BAR0 views, a named clock/alarm,
-  committed per-SID DMA grants and barriers, with acknowledged isolation before
-  reclaiming backing after uncertainty. Numeric IOVAs are not authority.
+- Connect the compiled scoped-MMIO/clock/DMA adapter to boot, with acknowledged
+  isolation before reclaiming backing after uncertainty. Numeric IOVAs are not authority.
 - A sysmembar page must be registered before either engine's first reset and
   retained through cleanup. Existing WPR2 is rejected, not automatically reset.
   The soft GA102 RESET_READY wait is not a general timeout/retry exception.

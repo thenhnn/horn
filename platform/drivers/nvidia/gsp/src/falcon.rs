@@ -20,6 +20,8 @@ pub trait Platform {
     fn sleep_until(&mut self, deadline: u64) -> Result<()>;
     /// Device-visible WB RAM writes must precede UC DMA/start register writes.
     fn dma_write_barrier(&mut self);
+    /// Poison the backend too; delegated queue/DMA I/O must not bypass a fault.
+    fn quarantine(&mut self) {}
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Engine {
@@ -211,6 +213,7 @@ impl<P: Platform> Ad106<P> {
         match f(self) {
             Ok(value) => Ok(value),
             Err(error) => {
+                self.platform.quarantine();
                 self.fault = Some(Diagnostic {
                     stage: self.stage,
                     register: self.register,

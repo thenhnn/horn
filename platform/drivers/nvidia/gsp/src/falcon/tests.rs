@@ -9,6 +9,7 @@ struct Recorder {
     writes: Vec<(u32, u32, u64)>,
     protected_reads: usize,
     early_alarm: bool,
+    quarantines: usize,
 }
 impl Platform for Recorder {
     fn read32(&mut self, offset: u32) -> Result<u32> {
@@ -39,6 +40,9 @@ impl Platform for Recorder {
         Ok(())
     }
     fn dma_write_barrier(&mut self) {}
+    fn quarantine(&mut self) {
+        self.quarantines += 1;
+    }
 }
 fn controller() -> Ad106<Recorder> {
     let mut io = Recorder::default();
@@ -72,6 +76,7 @@ fn gfw_timeout_never_reads_protected_progress_or_retries() {
     assert!(controller.platform.writes.is_empty());
     assert_eq!(controller.diagnostic().unwrap().stage, Stage::Gfw);
     assert_eq!(controller.wpr2(), Err(Error::Quarantined));
+    assert_eq!(controller.platform.quarantines, 1);
 }
 #[test]
 fn early_alarm_does_not_turn_into_unbounded_polling() {
