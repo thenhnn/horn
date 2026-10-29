@@ -33,6 +33,20 @@ BOOT_CODE bool_t Arch_initFpu(void)
     /* Initialize the fpu state */
     finit();
 
+    /* All processors must agree on the MXCSR bits accepted by state import. */
+    BOOT_BSS static uint8_t fx[512] ALIGN(16);
+    uint32_t mxcsr_mask;
+    asm volatile("fxsave %0" : "=m"(fx));
+    memcpy(&mxcsr_mask, fx + 28, sizeof(mxcsr_mask));
+    if (!mxcsr_mask) {
+        mxcsr_mask = 0xffbf;
+    }
+    if (x86KSmxcsrMask && x86KSmxcsrMask != mxcsr_mask) {
+        printf("Incompatible MXCSR masks across CPUs\n");
+        return false;
+    }
+    x86KSmxcsrMask = mxcsr_mask;
+
     if (config_set(CONFIG_XSAVE)) {
         uint64_t xsave_features;
         uint32_t xsave_instruction;
@@ -45,8 +59,26 @@ BOOT_CODE bool_t Arch_initFpu(void)
         }
         /* enable XSAVE support */
         write_cr4(read_cr4() | CR4_OSXSAVE);
+        /* First CPU chooses the optional group; later CPUs must match. */
+        BOOT_BSS static uint32_t component_size[64];
+        BOOT_BSS static uint32_t component_offset[64];
+        bool_t first = x86KSxsaveFeatureSet == 0;
         /* check feature mask */
         xsave_features = ((uint64_t)x86_cpuid_edx(0x0d, 0x0) << 32) | x86_cpuid_eax(0x0d, 0x0);
+        uint64_t optional = config_ternary(CONFIG_XSAVE, CONFIG_XSAVE_OPTIONAL_FEATURE_SET, 0);
+        if (first) {
+            if ((xsave_features & optional) == optional) {
+                desired_features |= optional;
+            }
+        } else {
+            desired_features = x86KSxsaveFeatureSet;
+        }
+        if (!(desired_features & 1) ||
+            ((desired_features & 4) && !(desired_features & 2)) ||
+            ((desired_features & 0xe0) && (desired_features & 0xe7) != 0xe7)) {
+            printf("Invalid XCR0 feature dependencies\n");
+            return false;
+        }
         if ((xsave_features & desired_features) != desired_features) {
             printf("Requested feature mask is 0x%llx, but only 0x%llx supported\n", desired_features, (long long)xsave_features);
             return false;
@@ -63,6 +95,24 @@ BOOT_CODE bool_t Arch_initFpu(void)
                    "Warning: Memory may be wasted with larger than needed TCBs.\n",
                    CONFIG_XSAVE_SIZE, x86_cpuid_ebx(0x0d, 0x0));
         }
+        for (unsigned int i = 2; i < 64; i++) {
+            if (!(desired_features & (1ull << i))) {
+                continue;
+            }
+            uint32_t size = x86_cpuid_eax(0x0d, i);
+            uint32_t offset = x86_cpuid_ebx(0x0d, i);
+            if (offset > CONFIG_XSAVE_SIZE || size > CONFIG_XSAVE_SIZE - offset) {
+                printf("XSAVE component does not fit configured storage\n");
+                return false;
+            }
+            if (!first && (component_size[i] != size || component_offset[i] != offset)) {
+                printf("Incompatible XSAVE component layout across CPUs\n");
+                return false;
+            }
+            component_size[i] = size;
+            component_offset[i] = offset;
+        }
+        x86KSxsaveFeatureSet = desired_features;
         /* check if a specialized XSAVE instruction was requested */
         xsave_instruction = x86_cpuid_eax(0x0d, 0x1);
         if (config_set(CONFIG_XSAVE_XSAVEOPT)) {

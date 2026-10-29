@@ -69,6 +69,13 @@ typedef enum {
     SEL4_FORCE_LONG_ENUM(seL4_LookupFailureType),
 } seL4_LookupFailureType;
 
+/* Bounded transfer capacity, not the runtime CPUID.0D active-image size. */
+#ifdef CONFIG_ARCH_X86_64
+#define seL4_FPUStateSize CONFIG_XSAVE_SIZE
+#else
+#define seL4_FPUStateSize 0
+#endif
+
 /* Flags to be used with seL4_TCB_Set_Flags */
 typedef enum {
     seL4_TCBFlag_NoFlag = 0x0,

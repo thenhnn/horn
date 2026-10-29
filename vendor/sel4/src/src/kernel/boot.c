@@ -166,7 +166,7 @@ BOOT_CODE static word_t rootserver_max_size_bits(word_t extra_bi_size_bits)
 {
     word_t cnode_size_bits = CONFIG_ROOT_CNODE_SIZE_BITS + seL4_SlotBits;
     word_t max = MAX(cnode_size_bits, seL4_VSpaceBits);
-    return MAX(max, extra_bi_size_bits);
+    return MAX(MAX(max, seL4_TCBBits), extra_bi_size_bits);
 }
 
 BOOT_CODE static word_t calculate_rootserver_size(v_region_t it_v_reg, word_t extra_bi_size_bits)
@@ -186,72 +186,53 @@ BOOT_CODE static word_t calculate_rootserver_size(v_region_t it_v_reg, word_t ex
     return size + arch_get_n_paging(it_v_reg) * BIT(seL4_PageTableBits);
 }
 
-BOOT_CODE static void maybe_alloc_extra_bi(word_t cmp_size_bits, word_t extra_bi_size_bits)
-{
-    if (extra_bi_size_bits >= cmp_size_bits && rootserver.extra_bi == 0) {
-        rootserver.extra_bi = alloc_rootserver_obj(extra_bi_size_bits, 1);
-    }
-}
-
 /* Create pptrs for all root server objects, starting at a give start address,
  * to cover the virtual memory region v_reg, and any extra boot info.
  */
 BOOT_CODE static void create_rootserver_objects(pptr_t start, v_region_t it_v_reg,
                                                 word_t extra_bi_size_bits)
 {
-    /* the largest object the PD, the root cnode, or the extra boot info */
-    word_t cnode_size_bits = CONFIG_ROOT_CNODE_SIZE_BITS + seL4_SlotBits;
-    word_t max = rootserver_max_size_bits(extra_bi_size_bits);
-
     word_t size = calculate_rootserver_size(it_v_reg, extra_bi_size_bits);
+    word_t n = arch_get_n_paging(it_v_reg);
     rootserver_mem.start = start;
     rootserver_mem.end = start + size;
 
-    maybe_alloc_extra_bi(max, extra_bi_size_bits);
-
-    /* the root cnode is at least 4k, so it could be larger or smaller than a pd. */
-#if (CONFIG_ROOT_CNODE_SIZE_BITS + seL4_SlotBits) > seL4_VSpaceBits
-    rootserver.cnode = alloc_rootserver_obj(cnode_size_bits, 1);
-    maybe_alloc_extra_bi(seL4_VSpaceBits, extra_bi_size_bits);
-    rootserver.vspace = alloc_rootserver_obj(seL4_VSpaceBits, 1);
-#else
-    rootserver.vspace = alloc_rootserver_obj(seL4_VSpaceBits, 1);
-    maybe_alloc_extra_bi(cnode_size_bits, extra_bi_size_bits);
-    rootserver.cnode = alloc_rootserver_obj(cnode_size_bits, 1);
-#endif
-
-    /* at this point we are up to creating 4k objects - which is the min size of
-     * extra_bi so this is the last chance to allocate it */
-    maybe_alloc_extra_bi(seL4_PageBits, extra_bi_size_bits);
-    compile_assert(invalid_seL4_ASIDPoolBits, seL4_ASIDPoolBits == seL4_PageBits);
-    rootserver.asid_pool = alloc_rootserver_obj(seL4_ASIDPoolBits, 1);
-    rootserver.ipc_buf = alloc_rootserver_obj(seL4_PageBits, 1);
-    /* The boot info size must be at least one page. Due to the hard-coded order
-     * of allocations used in the current implementation here, it can't be any
-     * bigger.
-     */
-    compile_assert(invalid_seL4_BootInfoFrameBits, seL4_BootInfoFrameBits == seL4_PageBits);
-    rootserver.boot_info = alloc_rootserver_obj(seL4_BootInfoFrameBits, 1);
-
-    /* TCBs on aarch32 can be larger than page tables in certain configs */
-#if seL4_TCBBits >= seL4_PageTableBits
-    rootserver.tcb = alloc_rootserver_obj(seL4_TCBBits, 1);
-#endif
-
-    /* paging structures are 4k on every arch except aarch32 (1k) */
-    word_t n = arch_get_n_paging(it_v_reg);
-    rootserver.paging.start = alloc_rootserver_obj(seL4_PageTableBits, n);
-    rootserver.paging.end = rootserver.paging.start + n * BIT(seL4_PageTableBits);
-
-    /* for most archs, TCBs are smaller than page tables */
-#if seL4_TCBBits < seL4_PageTableBits
-    rootserver.tcb = alloc_rootserver_obj(seL4_TCBBits, 1);
-#endif
-
+    /* Allocate in descending alignment order. Extended FP state can make a
+     * TCB larger than a page or VSpace; no fixed ordering is correct for all
+     * supported XSAVE capacities. Sorting this bounded list needs no padding
+     * and preserves calculate_rootserver_size's exact accounting. */
+    struct root_object {
+        pptr_t *destination;
+        word_t bits;
+        word_t count;
+    } objects[] = {
+        { &rootserver.cnode, CONFIG_ROOT_CNODE_SIZE_BITS + seL4_SlotBits, 1 },
+        { &rootserver.vspace, seL4_VSpaceBits, 1 },
+        { &rootserver.tcb, seL4_TCBBits, 1 },
+        { &rootserver.asid_pool, seL4_ASIDPoolBits, 1 },
+        { &rootserver.ipc_buf, seL4_PageBits, 1 },
+        { &rootserver.boot_info, seL4_BootInfoFrameBits, 1 },
+        { &rootserver.extra_bi, extra_bi_size_bits, extra_bi_size_bits > 0 ? 1 : 0 },
+        { &rootserver.paging.start, seL4_PageTableBits, n },
 #ifdef CONFIG_KERNEL_MCS
-    rootserver.sc = alloc_rootserver_obj(seL4_MinSchedContextBits, 1);
+        { &rootserver.sc, seL4_MinSchedContextBits, 1 },
 #endif
-    /* we should have allocated all our memory */
+    };
+    for (word_t i = 0; i < ARRAY_SIZE(objects); i++) {
+        word_t largest = i;
+        for (word_t j = i + 1; j < ARRAY_SIZE(objects); j++) {
+            if (objects[j].bits > objects[largest].bits) {
+                largest = j;
+            }
+        }
+        struct root_object tmp = objects[i];
+        objects[i] = objects[largest];
+        objects[largest] = tmp;
+        if (objects[i].count) {
+            *objects[i].destination = alloc_rootserver_obj(objects[i].bits, objects[i].count);
+        }
+    }
+    rootserver.paging.end = rootserver.paging.start + n * BIT(seL4_PageTableBits);
     assert(rootserver_mem.start == rootserver_mem.end);
 }
 

@@ -862,6 +862,41 @@
                 </description>
             </error>
         </method>
+        <method id="TCBReadFPU" name="ReadFPU" manual_name="Read FPU State" manual_label="tcb_readfpu">
+            <brief>Copy a target TCB's FP/vector state into a writable RAM frame.</brief>
+            <description>
+                Horn x86-64 extension. Requires a TCB capability and a non-device
+                frame capability. Copies seL4_FPUStateSize bytes at a 64-byte-aligned
+                offset after flushing any live, possibly remote FPU owner.
+                Supports FXSAVE and standard XSAVE/XSAVEOPT layouts only, and
+                x87/SSE/AVX/AVX-512 components. Other architectures, layouts and
+                component sets return IllegalOperation. Offset and capacity are
+                checked before touching state. A running target may resume after
+                this snapshot; suspend it first for stable multi-operation access.
+            </description>
+            <param dir="in" name="frame" type="seL4_CPtr" description="Writable non-device RAM frame."/>
+            <param dir="in" name="offset" type="seL4_Word" description="64-byte-aligned byte offset; complete image must fit."/>
+            <error name="seL4_IllegalOperation"><description>Unsupported architecture, save format or component set.</description></error>
+            <error name="seL4_InvalidCapability"><description>Frame is not writable non-device RAM (capability 1).</description></error>
+            <error name="seL4_InvalidArgument"><description>Offset alignment or capacity invalid (argument 0).</description></error>
+        </method>
+        <method id="TCBWriteFPU" name="WriteFPU" manual_name="Write FPU State" manual_label="tcb_writefpu">
+            <brief>Replace a target TCB's FP/vector state from a readable RAM frame.</brief>
+            <description>
+                Copies the complete image into kernel staging before validation;
+                invalid input leaves the target's state unchanged. Standard XSAVE
+                XSTATE_BV must be a subset of enabled XCR0; XCOMP_BV and reserved
+                header bytes must be zero. MXCSR is masked to the CPU-supported
+                bits. No compacted or opaque future-component import is accepted.
+                Self-target operations restore a formerly live FPU owner before
+                returning; remote targets use the existing TCB stall/FPU release.
+            </description>
+            <param dir="in" name="frame" type="seL4_CPtr" description="Readable non-device RAM frame."/>
+            <param dir="in" name="offset" type="seL4_Word" description="64-byte-aligned offset of seL4_FPUStateSize bytes."/>
+            <error name="seL4_IllegalOperation"><description>Unsupported architecture, save format or component set.</description></error>
+            <error name="seL4_InvalidCapability"><description>Frame is not readable non-device RAM (capability 1).</description></error>
+            <error name="seL4_InvalidArgument"><description>Invalid offset (argument 0) or XSAVE header (argument 1).</description></error>
+        </method>
     </interface>
 
     <interface name="seL4_CNode" manual_name="CNode">

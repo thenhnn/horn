@@ -54,3 +54,46 @@ collisions with every ordinary MCS selector plus debug/unknown selectors, INT
 per-CPU scratch. Native debug output and the existing IDL boot fixture remain
 regression coverage. No formal verification, migration, Linux boot or
 same-process Horn runtime threading is claimed.
+
+## Extended FP/vector state (x86-64)
+
+The frame-capability ReadFPU/WriteFPU mechanism derives from l4h patch
+`0002-tcb-add-seL4_TCB_ReadFPU-and-seL4_TCB_WriteFPU.patch` at the revision
+above (patch commit `54d19b3358a25cc4b8e5c14da285c9bcc3f7c934`). This is
+a separate extension; it does not import l4h's Linux/manager ABI.
+
+Transfers require the target TCB cap and a readable (import) or writable
+(export), non-device RAM frame. A 64-byte-aligned image must fit completely.
+The existing remote-TCB stall and local/remote FPU release are used; self-target
+calls restore a previously live owner. VCPU-bound targets are rejected.
+
+Unlike the reference patch, the initial interface accepts only FXSAVE or
+standard XSAVE/XSAVEOPT and the x87/SSE/AVX/AVX-512 component set. Compacted
+formats and opaque future components return IllegalOperation. Import is staged
+under the kernel lock, never validated directly from shared user memory:
+unsupported XSTATE_BV bits, nonzero XCOMP_BV or reserved header bytes reject the
+request without changing the target. MXCSR is masked with the actual CPU mask
+(including supported AMD extensions), not a hardcoded 16-bit mask.
+The transfer capacity is bounded to 4096 bytes; future larger/component formats
+require explicit implementation rather than silent truncation.
+
+`KernelXSaveFeatureSet` remains required. The new
+`KernelXSaveOptionalFeatureSet` is one all-or-nothing optional group chosen by
+the first CPU. Other CPUs must support that selection, the same MXCSR mask and
+identical enabled-component offsets/sizes. Capacity is checked against CPUID;
+save/restore use the selected runtime mask. Defaults remain unchanged.
+This enables a required mask 7 and optional mask 224 with bounded 4096-byte
+storage, without requiring AVX-512 on every machine.
+
+New threads receive a constructed architectural init image, not firmware vector
+contents. Larger TCB objects use SDK-visible sizes. Rootserver objects are
+allocated in descending alignment order, preserving exact size accounting
+without assuming a TCB fits in a page.
+
+The small KVM `tests/boot/test_fpu_state.py` fixture checks fresh state,
+self and live remote read/write, AVX and available AVX-512 (ZMM/opmask),
+offset/capability bounds, read-only source/destination rights, invalid-header
+rejection and MXCSR sanitization. AVX-512 was exercised, not only configured.
+It is a trusted native fixture, not Linux signal/ptrace or resource isolation
+coverage. No broad profile matrix or formal verification is claimed.
+

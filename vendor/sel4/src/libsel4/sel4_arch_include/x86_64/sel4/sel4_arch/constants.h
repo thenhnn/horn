@@ -23,7 +23,11 @@
 #define seL4_WordSizeBits       3
 #define seL4_PageBits           12
 #define seL4_SlotBits           5
-#if CONFIG_XSAVE_SIZE >= 832
+#if CONFIG_XSAVE_SIZE >= 4096
+#define seL4_TCBBits            14
+#elif CONFIG_XSAVE_SIZE >= 2048
+#define seL4_TCBBits            13
+#elif CONFIG_XSAVE_SIZE >= 832
 #define seL4_TCBBits            12
 #else
 #define seL4_TCBBits            11

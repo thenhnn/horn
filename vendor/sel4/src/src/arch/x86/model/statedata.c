@@ -41,6 +41,8 @@ uint32_t x86KScacheLineSizeBits;
 
 /* A valid initial FPU state, copied to every new thread. */
 user_fpu_state_t x86KSnullFpuState ALIGN(MIN_FPU_ALIGNMENT);
+uint64_t x86KSxsaveFeatureSet;
+uint32_t x86KSmxcsrMask;
 
 /* Number of IOMMUs (DMA Remapping Hardware Units) */
 uint32_t x86KSnumDrhu;

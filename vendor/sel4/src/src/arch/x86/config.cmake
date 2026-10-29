@@ -149,10 +149,18 @@ config_string(
         0 - FPU \
         1 - SSE \
         2 - AVX \
+        5,6,7 - AVX-512 opmask, ZMM_Hi256, Hi16_ZMM (enable together with 0,1,2) \
         FPU and SSE is guaranteed to exist if XSAVE exists."
   DEFAULT 3
   DEPENDS "KernelFPUXSave" DEFAULT_DISABLED 0
   UNQUOTE)
+
+config_string(
+  KernelXSaveOptionalFeatureSet XSAVE_OPTIONAL_FEATURE_SET
+  "Optional XCR0 components, enabled as one group on the boot CPU if supported. \
+    All other CPUs must support the selected mask and identical component layouts. \
+    The configured XSAVE buffer must accommodate the complete group."
+  DEFAULT 0 DEPENDS "KernelFPUXSave" DEFAULT_DISABLED 0 UNQUOTE)
 
 if(KernelFPUXSave)
   if("${KernelXSaveFeatureSet}" EQUAL 7)

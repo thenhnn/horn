@@ -841,6 +841,85 @@ static exception_t decodeSetFlags(cap_t cap, word_t length, bool_t call, word_t 
     return EXCEPTION_NONE;
 }
 
+#if defined(CONFIG_ARCH_X86_64) && defined(CONFIG_HAVE_FPU)
+/* Staging is protected by the kernel lock; this invocation is non-preemptible.
+ * Never validate user-shared memory and later copy it again (TOCTOU), nor put a
+ * potentially page-sized XSAVE image on the bounded kernel stack. */
+static user_fpu_state_t fpuTransferStage ALIGN(MIN_FPU_ALIGNMENT);
+compile_assert(fpu_transfer_capacity, seL4_FPUStateSize == sizeof(user_fpu_state_t))
+compile_assert(fpu_transfer_bound, sizeof(user_fpu_state_t) <= 4096)
+
+static exception_t decodeFPUTransfer(cap_t cap, word_t length, word_t *buffer, bool_t toFrame)
+{
+    if ((config_set(CONFIG_XSAVE) &&
+         !(config_set(CONFIG_XSAVE_XSAVE) || config_set(CONFIG_XSAVE_XSAVEOPT))) ||
+        (x86KSxsaveFeatureSet & ~0xe7ull)) {
+        current_syscall_error.type = seL4_IllegalOperation;
+        return EXCEPTION_SYSCALL_ERROR;
+    }
+    if (length < 1 || current_extra_caps.excaprefs[0] == NULL) {
+        current_syscall_error.type = seL4_TruncatedMessage;
+        return EXCEPTION_SYSCALL_ERROR;
+    }
+    tcb_t *thread = TCB_PTR(cap_thread_cap_get_capTCBPtr(cap));
+#ifdef CONFIG_VTX
+    if (thread->tcbArch.tcbVCPU != NULL) {
+        current_syscall_error.type = seL4_IllegalOperation;
+        return EXCEPTION_SYSCALL_ERROR;
+    }
+#endif
+    cap_t frameCap = current_extra_caps.excaprefs[0]->cap;
+    if (cap_get_capType(frameCap) != cap_frame_cap ||
+        cap_frame_cap_get_capFIsDevice(frameCap) ||
+        cap_frame_cap_get_capFVMRights(frameCap) == VMKernelOnly ||
+        (toFrame && cap_frame_cap_get_capFVMRights(frameCap) != VMReadWrite)) {
+        current_syscall_error.type = seL4_InvalidCapability;
+        current_syscall_error.invalidCapNumber = 1;
+        return EXCEPTION_SYSCALL_ERROR;
+    }
+    word_t offset = getSyscallArg(0, buffer);
+    word_t frameSize = BIT(pageBitsForSize(cap_frame_cap_get_capFSize(frameCap)));
+    if (offset % 64 || offset >= frameSize || frameSize - offset < sizeof(user_fpu_state_t)) {
+        current_syscall_error.type = seL4_InvalidArgument;
+        current_syscall_error.invalidArgumentNumber = 0;
+        return EXCEPTION_SYSCALL_ERROR;
+    }
+    void *frame = (void *)(cap_frame_cap_get_capFBasePtr(frameCap) + offset);
+    if (!toFrame) {
+        memcpy(&fpuTransferStage, frame, sizeof(fpuTransferStage));
+#ifdef CONFIG_XSAVE
+        uint64_t header[8];
+        memcpy(header, (uint8_t *)&fpuTransferStage + 512, sizeof(header));
+        bool_t invalid = (header[0] & ~x86KSxsaveFeatureSet) != 0;
+        for (unsigned int i = 1; i < 8; i++) {
+            invalid |= header[i] != 0;
+        }
+        if (invalid) {
+            current_syscall_error.type = seL4_InvalidArgument;
+            current_syscall_error.invalidArgumentNumber = 1;
+            return EXCEPTION_SYSCALL_ERROR;
+        }
+#endif
+        uint32_t mxcsr;
+        memcpy(&mxcsr, (uint8_t *)&fpuTransferStage + 24, sizeof(mxcsr));
+        mxcsr &= x86KSmxcsrMask;
+        memcpy((uint8_t *)&fpuTransferStage + 24, &mxcsr, sizeof(mxcsr));
+    }
+    bool_t owned = nativeThreadUsingFPU(thread);
+    fpuRelease(thread);
+    if (toFrame) {
+        memcpy(frame, &thread->tcbArch.tcbContext.fpuState, sizeof(user_fpu_state_t));
+    } else {
+        thread->tcbArch.tcbContext.fpuState = fpuTransferStage;
+    }
+    if (owned && thread == NODE_STATE(ksCurThread)) {
+        switchFpuOwner(thread, CURRENT_CPU_INDEX());
+    }
+    setThreadState(NODE_STATE(ksCurThread), ThreadState_Restart);
+    return EXCEPTION_NONE;
+}
+#endif
+
 /* The following functions sit in the syscall error monad, but include the
  * exception cases for the preemptible bottom end, as they call the invoke
  * functions directly.  This is a significant deviation from the Haskell
@@ -936,6 +1015,12 @@ exception_t decodeTCBInvocation(word_t invLabel, word_t length, cap_t cap,
 
     case TCBSetFlags:
         return decodeSetFlags(cap, length, call, buffer);
+#if defined(CONFIG_ARCH_X86_64) && defined(CONFIG_HAVE_FPU)
+    case TCBReadFPU:
+        return decodeFPUTransfer(cap, length, buffer, true);
+    case TCBWriteFPU:
+        return decodeFPUTransfer(cap, length, buffer, false);
+#endif
 
     default:
         /* Haskell: "throw IllegalOperation" */

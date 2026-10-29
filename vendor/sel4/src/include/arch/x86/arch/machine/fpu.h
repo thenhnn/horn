@@ -23,14 +23,12 @@ void Arch_initFpuContext(user_context_t *context);
 
 static inline uint32_t xsave_features_high(void)
 {
-    uint64_t features = config_ternary(CONFIG_XSAVE, CONFIG_XSAVE_FEATURE_SET, 1);
-    return (uint32_t)(features >> 32);
+    return (uint32_t)(x86KSxsaveFeatureSet >> 32);
 }
 
 static inline uint32_t xsave_features_low(void)
 {
-    uint64_t features = config_ternary(CONFIG_XSAVE, CONFIG_XSAVE_FEATURE_SET, 1);
-    return (uint32_t)(features & 0xffffffff);
+    return (uint32_t)(x86KSxsaveFeatureSet & 0xffffffff);
 }
 
 /* Store state in the FPU registers into memory. */

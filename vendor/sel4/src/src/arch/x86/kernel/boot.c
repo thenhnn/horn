@@ -293,9 +293,22 @@ BOOT_CODE bool_t init_sys_state(
     /* create the idle thread */
     create_idle_thread();
 
-    /* copy i387 FPU initial state from FPU */
-    saveFpuState(NODE_STATE(ksIdleThread));
-    x86KSnullFpuState = NODE_STATE(ksIdleThread)->tcbArch.tcbContext.fpuState;
+    /* Construct an architectural init image, never inherit firmware register
+     * contents into newly created threads. XRSTOR initializes absent components. */
+    user_fpu_state_t *initial_fpu = &NODE_STATE(ksIdleThread)->tcbArch.tcbContext.fpuState;
+    memzero(initial_fpu, sizeof(*initial_fpu));
+    uint16_t initial_fcw = 0x037f;
+    uint32_t initial_mxcsr = MXCSR_INIT_VALUE;
+    memcpy((uint8_t *)initial_fpu, &initial_fcw, sizeof(initial_fcw));
+    memcpy((uint8_t *)initial_fpu + 24, &initial_mxcsr, sizeof(initial_mxcsr));
+    memcpy((uint8_t *)initial_fpu + 28, &x86KSmxcsrMask, sizeof(x86KSmxcsrMask));
+#ifdef CONFIG_XSAVE
+    if (config_set(CONFIG_XSAVE_XSAVEC) || config_set(CONFIG_XSAVE_XSAVES)) {
+        uint64_t compact = (1ull << 63) | x86KSxsaveFeatureSet;
+        memcpy((uint8_t *)initial_fpu + 520, &compact, sizeof(compact));
+    }
+#endif
+    x86KSnullFpuState = *initial_fpu;
     /* Check that we can load it: */
     loadFpuState(NODE_STATE(ksIdleThread));
 
