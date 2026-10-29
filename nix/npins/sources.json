@@ -1,5 +1,47 @@
 {
   "pins": {
+    "nvidia-r570144-gsp": {
+      "type": "Url",
+      "url": "https://media.githubusercontent.com/media/ttabi/linux-firmware-nova/b5758fe4d378b8ac2476f914ac8e9b8788c3d877/nvidia/ga102/gsp/gsp.bin",
+      "hash": "sha256-V0yF3tZdBWt5xo1OyEnnNgBm9SEDESKyGEdE2iHlXCg=",
+      "unpack": false
+    },
+    "nvidia-r570144-ad106-meta": {
+      "type": "Url",
+      "url": "https://media.githubusercontent.com/media/ttabi/linux-firmware-nova/b5758fe4d378b8ac2476f914ac8e9b8788c3d877/nvidia/ad102/gsp/gsp.tlv",
+      "hash": "sha256-YdftskT3RRHrW9c4Ejx+axZMFm21HKOaVD0Rtw+PhmI=",
+      "unpack": false
+    },
+    "nvidia-r570144-ad106-bootloader": {
+      "type": "Url",
+      "url": "https://media.githubusercontent.com/media/ttabi/linux-firmware-nova/b5758fe4d378b8ac2476f914ac8e9b8788c3d877/nvidia/ad102/gsp/gsp_bootloader.tlv",
+      "hash": "sha256-TIlkArL1Yw1i7zm+wJIYj1dXytw0tK3EZ2eOwCHZUyk=",
+      "unpack": false
+    },
+    "nvidia-r570144-ad106-load": {
+      "type": "Url",
+      "url": "https://media.githubusercontent.com/media/ttabi/linux-firmware-nova/b5758fe4d378b8ac2476f914ac8e9b8788c3d877/nvidia/ad102/gsp/booter_load.tlv",
+      "hash": "sha256-7OZzFOH/dij8Qe1Vrvzaf0nQoGCYO8F4K/XU9VOzjpU=",
+      "unpack": false
+    },
+    "nvidia-r570144-ad106-unload": {
+      "type": "Url",
+      "url": "https://media.githubusercontent.com/media/ttabi/linux-firmware-nova/b5758fe4d378b8ac2476f914ac8e9b8788c3d877/nvidia/ad102/gsp/booter_unload.tlv",
+      "hash": "sha256-43fzMgeL1Ov5aVPuMMcu1PmAQMa+PDvfys8VWBX+XMs=",
+      "unpack": false
+    },
+    "nvidia-r570144-license": {
+      "type": "Url",
+      "url": "https://raw.githubusercontent.com/ttabi/linux-firmware-nova/b5758fe4d378b8ac2476f914ac8e9b8788c3d877/LICENCE.nvidia",
+      "hash": "sha256-vFIlpX9JxSSdzyOOSuZDeBFneiqKf1ecPYOeBYZT7kQ=",
+      "unpack": false
+    },
+    "nvidia-r570144-whence": {
+      "type": "Url",
+      "url": "https://raw.githubusercontent.com/ttabi/linux-firmware-nova/b5758fe4d378b8ac2476f914ac8e9b8788c3d877/WHENCE",
+      "hash": "sha256-Zy5xjuzkYYmUqgLOxlyxzhTYTmWf4lKDVWKOAPASDgA=",
+      "unpack": false
+    }, 
     "linux": {
       "type": "Url",
       "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.tar.xz",

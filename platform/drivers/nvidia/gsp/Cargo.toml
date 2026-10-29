@@ -1,0 +1,16 @@
+[package]
+name = "horn-nvidia-gsp"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+description = "Checked AD106 firmware inputs and r570.144 transport for native GSP boot"
+
+[features]
+host = []
+
+[[bin]]
+name = "nvidia-fwcheck"
+path = "src/bin/fwcheck.rs"
+required-features = ["host"]
+
+[dependencies]

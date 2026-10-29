@@ -346,6 +346,10 @@ name = "horn-nvidia"
 version = "0.1.0"
 
 [[package]]
+name = "horn-nvidia-gsp"
+version = "0.1.0"
+
+[[package]]
 name = "horn-nvidia-task"
 version = "0.1.0"
 dependencies = [

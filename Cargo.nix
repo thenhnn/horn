@@ -183,6 +183,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-nvidia-gsp" = rec {
+      packageId = "horn-nvidia-gsp";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-nvidia-gsp";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-nvidia-task" = rec {
       packageId = "horn-nvidia-task";
       build = internal.buildRustCrateWithFeatures {
@@ -1369,6 +1379,23 @@ rec {
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/drivers/nvidia; };
         libName = "horn_nvidia";
 
+      };
+      "horn-nvidia-gsp" = rec {
+        crateName = "horn-nvidia-gsp";
+        version = "0.1.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "nvidia-fwcheck";
+            path = "src/bin/fwcheck.rs";
+            requiredFeatures = [ "host" ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/drivers/nvidia/gsp; };
+        libName = "horn_nvidia_gsp";
+        features = {
+        };
+        resolvedDefaultFeatures = [ "host" ];
       };
       "horn-nvidia-task" = rec {
         crateName = "horn-nvidia-task";

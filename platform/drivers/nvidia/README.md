@@ -28,9 +28,29 @@ nix-shell --run 'cargo test --offline -p horn-nvidia'
 ```
 
 Seven focused host tests exercise those guards, not hardware behavior.
-There is still no public GPU API, firmware pin or GSP boot implementation.
+There is still no public GPU API or GSP boot implementation. A matching
+570.144 firmware package is now pinned; see below.
 In particular there is no fake successful `boot()`.
 See [DESIGN.md](DESIGN.md) for the port plan, blockers and exact source map.
+
+## GSP firmware inputs
+
+`gsp/` is the separate **GPL-2.0-only** NOVA-derived port, not the original BSD
+probe library. See [source/license provenance](gsp/PORTING.md). It parses the
+pinned 570.144 TLVs and prepares original production booter signatures. The
+VBIOS snapshot parser locates production FWSEC and prepares FRTS/SB working
+copies; no board VBIOS snapshot has been exercised yet.
+
+```sh
+nix-build nix -A nvidia.firmware --argstr profile pc-dev \
+  --arg modules '[ ./platform/drivers/nvidia/module.nix ]' --no-out-link
+```
+
+The build runs the native host checker against the **actual** five firmware
+inputs and includes NVIDIA's license/WHENCE. It does not run firmware or touch
+the GPU. `gsp.bin` is a 63,541,248-byte raw image, not ELF. Firmware is not yet
+embedded into the small probe task: ELF/staging/DMA RAM budgets must be raised
+explicitly with the boot adapter. Source inputs in `work/` are not dependencies.
 
 ## Native read-only task (opt-in)
 
