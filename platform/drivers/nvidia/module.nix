@@ -34,6 +34,9 @@ in {
     devmgr-demo.net = lib.mkDefault false;
     devmgr-demo.shell = lib.mkDefault false;
     services.definitions.devmgr.publish = ["/diagnostics/nvidia"];
+    # Firmware staging (60.6 MiB over chunked VT-d mappings) plus GSP handoff
+    # legitimately exceeds the standard 30 s READY window.
+    devmgr-demo.ready-timeout-us = lib.mkForce 180000000;
     services.definitions.devmgr.ram = lib.mkForce ((if config.nvidia.boot then 192 else 64) * 1024 * 1024);
     devmgr.drivers = [
       {
@@ -41,8 +44,8 @@ in {
         clock = true;
         inherit elf;
         ram = (if config.nvidia.boot then 256 else 16) * 1024 * 1024;
-        # Explicit future GSP budget, not an allocation or a larger virtio default.
-        dmaBytes = 64 * 1024 * 1024;
+        # Firmware staging (60.6 MiB) plus page tables, GPFIFO and method buffers.
+        dmaBytes = 96 * 1024 * 1024;
         dmaObjects = 64;
         pci = {
           vendor = 4318; # 10de

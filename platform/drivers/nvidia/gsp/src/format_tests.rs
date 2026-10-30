@@ -61,7 +61,7 @@ fn frame_bounds_checksum_and_distinct_sequences() {
     assert_eq!(packet.header.transport_sequence, 17);
     assert_eq!(packet.header.rpc_sequence, 3);
     assert_eq!(packet.payload, b"abc");
-    assert_eq!(packet.success(), Err(Error::FirmwareStatus(u32::MAX)));
+    assert_eq!(packet.success(), Err(Error::FirmwareStatus(crate::FirmwareStatus(u32::MAX))));
     out[HEADER] ^= 1;
     assert!(matches!(Packet::decode(&out), Err(Error::Checksum)));
     let mut out = vec![0; HEADER];
@@ -81,4 +81,33 @@ fn continuations_do_not_split_fixed_fields() {
     assert_eq!(second.parts[1].len(), 5);
     assert!(chunks.next().is_none());
     assert!(Chunks::new(STATIC_INFO, &vec![0; MAX_PAYLOAD + 1], &[]).is_err());
+}
+
+/// Bytes captured from the physical AD106 PROM: the PCI data structure length
+/// is 0x18 (24), not 26+, and NOVA never validates that field.
+#[test]
+fn real_ad106_prom_header_with_24_byte_pcir_is_accepted() {
+    let mut rom = vec![0u8; 0x1000];
+    rom[0] = 0x55;
+    rom[1] = 0xaa;
+    rom[2] = 0x08; // 8 * 512 = 4096 bytes
+    rom[0x18..0x1a].copy_from_slice(&0x170u16.to_le_bytes());
+    let pcir = 0x170;
+    rom[pcir..pcir + 4].copy_from_slice(b"PCIR");
+    rom[pcir + 4..pcir + 6].copy_from_slice(&0x10deu16.to_le_bytes());
+    rom[pcir + 6..pcir + 8].copy_from_slice(&0x2803u16.to_le_bytes());
+    rom[pcir + 10..pcir + 12].copy_from_slice(&0x18u16.to_le_bytes());
+    rom[pcir + 16..pcir + 18].copy_from_slice(&0x0008u16.to_le_bytes());
+    rom[pcir + 21] = 0x80; // last image
+    let npde = (pcir + 0x18 + 0xf) & !0xf;
+    assert_eq!(npde, 0x190);
+    rom[npde..npde + 4].copy_from_slice(b"NPDE");
+    rom[npde + 8..npde + 10].copy_from_slice(&0x0008u16.to_le_bytes());
+    rom[npde + 10] = 0x80;
+
+    let layout = crate::vbios::layout(&rom).unwrap();
+    assert_eq!(layout.rom, 0);
+    assert_eq!(layout.images, 1);
+    assert_eq!(layout.pci, Some((0, 4096)));
+    assert_eq!(layout.end, Some(4096));
 }

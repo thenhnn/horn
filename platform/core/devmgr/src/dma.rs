@@ -12,7 +12,7 @@ impl DmaPolicy {
     };
     pub fn validate(self) -> Result<(), DeviceError> {
         if self.bytes == 0
-            || self.bytes > 64 * 1024 * 1024
+            || self.bytes > 128 * 1024 * 1024
             || self.bytes & 4095 != 0
             || self.objects == 0
             || self.objects > 64
@@ -45,7 +45,7 @@ mod tests {
         assert!(p.admit(0, 0, 4097).is_err());
         assert!(
             DmaPolicy {
-                bytes: 65 * 1024 * 1024,
+                bytes: 129 * 1024 * 1024,
                 objects: 12
             }
             .validate()

@@ -134,14 +134,16 @@ impl<'a> Booter<'a> {
     ) -> Result<crate::falcon::Prepared<'s>> {
         let signature = self.tlv.signature(hardware_fuse)?;
         if staging.len() != self.blob.len() {
-            return Err(Error::Range);
+            return Err(Error::Step("booter-staging"));
         }
         staging.copy_from_slice(self.blob);
         let at = self.signature_patch as usize;
-        let end = at.checked_add(signature.len()).ok_or(Error::Range)?;
+        let end = at
+            .checked_add(signature.len())
+            .ok_or(Error::Step("booter-patch"))?;
         staging
             .get_mut(at..end)
-            .ok_or(Error::Range)?
+            .ok_or(Error::Step("booter-patch-range"))?
             .copy_from_slice(signature);
         crate::falcon::Prepared::new(
             staging,

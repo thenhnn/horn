@@ -122,6 +122,7 @@ impl DeviceBank {
         while inner.nodes[at].unwrap().bits > bits {
             let node = inner.nodes[at].unwrap();
             if node.frame.is_some() {
+                inner.report(address, bits, "claimed");
                 return Err(Error::Exhausted);
             }
             let children = if let Some(children) = node.children {
@@ -177,6 +178,7 @@ impl DeviceBank {
         }
         let node = inner.nodes[at].unwrap();
         if node.children.is_some() {
+            inner.report(address, bits, "split");
             return Err(Error::Exhausted);
         }
         let cap = if let Some((cap, references)) = node.frame {
@@ -185,6 +187,7 @@ impl DeviceBank {
             cap
         } else {
             let Some(slot) = inner.free.pop() else {
+                inner.report(address, bits, "slots");
                 inner.prune(at)?;
                 return Err(Error::Exhausted);
             };
@@ -283,6 +286,18 @@ impl DevicePage {
     }
 }
 impl Inner {
+    fn report(&self, address: usize, bits: usize, reason: &str) {
+        ::sel4::debug_println!(
+            "DEVICE_BANK_EXHAUSTED reason={} address={:#x} bits={} capacity={} free={} peak={} nodes={}",
+            reason,
+            address,
+            bits,
+            self.capacity,
+            self.free.len(),
+            self.peak,
+            self.nodes.len()
+        );
+    }
     fn prune(&mut self, mut at: usize) -> Result<(), Error> {
         while let Some(parent) = self.nodes[at].unwrap().parent {
             let children = self.nodes[parent].unwrap().children.unwrap();

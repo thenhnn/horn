@@ -39,6 +39,15 @@ impl DmaBlock {
     /// # Safety
     /// The owning session/CPU mapping remains live. This span is CPU-owned,
     /// unpublished to the GPU or otherwise excluded from concurrent GPU writes.
+    /// # Safety
+    /// Same ownership requirements as initialize. Zeroes the whole page-rounded
+    /// allocation so block-granular Falcon DMA cannot read uninitialized heap
+    /// past the end of a segment whose size is not a multiple of 256.
+    pub unsafe fn zero(&mut self) -> Result<()> {
+        self.bounds(0, self.bytes)?;
+        unsafe { core::ptr::write_bytes(self.pointer.as_ptr(), 0, self.bytes) };
+        Ok(())
+    }
     pub unsafe fn initialize(&mut self, offset: usize, bytes: &[u8]) -> Result<()> {
         self.bounds(offset, bytes.len())?;
         unsafe {
@@ -86,37 +95,37 @@ impl DmaBlock {
         Ok(())
     }
 }
+/// Cached on-demand pages. Two more fixed windows and one transient PROM window
+/// stay inside the eight-export assignment bound.
+const LIVE_WINDOWS: usize = 5;
 pub struct Native {
     session: DeviceSession,
     time: Time,
     windows: Vec<(u32, MmioWindow)>,
+    fixed: Vec<(u32, MmioWindow)>,
     irq_prepared: bool,
     events_enabled: bool,
     poisoned: Rc<Cell<bool>>,
 }
 impl Native {
-    /// All PROM/probe temporary windows must have been explicitly closed first.
-    /// These seven exports fit the eight-window assignment bound. After ALL
-    /// signature preparation, bind_irq revokes the fuse lease and adds GIN plus
-    /// the narrow single-MSI EOI mirror window. No giant BAR1/BAR3 map is made.
-    pub fn new(mut session: DeviceSession, time: Time) -> Self {
+    /// Registers are mapped on demand: one 4-KiB page per export, at most
+    /// LIVE_WINDOWS cached plus two fixed GIN/EOI windows. Eagerly holding
+    /// large register blocks exhausted the device-page claim budget before any
+    /// firmware work started, and every export is a separately revocable lease.
+    pub fn new(session: DeviceSession, time: Time) -> Self {
         let mut windows = Vec::new();
-        windows.try_reserve_exact(8).expect("AD106 window metadata");
-        for (base, bytes) in [
-            (0, 65536),
-            (0x100000, 4096),
-            (0x110000, 65536),
-            (0x1fa000, 4096),
-            (0x820000, 65536),
-            (0x840000, 8192),
-            (0x625000, 4096),
-        ] {
-            windows.push((base, session.mmio_window(0, base as u64, bytes)));
-        }
+        windows
+            .try_reserve_exact(LIVE_WINDOWS)
+            .expect("AD106 window metadata");
+        let mut fixed = Vec::new();
+        fixed
+            .try_reserve_exact(2)
+            .expect("AD106 GIN window metadata");
         Self {
             session,
             time,
             windows,
+            fixed,
             irq_prepared: false,
             events_enabled: false,
             poisoned: Rc::new(Cell::new(false)),
@@ -134,7 +143,7 @@ impl Native {
         if offset & 3 != 0 {
             return Err(Error::Range);
         }
-        for (base, window) in &self.windows {
+        for (base, window) in self.fixed.iter().chain(self.windows.iter()) {
             if let Some(within) = offset.checked_sub(*base)
                 && (within as usize)
                     .checked_add(4)
@@ -148,7 +157,7 @@ impl Native {
         }
         // Serialized UC access: no raw alias escapes the read/write call.
         // Revoke before recycling an export, not by silently replacing a map.
-        if self.windows.len() == 8 {
+        if self.windows.len() == LIVE_WINDOWS {
             let (_, window) = self.windows.remove(0);
             self.session.close_window(window);
         }
@@ -179,6 +188,24 @@ impl Native {
     pub fn transport(&mut self) -> &mut horn_ipc::Sel4Transport<horn_ipc::Sel4CapSpace> {
         self.session.transport()
     }
+    /// Release a DMA buffer: unmap, unpin and drain through devmgr, returning
+    /// the capability slots and the accounting quota. The caller must have
+    /// finished every device access to it (for the firmware image: after
+    /// INIT_DONE). Uncertain cleanup would be a fail-stop, not a silent reuse.
+    pub fn release(&mut self, block: DmaBlock) -> Result<()> {
+        self.healthy()?;
+        let pointer = core::ptr::NonNull::new(block.pointer.as_ptr()).ok_or(Error::Backend)?;
+        let pages = block.bytes / 4096;
+        if pages == 0 {
+            return Err(Error::Range);
+        }
+        // SAFETY: the block is consumed here, so no CPU alias survives, and the
+        // caller guarantees the device no longer reads it.
+        unsafe {
+            self.session.dma_dealloc(block.iova, pointer, pages);
+        }
+        Ok(())
+    }
     pub fn allocate(&mut self, bytes: usize, access: DeviceAccess) -> Result<DmaBlock> {
         self.healthy()?;
         let bytes = bytes.checked_add(4095).ok_or(Error::Range)? & !4095;
@@ -208,15 +235,21 @@ impl Native {
         if self.irq_prepared {
             return Err(Error::State);
         }
-        let fuse = self
-            .windows
-            .iter()
-            .position(|(base, _)| *base == 0x820000)
-            .ok_or(Error::State)?;
-        let (_, fuse) = self.windows.remove(fuse);
-        self.session.close_window(fuse);
-        for base in [0xb81000, 0x88000] {
-            self.windows
+        for (base, _) in self.fixed.iter() {
+            if *base == 0x820000 {
+                return Err(Error::State);
+            }
+        }
+        // Every production signature is prepared; the fuse aperture is dead.
+        if let Some(fuse) = self.windows.iter().position(|(base, _)| *base == 0x820000) {
+            let (_, fuse) = self.windows.remove(fuse);
+            self.session.close_window(fuse);
+        }
+        if !self.fixed.is_empty() {
+            return Err(Error::State);
+        }
+        for base in [0xb81000u32, 0x88000] {
+            self.fixed
                 .push((base, self.session.mmio_window(0, base as u64, 4096)));
         }
         horn_nvidia_gsp::gin::quiesce(self)?;
@@ -261,8 +294,14 @@ impl Native {
         // Device source/tree/MSI acknowledgment completed before this seL4 ack.
         self.session.ack_interrupt();
         if report.faults != 0 || report.remaining != 0 {
+            // A fault bitmap, not an NV status: name it before failing stop.
+            sel4::debug_println!(
+                "NVIDIA_GIN_FAULT faults={:#x} remaining={:#x}",
+                report.faults,
+                report.remaining
+            );
             self.poisoned.set(true);
-            return Err(Error::FirmwareStatus(report.faults | report.remaining));
+            return Err(Error::State);
         }
         Ok(report)
     }

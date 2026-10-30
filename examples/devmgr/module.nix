@@ -71,6 +71,7 @@
           if config.devmgr-demo.stall-bootstrap
           then "1"
           else "0";
+        SUPERVISOR_READY_TIMEOUT_US = toString config.devmgr-demo.ready-timeout-us;
       };
       horn-mimalloc = old: {MIMALLOC_LIB = "${mimalloc}/lib";};
     };
@@ -105,7 +106,7 @@ in {
         elf = lib.mkOption {type = lib.types.path;};
         ram = lib.mkOption {type = lib.types.ints.positive;};
         dmaBytes = lib.mkOption {
-          type = lib.types.ints.between 4096 (64 * 1024 * 1024);
+          type = lib.types.ints.between 4096 (128 * 1024 * 1024);
           default = 12 * 65536;
         };
         dmaObjects = lib.mkOption {
@@ -132,6 +133,12 @@ in {
     default = false;
   };
   options.devmgr-demo.startup-timeout-us = lib.mkOption {
+    type = lib.types.ints.positive;
+    default = 30000000;
+  };
+  # Per-profile READY window. The default stays the project standard of 30 s;
+  # firmware bring-up profiles raise it explicitly instead of silently.
+  options.devmgr-demo.ready-timeout-us = lib.mkOption {
     type = lib.types.ints.positive;
     default = 30000000;
   };

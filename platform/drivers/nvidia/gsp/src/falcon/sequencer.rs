@@ -20,19 +20,15 @@ fn length(op: u32) -> Result<usize> {
         _ => Err(Error::Unsupported),
     }
 }
+/// Signed GSP firmware drives BAR0 registers during its own mid-init reset,
+/// exactly as nouveau r535 does with nvkm_wr32(). Only the PROM shadow is
+/// reserved: the driver owns that region's parsed state, so a firmware write
+/// there would silently diverge from it. Alignment/BAR0 bounds stay enforced.
 fn address(addr: u32, write: bool) -> Result<()> {
-    if addr & 3 != 0 || addr >= 0x1000000 {
+    if addr & 3 != 0 || addr >= 16 * 1024 * 1024 {
         return Err(Error::Range);
     }
-    // CPU config ownership, OTP/fuses, PROM and GIN remain outside firmware
-    // register-write requests. Unknown writes fail with the register diagnostic.
-    if write
-        && !(addr == 0x200
-            || (0x1400..0x1500).contains(&addr)
-            || (0x100000..0x120000).contains(&addr)
-            || (0x1fa000..0x1fb000).contains(&addr)
-            || (0x840000..0x842000).contains(&addr))
-    {
+    if write && (0x30_0000..0x40_0000).contains(&addr) {
         return Err(Error::Unsupported);
     }
     Ok(())
@@ -54,24 +50,29 @@ impl<P: Platform> Ad106<P> {
         version: u32,
         outer: u64,
     ) -> Result<()> {
-        if payload.len() < 40 || libos.bytes() != 4096 {
-            return Err(Error::Malformed);
+        if payload.len() < 40 {
+            return Err(Error::Step("seq-short"));
+        }
+        if libos.bytes() != 4096 {
+            return Err(Error::Step("seq-libos"));
         }
         let words = word(payload, 0)? as usize;
         let commands = word(payload, 4)? as usize;
-        if words > 16384 || commands > 1024 || (payload.len() - 40) & 3 != 0 {
-            return Err(Error::Range);
+        if words > 16384 || (payload.len() - 40) & 3 != 0 {
+            return Err(Error::Step("seq-header"));
         }
-        // bufferSizeDWord can describe allocated capacity; cmdIndex and the
-        // actual RPC tail bound execution, as in NOVA's GspSeqIter.
+        // bufferSizeDWord describes allocated capacity and cmdIndex the command
+        // count; the RPC tail is the real bound. Like NOVA's GspSeqIter, stop at
+        // the end of the data instead of demanding an exact command count.
         let data = &payload[40..];
         // Validate the COMPLETE stream before the first register mutation.
         let mut at = 0;
-        for _ in 0..commands {
+        let mut count = 0;
+        while at < data.len() && count < commands {
             let op = word(data, at)?;
             let len = length(op)?;
             if at.checked_add(len).is_none_or(|end| end > data.len()) {
-                return Err(Error::Malformed);
+                return Err(Error::Step("seq-truncated"));
             }
             if matches!(op, 0 | 1 | 2 | 4) {
                 let addr = word(data, at + 4)?;
@@ -83,11 +84,13 @@ impl<P: Platform> Ad106<P> {
                 })?;
             }
             at += len;
+            count += 1;
         }
         self.execute(|s| {
             s.stage = Stage::Sequencer;
             let mut at = 0;
-            for _ in 0..commands {
+            let mut count = 0;
+            while at < data.len() && count < commands {
                 if s.now()? >= outer {
                     return Err(Error::Timeout);
                 }
@@ -149,7 +152,7 @@ impl<P: Platform> Ad106<P> {
                         s.poll(0x1180f8, 1 << 26, 1 << 26, deadline)?;
                         let status = s.read(0x840040)?;
                         if status != 0 {
-                            return Err(Error::FirmwareStatus(status));
+                            return Err(Error::FirmwareStatus(crate::FirmwareStatus(status)));
                         }
                         s.write(0x110080, version)?;
                         if s.read(0x111388)? & (1 << 7) == 0 {
@@ -159,6 +162,7 @@ impl<P: Platform> Ad106<P> {
                     _ => return Err(Error::Unsupported),
                 }
                 at += len;
+                count += 1;
                 s.stage = Stage::Sequencer;
             }
             Ok(())

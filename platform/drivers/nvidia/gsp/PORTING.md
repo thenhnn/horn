@@ -32,14 +32,26 @@ shared-queue snapshots, bounded cold-boot CPU sequencer, trusted PCI system-info
 and registry, and GIN155 single MSI. Unknown sequencer writes fail closed; PCI
 config, fuse and interrupt ownership are not delegated to firmware requests.
 READY requires actual GspInitDone and a validated GetGspStaticInfo reply.
+MMIO is mapped as one 4-KiB lease per register page, cached five at a time
+plus two fixed GIN/EOI windows, and each lease is closed before reuse. Eager
+64-KiB register blocks exhausted the device-page claim budget before firmware
+execution and were replaced; window/bank exhaustion now reports its own
+diagnostic instead of only a client panic.
 
 The 64-MiB/64-object DMA ceiling is unchanged. Boot mode explicitly reserves
 256-MiB driver RAM, 192-MiB devmgr RAM, larger image launch windows, a 64-MiB
 root heap and a 20-bit root CSpace; read-only mode remains available with `nvidia.boot = false`.
 Normal STOP requires shutdown RPC, suspended mailbox, SB/unloader and broker
 isolation acknowledgment. Failures abort without retry or implicit DMA release.
-No physical upload/reset, authentication, IRQ, DMA-drain or readiness has yet
-been demonstrated. No GPU/firmware-peer emulator was used.
+Validated on the physical board (2026-10-30, GPU passed through to the guest):
+FLR, PROM read, production FWSEC/FRTS/WPR2, SEC2 booter, GSP RISC-V start, the
+firmware-driven CPU sequencer, GspInitDone and a validated GetGspStaticInfo
+reply (`NVIDIA GeForce RTX 4060 Ti`, five FB regions). No GPU/firmware-peer
+emulator was used.
+
+Still unproven on hardware: MSI/GIN interrupt delivery, the STOP/unload path,
+repeat-boot determinism, and everything past boot (RM client, GPU memory,
+channels, faults). A successful boot is not a working GPU driver.
 
 ## Pinned firmware (not GPL)
 
@@ -68,3 +80,21 @@ The host nvidia-fwcheck program validates the actual package during its Nix
 build, using the same no_std parser intended for the task. No giant synthetic
 GPU model is used. Firmware is not yet embedded in the probe ELF: that must
 accompany the real boot adapter and its explicit ELF/staging/DMA RAM budgets.
+
+## RM interface headers (research input, not a build input)
+
+`MAP_MEMORY_DMA`, `NV_MEMORY_VIRTUAL_ALLOCATION_PARAMS` and the memory-list
+classes are taken from NVIDIA `open-gpu-kernel-modules` tag **570.144**
+(`8ec351aeb96a93a4bb69ccc12a542bf8a8df2b6f`), kept in the ignored
+`work/open-gpu-570.144` checkout. Those interface headers are dual MIT/GPL-2.0;
+the GPL-2.0-only crate records the exact tag, and the commit id is the pin.
+Sparse checkout paths used: `src/nvidia/interface`, `src/common/inc`,
+`src/common/sdk/nvidia/inc`, `src/nvidia/generated`,
+`src/common/inc/swref`, `src/nvidia/inc/kernel/gpu/mmu`,
+`src/nvidia/inc/libraries/mmu`, `src/nvidia/src/kernel/gpu/mmu`.
+They are read while porting, never compiled into the build.
+
+GPU VA on this firmware has no "map this object at that address" RPC: the
+modern `FERMI_VASPACE_A` path is driver-owned page tables, while the RM-managed
+path is the legacy context-DMA chain (`NV01_MEMORY_VIRTUAL` -> `ALLOC_CTX_DMA`
+-> `MAP_MEMORY_DMA`). The port uses the latter so RM owns the page tables.

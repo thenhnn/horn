@@ -95,8 +95,45 @@ nix-build nix -A sel4.out -A root-task.package --argstr profile pc-dev \
   --arg modules '[ ./platform/drivers/nvidia/module.nix ]' --no-out-link
 ```
 
-Both seL4-target task and embedded root build successfully. No passthrough run
-has been performed. A missing GPU does not synthesize one or emit probe READY.
+**First hardware milestone reached:** on the physical board, passed through to
+the guest, the opt-in task completed GSP cold boot and validated
+`GetGspStaticInfo` (`NVIDIA GeForce RTX 4060 Ti`, 5 FB regions). The serial
+trace runs `NVIDIA_GSP_BOOT_BEGIN` → `HANDOFF_BEGIN` → `RISCV_ACTIVE` →
+`SEQUENCE` → `POST` → `INIT_DONE` → `STATIC_INFO` → `READY`.
+
+That is firmware bring-up only: MSI/GIN delivery, STOP/unload, repeat boots and
+everything above the GSP (RM clients, GPU memory, channels) are still unproven.
+A build or a parser success never substitutes for these markers.
+
+`run-vfio.sh` rebuilds the kernel and root task, checks that the GPU and its
+audio sibling are already bound to `vfio-pci`, and launches QEMU with the GPU
+on the guest root bus. It performs **no** host driver change: no `modprobe`, no
+unbind/bind, no `driver_override`, no PCI reset. Binding the functions to
+`vfio-pci` stays a separate, explicitly authorized operator step.
+
+```sh
+platform/drivers/nvidia/run-vfio.sh            # build + run, log under work/
+DRY_RUN=1 platform/drivers/nvidia/run-vfio.sh  # build + print the QEMU command
+```
+
+`host-gpu.sh` is the only script that changes host driver state, and it is
+operator-run on purpose. Every mutation prints a plan and needs a typed
+confirmation; `--dry-run` shows the exact sysfs writes, and `--yes` skips the
+prompt only when explicitly requested. It never issues a PCI reset, never uses
+`rmmod -f`, and never touches ACS or IOMMU parameters.
+
+```sh
+platform/drivers/nvidia/host-gpu.sh status            # read-only
+platform/drivers/nvidia/host-gpu.sh release --dry-run # show the plan
+platform/drivers/nvidia/host-gpu.sh release           # nvidia -> vfio-pci
+platform/drivers/nvidia/host-gpu.sh restore           # vfio-pci -> nvidia
+```
+
+`release` stops the display manager and `nvidia-persistenced`, refuses to
+continue while any process still holds `/dev/nvidia*`, unloads the modules in
+dependency order, then binds both the GPU and its audio sibling to `vfio-pci`.
+`restore` reverses that and reports the resulting driver per function; if the
+GPU does not return to `nvidia`, reboot instead of forcing resets.
 
 The module gives this assignment explicit 64-MiB DMA / 64-object ceilings for
 the GSP adapter, without changing virtio defaults. This opt-in module defaults to

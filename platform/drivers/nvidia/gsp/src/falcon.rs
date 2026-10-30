@@ -115,9 +115,12 @@ impl<'a> Prepared<'a> {
         boot: u32,
         command: Option<crate::vbios::Command>,
     ) -> Result<Self> {
+        // Segment sizes need not be 256-byte multiples: the DMA loader always
+        // transfers whole blocks and reads the zero padding of the staging
+        // allocation, exactly like NOVA's zeroed_slice(next_multiple_of(256)).
+        // The real AD106 FWSEC dmem is 3456 bytes.
         for segment in [imem, dmem] {
             if segment.length == 0
-                || (segment.source | segment.destination | segment.length) & 255 != 0
                 || segment
                     .source
                     .checked_add(segment.length)
@@ -127,7 +130,7 @@ impl<'a> Prepared<'a> {
                     .checked_add(segment.length)
                     .is_none_or(|end| end > 0x100_0000)
             {
-                return Err(Error::Range);
+                return Err(Error::Step("segment-geometry"));
             }
         }
         if brom.engines == 0
@@ -137,7 +140,7 @@ impl<'a> Prepared<'a> {
                 .checked_add(384)
                 .is_none_or(|end| end > dmem.length)
         {
-            return Err(Error::Range);
+            return Err(Error::Step("brom"));
         }
         Ok(Self {
             bytes,
@@ -287,6 +290,20 @@ impl<P: Platform> Ad106<P> {
             s.value = None;
             Err(error)
         })
+    }
+    /// Record a failure from a pure parser/validator that never touched a
+    /// register, so the reported stage is the real one instead of the generic
+    /// quarantine marker. The first recorded diagnostic is always preserved.
+    pub fn fail_stage(&mut self, stage: Stage, error: Error) {
+        if self.fault.is_none() {
+            self.fault = Some(Diagnostic {
+                stage,
+                register: 0,
+                value: None,
+                clock_us: self.clock,
+                error,
+            });
+        }
     }
     pub fn time_us(&mut self) -> Result<u64> {
         self.execute(|s| s.now())
@@ -647,12 +664,12 @@ impl<P: Platform> Ad106<P> {
         self.execute(|s| {
             s.stage = Stage::FwsecStatus;
             if status != 0 {
-                return Err(Error::FirmwareStatus(status));
+                return Err(Error::FirmwareStatus(crate::FirmwareStatus(status)));
             }
             if let crate::vbios::Command::Frts { address, .. } = command {
                 let status = s.read(0x1438)? >> 16;
                 if status != 0 {
-                    return Err(Error::FirmwareStatus(status));
+                    return Err(Error::FirmwareStatus(crate::FirmwareStatus(status)));
                 }
                 s.stage = Stage::Wpr;
                 if s.wpr2_inner()?.is_none_or(|range| range.start != address) {
@@ -724,7 +741,7 @@ impl<P: Platform> Ad106<P> {
             )?;
             s.stage = Stage::BooterStatus;
             if status != 0 {
-                return Err(Error::FirmwareStatus(status));
+                return Err(Error::FirmwareStatus(crate::FirmwareStatus(status)));
             }
             s.write(0x110080, inputs.app_version)?;
             s.stage = Stage::Riscv;
@@ -761,7 +778,7 @@ impl<P: Platform> Ad106<P> {
                 let (status, _) = s.boot(Engine::Sec2, Some(0xff), Some(0xff), outer)?;
                 s.stage = Stage::BooterStatus;
                 if status != 0 {
-                    return Err(Error::FirmwareStatus(status));
+                    return Err(Error::FirmwareStatus(crate::FirmwareStatus(status)));
                 }
                 if s.wpr2_inner()?.is_some() {
                     return Err(Error::State);

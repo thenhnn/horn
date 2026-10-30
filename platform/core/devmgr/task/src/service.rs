@@ -264,7 +264,10 @@ impl Service {
         }
         self.next_badge = badge.checked_add(1).ok_or(DeviceError::Exhausted)?;
         let space = self.io().space();
-        let original = space.reserve_slot().map_err(|_| DeviceError::Exhausted)?;
+        let original = space.reserve_slot().map_err(|_| {
+            sel4::debug_println!("DEVICE_MINT_FAIL step=authority badge={:#x}", badge);
+            DeviceError::Exhausted
+        })?;
         let root = sel4::cap::CNode::from_bits(DEVICE_CAPS_SELF_SLOT as _);
         if root
             .absolute_cptr(*original.path())
@@ -283,6 +286,7 @@ impl Service {
         let exported = match space.reserve_slot() {
             Ok(slot) => slot,
             Err(_) => {
+                sel4::debug_println!("DEVICE_MINT_FAIL step=exported badge={:#x}", badge);
                 space.delete(authority).unwrap();
                 return Err(DeviceError::Exhausted);
             }
@@ -392,10 +396,14 @@ impl Service {
     fn close_map(&mut self, index: usize) {
         let map = self.maps[index].take().unwrap();
         let domain = self.devices[map.device].domain;
-        for pin in map.pins {
+        // One invalidation for the whole reservation, then release every pin.
+        let ranges: Vec<(u64, usize)> = map.pins.iter().map(|p| (p.iova, p.pages)).collect();
+        if !ranges.is_empty() {
             self.unit()
-                .unmap(domain, pin.iova, pin.pages)
+                .unmap_many(domain, &ranges)
                 .expect("DMA invalidate/drain");
+        }
+        for pin in map.pins {
             self.io()
                 .platform
                 .unpin(pin.token)
@@ -416,22 +424,45 @@ impl Service {
         }
         let objects = self.maps.iter().flatten().filter(|m| m.device == d).count();
         let device = &self.devices[d];
-        device.dma_policy.admit(device.dma_bytes, objects, length)?;
+        if let Err(error) = device.dma_policy.admit(device.dma_bytes, objects, length) {
+            sel4::debug_println!(
+                "DEVICE_DMA_RESERVE_FAIL used={} objects={} limit_bytes={} limit_objects={} length={} next_iova={:#x} error={:?}",
+                device.dma_bytes,
+                objects,
+                device.dma_policy.bytes,
+                device.dma_policy.objects,
+                length,
+                device.next_iova,
+                error
+            );
+            return Err(error);
+        }
         let iova = device.next_iova;
         let next = iova
             .checked_add(length)
             .filter(|end| *end <= 0x8000_0000)
-            .ok_or(DeviceError::Exhausted)?;
+            .ok_or_else(|| {
+                sel4::debug_println!(
+                    "DEVICE_DMA_RESERVE_FAIL step=window iova={:#x} length={}",
+                    iova,
+                    length
+                );
+                DeviceError::Exhausted
+            })?;
         let domain = device.domain;
         let mut pins = Vec::new();
         pins.try_reserve_exact(length.div_ceil(65536) as usize)
-            .map_err(|_| DeviceError::Exhausted)?;
+            .map_err(|_| {
+                sel4::debug_println!("DEVICE_DMA_RESERVE_FAIL step=pins length={}", length);
+                DeviceError::Exhausted
+            })?;
         let index = if let Some(n) = self.maps.iter().position(Option::is_none) {
             n
         } else {
-            self.maps
-                .try_reserve(1)
-                .map_err(|_| DeviceError::Exhausted)?;
+            self.maps.try_reserve(1).map_err(|_| {
+                sel4::debug_println!("DEVICE_DMA_RESERVE_FAIL step=maps len={}", self.maps.len());
+                DeviceError::Exhausted
+            })?;
             self.maps.push(None);
             self.maps.len() - 1
         };
@@ -439,6 +470,12 @@ impl Service {
         let reservation = match self.unit().reserve(domain, iova, (length / 4096) as usize) {
             Ok(r) => r,
             Err(e) => {
+                sel4::debug_println!(
+                    "DEVICE_DMA_RESERVE_FAIL step=vtd iova={:#x} pages={} error={:?}",
+                    iova,
+                    length / 4096,
+                    e
+                );
                 self.retire(authority);
                 self.io().space().delete(exported).unwrap();
                 return Err(failure(e));
@@ -461,6 +498,22 @@ impl Service {
             mapping: Cap::from_ref(exported),
             iova,
         })
+    }
+    /// Publish the deferred translations of one reservation with a single
+    /// invalidation. The caller must not use the device address before this.
+    fn commit_dma(&mut self, badge: u64) -> Result<(), DeviceError> {
+        let index = self
+            .maps
+            .iter()
+            .position(|m| m.as_ref().is_some_and(|m| m.badge == badge))
+            .ok_or(DeviceError::Denied)?;
+        let mut map = self.maps[index].take().ok_or(DeviceError::Denied)?;
+        let result = match map.reservation.as_mut() {
+            Some(reservation) => self.unit().commit_reserved(reservation).map_err(failure),
+            None => Err(DeviceError::Invalid),
+        };
+        self.maps[index] = Some(map);
+        result
     }
     fn append_dma(
         &mut self,
@@ -815,6 +868,14 @@ impl DeviceControl for Caller<'_> {
             Err(CallError::Remote(error))
                 if error != DeviceError::Quarantined && error != DeviceError::Backend =>
             {
+                sel4::debug_println!(
+                    "DEVICE_WINDOW_FAIL bar={} offset={:#x} length={} error={:?} open={}",
+                    index,
+                    offset,
+                    length,
+                    error,
+                    self.service.devices[d].mmios.len()
+                );
                 self.service.retire(authority);
                 self.service.io().space().delete(exported).unwrap();
                 return Err(error);
@@ -846,7 +907,17 @@ impl DeviceControl for Caller<'_> {
         if length > 65536 {
             return Err(DeviceError::Invalid);
         }
-        let grant = self.service.reserve_dma(self.badge, length, access)?;
+        let grant = self
+            .service
+            .reserve_dma(self.badge, length, access)
+            .map_err(|error| {
+                sel4::debug_println!(
+                    "DEVICE_DMA_MAP_FAIL step=reserve length={} error={:?}",
+                    length,
+                    error
+                );
+                error
+            })?;
         let badge = self
             .service
             .maps
@@ -855,8 +926,35 @@ impl DeviceControl for Caller<'_> {
             .find(|m| m.iova == grant.iova && self.service.devices[m.device].badge == self.badge)
             .unwrap()
             .badge;
-        match self.service.append_dma(badge, memory, offset, length) {
+        let appended = self.service.append_dma(badge, memory, offset, length);
+        if let Err(error) = &appended {
+            sel4::debug_println!(
+                "DEVICE_DMA_MAP_FAIL step=append length={} error={:?}",
+                length,
+                error
+            );
+        }
+        match appended {
             Ok(_) => {
+                // The single-shot path also owns publication: append defers the
+                // IOTLB invalidation, so commit it before the caller can use the
+                // device address.
+                if let Err(error) = self.service.commit_dma(badge) {
+                    sel4::debug_println!("DEVICE_DMA_MAP_FAIL step=commit error={:?}", error);
+                    let index = self
+                        .service
+                        .maps
+                        .iter()
+                        .position(|m| m.as_ref().is_some_and(|m| m.badge == badge))
+                        .unwrap();
+                    self.service.close_map(index);
+                    self.service
+                        .io()
+                        .space()
+                        .delete(grant.mapping.as_ref())
+                        .unwrap();
+                    return Err(error);
+                }
                 let map = self
                     .service
                     .maps
@@ -1152,18 +1250,39 @@ impl DeviceMapping for Caller<'_> {
         self.service.append_dma(self.badge, memory, offset, length)
     }
     fn finish(&mut self) -> Result<(), DeviceError> {
-        let map = self
+        let index = self
             .service
             .maps
-            .iter_mut()
-            .flatten()
-            .find(|m| m.badge == self.badge)
+            .iter()
+            .position(|m| m.as_ref().is_some_and(|m| m.badge == self.badge))
             .ok_or(DeviceError::Denied)?;
-        if !map.reservation.as_ref().is_some_and(|r| r.complete()) {
-            return Err(DeviceError::Busy);
+        // Take the record out so the VT-d unit can be borrowed mutably; it is
+        // always put back, including on failure.
+        let mut map = self.service.maps[index].take().ok_or(DeviceError::Denied)?;
+        let result = (|| {
+            let reservation = map.reservation.as_mut().ok_or(DeviceError::Invalid)?;
+            if !reservation.complete() {
+                return Err(DeviceError::Busy);
+            }
+            // Publish every deferred translation now, before the caller is
+            // allowed to enable bus mastering.
+            self.service
+                .unit()
+                .commit_reserved(reservation)
+                .map_err(failure)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                map.committed = true;
+                self.service.maps[index] = Some(map);
+                Ok(())
+            }
+            Err(error) => {
+                self.service.maps[index] = Some(map);
+                Err(error)
+            }
         }
-        map.committed = true;
-        Ok(())
     }
     fn close(&mut self) -> Result<(), DeviceError> {
         let index = self

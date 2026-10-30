@@ -360,16 +360,28 @@ impl DevicePlatform for Platform {
             .try_reserve(1)
             .map_err(|_| DeviceError::Exhausted)?;
         let token = self.token()?;
-        let (lease, memory) = self
-            .manager
-            .import_mmio(
-                space.as_ref(),
-                &mut self.bank,
-                address.try_into().map_err(|_| DeviceError::Invalid)?,
-                length.try_into().map_err(|_| DeviceError::Invalid)?,
-                horn_vm::protocol::VmProtection(3),
-            )
-            .map_err(vm_error)?;
+        let imported = self.manager.import_mmio(
+            space.as_ref(),
+            &mut self.bank,
+            address.try_into().map_err(|_| DeviceError::Invalid)?,
+            length.try_into().map_err(|_| DeviceError::Invalid)?,
+            horn_vm::protocol::VmProtection(3),
+        );
+        let (lease, memory) = match imported {
+            Ok(value) => value,
+            Err(error) => {
+                sel4::debug_println!(
+                    "DEVMGR_MMIO_FAIL address={:#x} length={} error={:?} bank_free={} bank_peak={} leases={}",
+                    address,
+                    length,
+                    error,
+                    self.bank.available_slots(),
+                    self.bank.peak_slots(),
+                    self.mmios.len()
+                );
+                return Err(vm_error(error));
+            }
+        };
         self.mmios.push((token, lease));
         #[cfg(feature = "boot-tests")]
         if !self.enabled {

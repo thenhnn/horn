@@ -338,7 +338,7 @@ pub fn libos(logs: [Span; 3], rmargs: Span, out: &mut [u8; PAGE]) -> Result<()> 
 }
 /// Inputs are the assigned function's trusted PCI snapshot, not caller-selected
 /// RAM/IOVA authority. Addresses describe guest PCI BARs only.
-pub fn system_info(bars: [u64; 3], bdf: u64, ids: [u32; 3]) -> Result<Vec<u8>> {
+pub fn system_info(bars: [u64; 3], pci_dev_id: u32, ids: [u32; 3]) -> Result<Vec<u8>> {
     if ids[0] != 0x280310de || ids[1] != 0xf3061569 || bars.iter().any(|a| *a == 0 || a & 4095 != 0)
     {
         return Err(Error::Range);
@@ -357,7 +357,8 @@ pub fn system_info(bars: [u64; 3], bdf: u64, ids: [u32; 3]) -> Result<Vec<u8>> {
     q!(gpuPhysAddr, bars[0]);
     q!(gpuPhysFbAddr, bars[1]);
     q!(gpuPhysInstAddr, bars[2]);
-    q!(nvDomainBusDeviceFunc, bdf);
+    // nouveau r535 uses pci_dev_id() here, not a domain/bus/dev/fn tuple.
+    q!(nvDomainBusDeviceFunc, u64::from(pci_dev_id));
     q!(maxUserVa, (1u64 << 47) - 4096);
     d!(pciConfigMirrorBase, 0x88000);
     d!(pciConfigMirrorSize, 0x1000);
@@ -367,11 +368,12 @@ pub fn system_info(bars: [u64; 3], bdf: u64, ids: [u32; 3]) -> Result<Vec<u8>> {
     Ok(out)
 }
 pub fn registry() -> Result<Vec<u8>> {
-    // No firmware-initiated secondary-bus reset or product-ID-check bypass.
+    // Exact nouveau r535 required set. Deviating (e.g. refusing the devid
+    // bypass) risks GSP-RM refusing to initialize on an OEM subsystem ID.
     let entries = [
-        ("RMSecBusResetEnable", 0),
+        ("RMSecBusResetEnable", 1),
         ("RMForcePcieConfigSave", 1),
-        ("RMDevidCheckIgnore", 0),
+        ("RMDevidCheckIgnore", 1),
     ];
     let strings = 8 + entries.len() * 16;
     let bytes = strings

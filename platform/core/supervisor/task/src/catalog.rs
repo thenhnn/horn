@@ -222,7 +222,7 @@ impl Manager {
                 self.io.space.delete(directory.as_ref()).unwrap();
             }
             self.jobs[i].lifecycle.start().unwrap();
-            self.jobs[i].deadline = now().wrapping_add(self.ticks * 30_000_000);
+            self.jobs[i].deadline = now().wrapping_add(self.ticks * crate::ready_timeout_us());
             self.process(i).start().unwrap();
             self.io.space.delete(owner.as_ref()).unwrap();
             sel4::debug_println!(

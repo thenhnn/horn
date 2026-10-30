@@ -295,10 +295,22 @@ impl DeviceSession {
             "DMA allocation exceeds assignment budget"
         );
         self.buffers.try_reserve(1).expect("DMA metadata");
+        // Chunked reservations are the only path that can take long enough to
+        // matter for a READY window; report its phases without per-page noise.
+        let trace = pages > MAX_PAGES;
+        if trace {
+            sel4::debug_println!("HORN_DMA_ALLOC begin pages={} bytes={}", pages, length);
+        }
         let memory = VmFactoryClient::new(&mut self.transport, self.factory)
             .allocate(length as _, VmBacking::Resident, VmProtection(3))
             .expect("resident DMA backing");
+        if trace {
+            sel4::debug_println!("HORN_DMA_ALLOC backing=ok");
+        }
         let cpu = self.map_cpu(memory, length);
+        if trace {
+            sel4::debug_println!("HORN_DMA_ALLOC cpu=ok");
+        }
         let dma = if pages <= MAX_PAGES {
             self.control()
                 .map(
@@ -313,6 +325,9 @@ impl DeviceSession {
                 .control()
                 .reserve_dma(length as _, access as u32)
                 .expect("DMA reservation");
+            if trace {
+                sel4::debug_println!("HORN_DMA_ALLOC reserved iova={:#x}", dma.iova);
+            }
             let result = (|| {
                 let mut offset = 0;
                 while offset < length {
@@ -328,6 +343,9 @@ impl DeviceSession {
                     )?;
                     assert_eq!(populated, (offset + chunk) as u64);
                     offset += chunk;
+                    if trace && offset % (MAX_PAGES * PAGE * 128) == 0 {
+                        sel4::debug_println!("HORN_DMA_ALLOC appended={}", offset);
+                    }
                 }
                 DeviceMappingClient::new(&mut self.transport, Cap::from_ref(dma.mapping.as_ref()))
                     .finish()

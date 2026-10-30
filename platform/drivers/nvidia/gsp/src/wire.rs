@@ -16,14 +16,19 @@ pub const CPU_SEQUENCE: u32 = abi::NV_VGPU_MSG_EVENT_GSP_RUN_CPU_SEQUENCER;
 pub const SET_SYSTEM_INFO: u32 = abi::NV_VGPU_MSG_FUNCTION_GSP_SET_SYSTEM_INFO;
 pub const SET_REGISTRY: u32 = abi::NV_VGPU_MSG_FUNCTION_SET_REGISTRY;
 pub const UNLOADING: u32 = abi::NV_VGPU_MSG_FUNCTION_UNLOADING_GUEST_DRIVER;
+/// Events that must stop the driver instead of being logged and dropped.
+/// GSP_POST_NOCAT_RECORD is a POST-code notification that upstream explicitly
+/// drops, so treating it as fatal aborted a healthy boot.
 pub fn fatal_event(function: u32) -> bool {
     matches!(
         function,
         abi::NV_VGPU_MSG_EVENT_OS_ERROR_LOG
             | abi::NV_VGPU_MSG_EVENT_RC_TRIGGERED
             | abi::NV_VGPU_MSG_EVENT_MMU_FAULT_QUEUED
-            | abi::NV_VGPU_MSG_EVENT_GSP_POST_NOCAT_RECORD
     )
+}
+pub fn post_event(function: u32) -> bool {
+    function == abi::NV_VGPU_MSG_EVENT_GSP_POST_NOCAT_RECORD
 }
 pub const STATIC_INFO: u32 = abi::NV_VGPU_MSG_FUNCTION_GET_GSP_STATIC_INFO;
 pub const CONTINUATION: u32 = abi::NV_VGPU_MSG_FUNCTION_CONTINUATION_RECORD;
@@ -133,7 +138,7 @@ impl<'a> Packet<'a> {
     }
     pub fn success(&self) -> Result<()> {
         if self.header.status != 0 {
-            return Err(Error::FirmwareStatus(self.header.status));
+            return Err(Error::FirmwareStatus(crate::FirmwareStatus(self.header.status)));
         }
         Ok(())
     }

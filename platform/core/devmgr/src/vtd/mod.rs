@@ -77,6 +77,10 @@ pub struct ReservedDma {
     base: u64,
     pages: usize,
     populated: usize,
+    // Entries added since the last invalidation. The device is not bus-mastering
+    // while a reservation is being populated, so the flush is deferred to commit
+    // and performed exactly once.
+    dirty: bool,
 }
 impl ReservedDma {
     pub fn base(&self) -> u64 {
@@ -87,6 +91,9 @@ impl ReservedDma {
     }
     pub fn complete(&self) -> bool {
         self.populated == self.pages
+    }
+    pub fn dirty(&self) -> bool {
+        self.dirty
     }
 }
 impl Interrupt {
@@ -461,6 +468,7 @@ impl<H: Hardware> Vtd<H> {
             base: iova,
             pages,
             populated: 0,
+            dirty: false,
         })
     }
     pub fn map_reserved(
@@ -477,8 +485,10 @@ impl<H: Hardware> Vtd<H> {
             r.base + r.populated as u64 * 4096,
             physical,
             access,
+            false,
         )?;
         r.populated += physical.len();
+        r.dirty = true;
         Ok(())
     }
     pub fn map(
@@ -499,12 +509,23 @@ impl<H: Hardware> Vtd<H> {
         {
             return Err(Error::Invalid);
         }
-        self.map_chunk(domain, iova, physical, device_access)?;
+        self.map_chunk(domain, iova, physical, device_access, true)?;
         self.domains
             .iter_mut()
             .find(|(d, _)| d.id == domain.id)
             .unwrap()
             .1 = iova + physical.len() as u64 * 4096;
+        Ok(())
+    }
+    /// Publish every deferred translation of a populated reservation with one
+    /// global invalidation. Callers must keep the device from bus-mastering
+    /// until this returns.
+    pub fn commit_reserved(&mut self, r: &mut ReservedDma) -> Result<()> {
+        if !r.dirty {
+            return Ok(());
+        }
+        self.transaction(|s| s.invalidate())?;
+        r.dirty = false;
         Ok(())
     }
     fn map_chunk(
@@ -513,6 +534,7 @@ impl<H: Hardware> Vtd<H> {
         iova: u64,
         physical: &[u64],
         device_access: u8,
+        flush: bool,
     ) -> Result<()> {
         self.domain(domain)?;
         self.range(iova, physical.len())?;
@@ -559,7 +581,9 @@ impl<H: Hardware> Vtd<H> {
             for ((page, index), paddr) in leaves.into_iter().zip(physical) {
                 s.io.write_page(page, index, paddr | device_access as u64)?;
             }
-            s.invalidate()?;
+            if flush {
+                s.invalidate()?;
+            }
             Ok(())
         })
     }
@@ -572,6 +596,26 @@ impl<H: Hardware> Vtd<H> {
             for n in 0..pages {
                 if let Some((page, index)) = s.leaf(domain, iova + n as u64 * 4096, false)? {
                     s.io.write_page(page, index, 0)?;
+                }
+            }
+            s.invalidate()
+        })
+    }
+    /// Remove several mappings and invalidate once. Used when tearing down a
+    /// chunked reservation: the device is already stopped, and one global flush
+    /// covers every removed leaf (a per-chunk flush made teardown as slow as
+    /// the unbatched map path was).
+    pub fn unmap_many(&mut self, domain: Domain, ranges: &[(u64, usize)]) -> Result<()> {
+        self.domain(domain)?;
+        for (iova, pages) in ranges {
+            self.range(*iova, *pages)?;
+        }
+        self.transaction(|s| {
+            for (iova, pages) in ranges {
+                for n in 0..*pages {
+                    if let Some((page, index)) = s.leaf(domain, *iova + n as u64 * 4096, false)? {
+                        s.io.write_page(page, index, 0)?;
+                    }
                 }
             }
             s.invalidate()

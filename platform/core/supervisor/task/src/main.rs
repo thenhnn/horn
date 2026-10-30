@@ -435,7 +435,7 @@ impl SupervisorJob for Caller<'_> {
             return Err(SupervisorError::Denied);
         }
         self.manager.jobs[i].lifecycle.start()?;
-        self.manager.jobs[i].deadline = now().wrapping_add(self.manager.ticks * 30_000_000);
+        self.manager.jobs[i].deadline = now().wrapping_add(self.manager.ticks * ready_timeout_us());
         self.manager.process(i).start().expect("start process");
         Ok(())
     }
@@ -498,6 +498,15 @@ impl SupervisorRuntime for Caller<'_> {
         self.manager.jobs[i].lifecycle.request_stop(mode)?;
         sel4::debug_println!("SUPERVISOR_STOP_REQUEST job={} accepted=true", i);
         Ok(())
+    }
+}
+/// READY window for a started job. The project default is 30 s; a firmware
+/// bring-up profile may raise it at build time, and this is never extended at
+/// runtime after a timeout.
+fn ready_timeout_us() -> u64 {
+    match option_env!("SUPERVISOR_READY_TIMEOUT_US") {
+        Some(value) => value.parse().unwrap_or(30_000_000),
+        None => 30_000_000,
     }
 }
 fn main() -> ! {

@@ -75,10 +75,11 @@ fn image(data: &[u8]) -> Result<Image<'_>> {
     if &header[..4] != b"PCIR" && &header[..4] != b"NPDS" {
         return Err(Error::Malformed);
     }
-    let pcir_bytes = u16_at(header, 10)? as usize;
-    if pcir_bytes < 26 {
-        return Err(Error::Malformed);
-    }
+    // Real NVIDIA ROMs report 0x18 (24) here, and NOVA never validates the
+    // field: it reads size_of::<PcirStruct>() and uses the value only to find
+    // the NPDE. Floor it so a zero/garbage length cannot misplace the NPDE,
+    // and never reject a shorter-than-26 structure.
+    let pcir_bytes = usize::from(u16_at(header, 10)?).max(24);
     range(data, pcir, pcir_bytes)?;
     let mut length = u16_at(header, 16)? as usize * 512;
     let kind = header[20];
@@ -160,34 +161,70 @@ pub struct Fwsec<'a> {
     pub ucode_id: u8,
     pub signature_versions: u16,
 }
+/// Diagnostic view of the same PROM image chain `from_prom` walks. Offsets are
+/// physical snapshot offsets; `pci` carries the PCI image's offset and length.
+#[derive(Clone, Copy, Debug)]
+pub struct Layout {
+    pub rom: usize,
+    pub images: usize,
+    pub pci: Option<(usize, usize)>,
+    pub fwsec: Option<usize>,
+    pub end: Option<usize>,
+}
+pub fn layout(snapshot: &[u8]) -> Result<Layout> {
+    if snapshot.len() > PROM_BYTES {
+        return Err(Error::Range);
+    }
+    let rom = rom_offset(snapshot)?;
+    let mut at = rom;
+    let mut pci = None;
+    let mut fwsec = None;
+    let mut end = None;
+    let mut images = 0;
+    for _ in 0..64 {
+        let img = image(snapshot.get(at..).ok_or(Error::Range)?)?;
+        images += 1;
+        if fwsec.is_none() {
+            if img.kind == 0 && pci.is_none() {
+                pci = Some((at, img.bytes.len()));
+            }
+            if img.kind == 0xe0 {
+                fwsec = Some(at);
+            }
+        }
+        // NOVA aligns every image start to 512 bytes (NPDE may report a
+        // length that is not a multiple of the block size).
+        at = at
+            .checked_add(img.bytes.len())
+            .and_then(|n| n.checked_add(511))
+            .map(|n| n & !511)
+            .ok_or(Error::Range)?;
+        if img.last {
+            end = Some(at);
+            break;
+        }
+    }
+    Ok(Layout {
+        rom,
+        images,
+        pci,
+        fwsec,
+        end,
+    })
+}
 impl<'a> Fwsec<'a> {
     pub fn from_prom(snapshot: &'a [u8]) -> Result<Self> {
-        if snapshot.len() > PROM_BYTES {
-            return Err(Error::Range);
-        }
-        let mut at = rom_offset(snapshot)?;
-        let mut pci = None;
-        let mut fwsec = None;
-        let mut end = None;
-        for _ in 0..64 {
-            let img = image(snapshot.get(at..).ok_or(Error::Range)?)?;
-            if fwsec.is_none() {
-                if img.kind == 0 && pci.is_none() {
-                    pci = Some(img.bytes);
-                }
-                if img.kind == 0xe0 {
-                    fwsec = Some(at);
-                }
-            }
-            at = at.checked_add(img.bytes.len()).ok_or(Error::Range)?;
-            if img.last {
-                end = Some(at);
-                break;
-            }
-        }
-        let pci = pci.ok_or(Error::Malformed)?;
+        Self::descriptor(Self::descriptor_bytes(snapshot)?)
+    }
+    /// FWSEC descriptor bytes located through the BIT token and the PMU lookup
+    /// table. Exposed for boot diagnostics only; `from_prom` remains the
+    /// authority that validates and prepares firmware.
+    pub fn descriptor_bytes(snapshot: &'a [u8]) -> Result<&'a [u8]> {
+        let l = layout(snapshot)?;
+        let (pci_at, pci_len) = l.pci.ok_or(Error::Malformed)?;
+        let pci = range(snapshot, pci_at, pci_len)?;
         let section = snapshot
-            .get(fwsec.ok_or(Error::Malformed)?..end.ok_or(Error::Malformed)?)
+            .get(l.fwsec.ok_or(Error::Malformed)?..l.end.ok_or(Error::Malformed)?)
             .ok_or(Error::Range)?;
         // BIT treats PCI-AT and FWSEC as logically adjacent, even if EFI lies
         // between them physically. Never subtract the physical PROM offset.
@@ -221,11 +258,9 @@ impl<'a> Fwsec<'a> {
                     .ok_or(Error::Range)?,
             );
         }
-        Self::descriptor(
-            section
-                .get(offset.ok_or(Error::Malformed)?..)
-                .ok_or(Error::Range)?,
-        )
+        section
+            .get(offset.ok_or(Error::Malformed)?..)
+            .ok_or(Error::Range)
     }
     fn descriptor(data: &'a [u8]) -> Result<Self> {
         let hdr = u32_at(data, 0)?;
@@ -237,13 +272,12 @@ impl<'a> Fwsec<'a> {
         let imem_size = u32_at(data, 20)?;
         let dmem_size = u32_at(data, 32)?;
         let payload_size = imem_size.checked_add(dmem_size).ok_or(Error::Range)? as usize;
-        // No guessed decompression: only uncompressed, block-aligned payloads.
-        if u32_at(data, 4)? as usize != payload_size
-            || imem_size == 0
-            || dmem_size == 0
-            || imem_size & 255 != 0
-            || dmem_size & 255 != 0
-        {
+        // No guessed decompression: only uncompressed payloads. Segment sizes
+        // need not be 256-byte multiples: the DMA loader transfers whole
+        // blocks and reads the zero padding of the staging allocation, exactly
+        // like NOVA's zeroed_slice(next_multiple_of(256)). The stored-size word
+        // at +4 is not validated either - NOVA parses it and never uses it.
+        if imem_size == 0 || dmem_size == 0 {
             return Err(Error::Unsupported);
         }
         let count = data[39] as usize;
@@ -269,8 +303,6 @@ impl<'a> Fwsec<'a> {
             signature_versions: versions,
         };
         if out.engine_mask == 0
-            || out.imem_destination & 255 != 0
-            || out.dmem_destination & 255 != 0
             || out
                 .pkc_data_offset
                 .checked_add(384)
@@ -289,17 +321,17 @@ impl<'a> Fwsec<'a> {
         staging: &'s mut [u8],
     ) -> Result<crate::falcon::Prepared<'s>> {
         if fuse >= 16 || self.signature_versions & (1 << fuse) == 0 {
-            return Err(Error::Unsupported);
+            return Err(Error::Step("fuse"));
         }
         if staging.len() != self.ucode.len() {
-            return Err(Error::Range);
+            return Err(Error::Step("staging-len"));
         }
         let header_at = (self.imem_size as usize)
             .checked_add(self.interface_offset as usize)
-            .ok_or(Error::Range)?;
+            .ok_or(Error::Step("header-at"))?;
         let header = range(self.ucode, header_at, 4)?;
         if header[0] != 1 || header[1] < 4 {
-            return Err(Error::Unsupported);
+            return Err(Error::Step("appif-header"));
         }
         let stride = header[2] as usize;
         let entries = array(
@@ -311,7 +343,7 @@ impl<'a> Fwsec<'a> {
             8,
         )?;
         if entries.end > self.ucode.len() {
-            return Err(Error::Range);
+            return Err(Error::Step("entries-end"));
         }
         let mut mapper = None;
         for entry in (entries.start..entries.end).step_by(stride) {
@@ -319,7 +351,7 @@ impl<'a> Fwsec<'a> {
                 continue;
             }
             if mapper.is_some() {
-                return Err(Error::Malformed);
+                return Err(Error::Step("mapper-duplicate"));
             }
             mapper = Some(
                 (self.imem_size as usize)
@@ -327,20 +359,20 @@ impl<'a> Fwsec<'a> {
                     .ok_or(Error::Range)?,
             );
         }
-        let mapper = mapper.ok_or(Error::Unsupported)?;
+        let mapper = mapper.ok_or(Error::Step("mapper-missing"))?;
         let data = range(self.ucode, mapper, 64)?;
         if mapper < self.imem_size as usize || u16_at(data, 4)? != 3 || u16_at(data, 6)? < 64 {
-            return Err(Error::Unsupported);
+            return Err(Error::Step("mapper-data"));
         }
         let cmd = (self.imem_size as usize)
             .checked_add(u32_at(data, 8)? as usize)
             .ok_or(Error::Range)?;
         if u32_at(data, 12)? < 44 {
-            return Err(Error::Range);
+            return Err(Error::Step("cmd-size"));
         }
         range(self.ucode, cmd, 44)?;
         if cmd < self.imem_size as usize {
-            return Err(Error::Range);
+            return Err(Error::Step("cmd-before-imem"));
         }
         let index = (self.signature_versions & ((1u16 << fuse) - 1)).count_ones() as usize;
         let signature = range(self.signatures, index * 384, 384)?;
@@ -353,7 +385,7 @@ impl<'a> Fwsec<'a> {
             .iter()
             .any(|(at, len)| patch < at + len && *at < patch_end)
         {
-            return Err(Error::Range);
+            return Err(Error::Step("patch-overlap"));
         }
         staging.copy_from_slice(self.ucode);
         put(
@@ -376,10 +408,10 @@ impl<'a> Fwsec<'a> {
                     .checked_add(bytes)
                     .is_none_or(|end| end > 1u64 << 44)
             {
-                return Err(Error::Range);
+                return Err(Error::Step("frts-region"));
             }
-            let address = u32::try_from(address >> 12).map_err(|_| Error::Range)?;
-            let bytes = u32::try_from(bytes >> 12).map_err(|_| Error::Range)?;
+            let address = u32::try_from(address >> 12).map_err(|_| Error::Step("frts-address"))?;
+            let bytes = u32::try_from(bytes >> 12).map_err(|_| Error::Step("frts-bytes"))?;
             for (offset, value) in [(24, 1), (28, 20), (32, address), (36, bytes), (40, 2)] {
                 put(staging, cmd + offset, value)?;
             }
