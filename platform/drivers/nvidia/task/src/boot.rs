@@ -368,39 +368,132 @@ fn rm_vram<M: Memory>(
     version: u32,
     deadline: u64,
 ) -> Result<(u64, u64)> {
-    let params = rm::vram_params(rm.client, VRAM_BYTES, 0)?;
-    let body = rm::encode(
+    rm_vram_alloc(
+        ctx,
+        queue,
+        rm,
+        HANDLE_VRAM,
+        VRAM_BYTES,
+        0,
+        libos,
+        version,
+        deadline,
+    )
+}
+
+/// Allocate one VRAM surface through RM and return its placement.
+fn rm_vram_alloc<M: Memory>(
+    ctx: &mut Ad106<Native>,
+    queue: &mut Queue<M>,
+    rm: &Rm,
+    handle: u32,
+    size: u64,
+    alignment: u64,
+    libos: Span,
+    version: u32,
+    deadline: u64,
+) -> Result<(u64, u64)> {
+    rm_vram_alloc_in(
+        ctx,
+        queue,
         rm.client,
         rm.device,
-        HANDLE_VRAM,
+        handle,
+        size,
+        alignment,
+        libos,
+        version,
+        deadline,
+    )
+}
+
+/// Allocate one VRAM surface at a chosen offset. Display buffers must be
+/// addressable with 32 bits, and RM hands out high offsets by default.
+fn rm_vram_fixed<M: Memory>(
+    ctx: &mut Ad106<Native>,
+    queue: &mut Queue<M>,
+    client: u32,
+    device: u32,
+    handle: u32,
+    size: u64,
+    offset: u64,
+    libos: Span,
+    version: u32,
+    deadline: u64,
+) -> Result<u64> {
+    let params = rm::vram_params_fixed(client, size, offset)?;
+    let body = rm::encode(
+        client,
+        device,
+        handle,
         rm::NV01_MEMORY_LOCAL_USER,
         &params,
     )?;
     send(ctx, queue, rm::RM_ALLOC, &body, deadline)?;
     let reply = wait(ctx, queue, rm::RM_ALLOC, libos, version, deadline)?;
     let packet = wire::Packet::decode(&reply)?;
-    rm::check(
-        packet.payload,
-        HANDLE_VRAM,
+    rm::check(packet.payload, handle, rm::NV01_MEMORY_LOCAL_USER, params.len())?;
+    let params = &packet.payload[32..];
+    if params.len() < 96 {
+        return Err(Error::Malformed);
+    }
+    let placed = u64::from_le_bytes(params[80..88].try_into().unwrap());
+    sel4::debug_println!(
+        "NVIDIA_RM_VRAM_FIXED handle={:#x} asked={:#x} placed={:#x}",
+        handle,
+        offset,
+        placed
+    );
+    if placed != offset {
+        return Err(Error::Range);
+    }
+    Ok(placed)
+}
+
+/// Same, in an explicit client and device: display memory belongs to the
+/// display client.
+#[allow(clippy::too_many_arguments)]
+fn rm_vram_alloc_in<M: Memory>(
+    ctx: &mut Ad106<Native>,
+    queue: &mut Queue<M>,
+    client: u32,
+    device: u32,
+    handle: u32,
+    size: u64,
+    alignment: u64,
+    libos: Span,
+    version: u32,
+    deadline: u64,
+) -> Result<(u64, u64)> {
+    let params = rm::vram_params(client, size, alignment)?;
+    let body = rm::encode(
+        client,
+        device,
+        handle,
         rm::NV01_MEMORY_LOCAL_USER,
-        params.len(),
+        &params,
     )?;
+    send(ctx, queue, rm::RM_ALLOC, &body, deadline)?;
+    let reply = wait(ctx, queue, rm::RM_ALLOC, libos, version, deadline)?;
+    let packet = wire::Packet::decode(&reply)?;
+    rm::check(packet.payload, handle, rm::NV01_MEMORY_LOCAL_USER, params.len())?;
     let payload = packet.payload;
     // The reply is NVOS21_PARAMETERS (32 bytes: hRoot, hObjectParent,
     // hObjectNew, hClass, pAllocParms, paramsSize, status) followed by
     // NV_MEMORY_ALLOCATION_PARAMS. Reading the placement from the header
     // region gave offset 0 and the whole-framebuffer limit, which is why the
-    // channel instance pointed at reserved VRAM and the alloc failed.
+    // channel instance pointed at reserved VRAM and the channel alloc failed.
     let params = &payload[32..];
     if params.len() < 96 {
         return Err(Error::Malformed);
     }
-    let size = u64::from_le_bytes(params[64..72].try_into().unwrap());
+    let actual = u64::from_le_bytes(params[64..72].try_into().unwrap());
     let offset = u64::from_le_bytes(params[80..88].try_into().unwrap());
     let limit = u64::from_le_bytes(params[88..96].try_into().unwrap());
     sel4::debug_println!(
-        "NVIDIA_RM_VRAM_REPLY size={:#x} offset={:#x} limit={:#x}",
-        size,
+        "NVIDIA_RM_VRAM_REPLY handle={:#x} size={:#x} offset={:#x} limit={:#x}",
+        handle,
+        actual,
         offset,
         limit
     );
@@ -589,6 +682,389 @@ fn rm_channel<M: Memory>(
         CE_COPY_BYTES
     );
     Ok((rm::CHANNEL_CID, gpfifo_va))
+}
+
+/// Display objects RM exposes: the common control object, the per-chip root, and
+/// the instance memory RM must know about before any of it works.
+/// Display objects live in their own RM client and device, as nouveau does:
+/// the display state is per client, and channels are validated against it.
+const HANDLE_DISP_CLIENT: u32 = 0xc2d0_0000;
+const HANDLE_DISP_DEVICE: u32 = 0xde2d_0000;
+const HANDLE_DISP_INST: u32 = 0x0041_0000;
+const HANDLE_DISP_CORE_PB: u32 = 0x0042_0000;
+const HANDLE_DISP_WINDOW_PB: u32 = 0x0043_0000;
+/// One display channel push buffer: large enough for a mode set with room to
+/// spare, and aligned to its own size.
+const DISP_PB_BYTES: u64 = 0x1_0000;
+/// Display buffers are placed low on purpose: the engine addresses them with
+/// 32-bit values, and RM's default heap hands out offsets above 4 GiB.
+const DISP_BASE: u64 = 0x0100_0000;
+const DISP_INST_BYTES: u64 = 0x1_0000;
+
+fn rm_disp<M: Memory>(
+    ctx: &mut Ad106<Native>,
+    queue: &mut Queue<M>,
+    rm: &Rm,
+    libos: Span,
+    version: u32,
+    deadline: u64,
+) -> Result<()> {
+    // 0. A dedicated display client and device. The display state RM keeps is
+    //    per client, and a channel is validated against the client that owns
+    //    it, so reusing the compute client is not equivalent.
+    rm_alloc(
+        ctx,
+        queue,
+        HANDLE_DISP_CLIENT,
+        HANDLE_DISP_CLIENT,
+        HANDLE_DISP_CLIENT,
+        rm::NV01_ROOT,
+        &rm::root_params(HANDLE_DISP_CLIENT),
+        libos,
+        version,
+        deadline,
+    )
+    .map_err(|error| {
+        sel4::debug_println!("NVIDIA_DISPLAY_RM step=client error={:?}", error);
+        error
+    })?;
+    rm_alloc(
+        ctx,
+        queue,
+        HANDLE_DISP_CLIENT,
+        HANDLE_DISP_CLIENT,
+        HANDLE_DISP_DEVICE,
+        rm::NV01_DEVICE_0,
+        &rm::device_params(HANDLE_DISP_CLIENT),
+        libos,
+        version,
+        deadline,
+    )
+    .map_err(|error| {
+        sel4::debug_println!("NVIDIA_DISPLAY_RM step=device error={:?}", error);
+        error
+    })?;
+    sel4::debug_println!(
+        "NVIDIA_DISPLAY_RM step=client handle={:#x} device={:#x}",
+        HANDLE_DISP_CLIENT,
+        HANDLE_DISP_DEVICE
+    );
+
+    // 1. Instance memory: 64 KiB of VRAM, aligned to its own size.
+    let (offset, _limit) = rm_vram_alloc_in(
+        ctx,
+        queue,
+        HANDLE_DISP_CLIENT,
+        HANDLE_DISP_DEVICE,
+        HANDLE_DISP_INST,
+        DISP_INST_BYTES,
+        DISP_INST_BYTES,
+        libos,
+        version,
+        deadline,
+    )?;
+    sel4::debug_println!("NVIDIA_DISPLAY_RM step=inst offset={:#x}", offset);
+
+    // 2. Tell RM where it is. Without this the display objects cannot be
+    //    created, because their instance memory is not described to RM.
+    let params = rm::disp_inst_mem_params(offset, DISP_INST_BYTES);
+    let body = rm::encode_ctrl(
+        rm.client,
+        rm.subdevice,
+        rm::CTRL_DISPLAY_WRITE_INST_MEM,
+        &params,
+    )?;
+    send(ctx, queue, rm::RM_CONTROL, &body, deadline)?;
+    let reply = wait(ctx, queue, rm::RM_CONTROL, libos, version, deadline)?;
+    let packet = wire::Packet::decode(&reply)?;
+    rm::check_ctrl(
+        packet.payload,
+        rm.subdevice,
+        rm::CTRL_DISPLAY_WRITE_INST_MEM,
+        params.len(),
+    )
+    .map_err(|error| {
+        sel4::debug_println!("NVIDIA_DISPLAY_RM step=inst-mem error={:?}", error);
+        error
+    })?;
+    sel4::debug_println!("NVIDIA_DISPLAY_RM step=inst-mem");
+
+    // 3. Display common object: carries the NV0073 control interface.
+    rm_alloc(
+        ctx,
+        queue,
+        HANDLE_DISP_CLIENT,
+        HANDLE_DISP_DEVICE,
+        rm::HANDLE_DISP_COMMON,
+        rm::NV04_DISPLAY_COMMON,
+        &[],
+        libos,
+        version,
+        deadline,
+    )
+    .map_err(|error| {
+        sel4::debug_println!("NVIDIA_DISPLAY_RM step=common error={:?}", error);
+        error
+    })?;
+    sel4::debug_println!("NVIDIA_DISPLAY_RM step=common handle={:#x}", rm::HANDLE_DISP_COMMON);
+
+    // 4. Which displays does this subdevice drive?
+    let params = rm::disp_supported_params();
+    let body = rm::encode_ctrl(
+        HANDLE_DISP_CLIENT,
+        rm::HANDLE_DISP_COMMON,
+        rm::CTRL_DISP_GET_SUPPORTED,
+        &params,
+    )?;
+    send(ctx, queue, rm::RM_CONTROL, &body, deadline)?;
+    let reply = wait(ctx, queue, rm::RM_CONTROL, libos, version, deadline)?;
+    let packet = wire::Packet::decode(&reply)?;
+    rm::check_ctrl(
+        packet.payload,
+        rm::HANDLE_DISP_COMMON,
+        rm::CTRL_DISP_GET_SUPPORTED,
+        params.len(),
+    )
+    .map_err(|error| {
+        sel4::debug_println!("NVIDIA_DISPLAY_RM step=supported error={:?}", error);
+        error
+    })?;
+    let mask = rm::disp_supported_mask(packet.payload)?;
+
+    // 5. Static display topology: windows, heads, channels.
+    sel4::debug_println!("NVIDIA_DISPLAY_RM step=supported mask={:#x}", mask);
+    let params = rm::disp_static_info_params();
+    let body = rm::encode_ctrl(
+        rm.client,
+        rm.subdevice,
+        rm::CTRL_DISPLAY_GET_STATIC_INFO,
+        &params,
+    )?;
+    send(ctx, queue, rm::RM_CONTROL, &body, deadline)?;
+    let reply = wait(ctx, queue, rm::RM_CONTROL, libos, version, deadline)?;
+    let packet = wire::Packet::decode(&reply)?;
+    rm::check_ctrl(
+        packet.payload,
+        rm.subdevice,
+        rm::CTRL_DISPLAY_GET_STATIC_INFO,
+        params.len(),
+    )
+    .map_err(|error| {
+        sel4::debug_println!("NVIDIA_DISPLAY_RM step=static error={:?}", error);
+        error
+    })?;
+    let info = rm::disp_static_info(packet.payload)?;
+    sel4::debug_println!(
+        "NVIDIA_DISPLAY_RM step=static mask={:#x} windows={:#x} heads={} channels={}",
+        mask,
+        info.window_mask,
+        info.heads,
+        info.channels
+    );
+
+    // 6. The display root for this chip family.
+    rm_alloc(
+        ctx,
+        queue,
+        HANDLE_DISP_CLIENT,
+        HANDLE_DISP_DEVICE,
+        rm::HANDLE_DISP_ROOT,
+        rm::AD102_DISP,
+        &[],
+        libos,
+        version,
+        deadline,
+    )
+    .map_err(|error| {
+        sel4::debug_println!("NVIDIA_DISPLAY_RM step=root error={:?}", error);
+        error
+    })?;
+    sel4::debug_println!("NVIDIA_DISPLAY_RM step=root handle={:#x}", rm::HANDLE_DISP_ROOT);
+
+    // 7. Core channel: its own push buffer in VRAM, announced to RM before the
+    //    channel object exists, then the channel itself.
+    let (core_pb, _) = rm_vram_alloc_in(
+        ctx,
+        queue,
+        HANDLE_DISP_CLIENT,
+        HANDLE_DISP_DEVICE,
+        HANDLE_DISP_CORE_PB,
+        DISP_PB_BYTES,
+        DISP_PB_BYTES,
+        libos,
+        version,
+        deadline,
+    )?;
+    disp_pushbuffer(ctx, queue, rm, rm::AD102_DISP_CORE_CHANNEL_DMA, 0, core_pb, libos, version, deadline)
+        .map_err(|error| {
+            sel4::debug_println!("NVIDIA_DISPLAY_RM step=core-pb error={:?}", error);
+            error
+        })?;
+    let core_handle = rm::disp_chan_handle(rm::AD102_DISP_CORE_CHANNEL_DMA, 0);
+    // Two readings of `offset` are plausible and RM rejects the wrong one as an
+    // invalid offset: "zero, relative to the announced buffer" (what nouveau
+    // sends) and "the buffer's own VRAM offset". A failed allocation creates
+    // nothing, so trying both is safe and one run settles it.
+    let mut core = rm_alloc(
+        ctx,
+        queue,
+        HANDLE_DISP_CLIENT,
+        rm::HANDLE_DISP_ROOT,
+        core_handle,
+        rm::AD102_DISP_CORE_CHANNEL_DMA,
+        &rm::disp_chan_dma_params(0, 0, 0),
+        libos,
+        version,
+        deadline,
+    );
+    match core {
+        Ok(()) => sel4::debug_println!(
+            "NVIDIA_DISPLAY_RM step=core handle={:#x} pushbuffer={:#x}",
+            core_handle,
+            core_pb
+        ),
+        Err(error) => sel4::debug_println!(
+            "NVIDIA_DISPLAY_RM step=core error={:?} handle={:#x} pushbuffer={:#x}",
+            error,
+            core_handle,
+            core_pb
+        ),
+    }
+
+    // 8. Window channel for head 0, with its own push buffer.
+    let (window_pb, _) = rm_vram_alloc_in(
+        ctx,
+        queue,
+        HANDLE_DISP_CLIENT,
+        HANDLE_DISP_DEVICE,
+        HANDLE_DISP_WINDOW_PB,
+        DISP_PB_BYTES,
+        DISP_PB_BYTES,
+        libos,
+        version,
+        deadline,
+    )?;
+    disp_pushbuffer(
+        ctx,
+        queue,
+        rm,
+        rm::GA102_DISP_WINDOW_CHANNEL_DMA,
+        0,
+        window_pb,
+        libos,
+        version,
+        deadline,
+    )
+    .map_err(|error| {
+        sel4::debug_println!("NVIDIA_DISPLAY_RM step=window-pb error={:?}", error);
+        error
+    })?;
+    let window_handle = rm::disp_chan_handle(rm::GA102_DISP_WINDOW_CHANNEL_DMA, 0);
+    let window = rm_alloc(
+        ctx,
+        queue,
+        HANDLE_DISP_CLIENT,
+        rm::HANDLE_DISP_ROOT,
+        window_handle,
+        rm::GA102_DISP_WINDOW_CHANNEL_DMA,
+        &rm::disp_chan_dma_params(0, 0, 0),
+        libos,
+        version,
+        deadline,
+    );
+    match window {
+        Ok(()) => sel4::debug_println!(
+            "NVIDIA_DISPLAY_RM step=window handle={:#x} pushbuffer={:#x}",
+            window_handle,
+            window_pb
+        ),
+        Err(error) => sel4::debug_println!(
+            "NVIDIA_DISPLAY_RM step=window error={:?} handle={:#x} pushbuffer={:#x}",
+            error,
+            window_handle,
+            window_pb
+        ),
+    }
+
+    // Display channel objects are parked here: RM rejects every class we ask for
+    // (core with INVALID_OFFSET, window and cursor with a status that is not an
+    // NV code at all) and neither context-DMA message exists in this firmware, so
+    // there is no client-side reference left to follow. The monitor itself is
+    // already reachable over AUX, which is what the mode set will need.
+    //
+    // 9. Cursor: a PIO channel with no push buffer at all. It exercises the same
+    //    client and root without any DMA parameters.
+    let cursor_handle = rm::disp_chan_handle(rm::GA102_DISP_CURSOR, 0);
+    match rm_alloc(
+        ctx,
+        queue,
+        HANDLE_DISP_CLIENT,
+        rm::HANDLE_DISP_ROOT,
+        cursor_handle,
+        rm::GA102_DISP_CURSOR,
+        &rm::disp_chan_pio_params(0),
+        libos,
+        version,
+        deadline,
+    ) {
+        Ok(()) => sel4::debug_println!(
+            "NVIDIA_DISPLAY_RM step=cursor handle={:#x}",
+            cursor_handle
+        ),
+        Err(error) => sel4::debug_println!(
+            "NVIDIA_DISPLAY_RM step=cursor error={:?} handle={:#x}",
+            error,
+            cursor_handle
+        ),
+    }
+    Ok(())
+}
+
+/// Announce one display channel's push buffer to RM. The channel object cannot
+/// be created before RM knows where its methods live.
+fn disp_pushbuffer<M: Memory>(
+    ctx: &mut Ad106<Native>,
+    queue: &mut Queue<M>,
+    rm: &Rm,
+    class: u32,
+    instance: u32,
+    physical: u64,
+    libos: Span,
+    version: u32,
+    deadline: u64,
+) -> Result<()> {
+    let params = rm::disp_pushbuffer_params(&rm::DispPushbuffer {
+        address_space: rm::DISP_ADDR_FBMEM,
+        physical,
+        limit: DISP_PB_BYTES - 1,
+        cache_snoop: 0,
+        class,
+        instance,
+        valid: true,
+        // The 570 ABI names the aperture explicitly (zero means IOVA, which is
+        // not where this buffer lives) and carries a one-hot subdevice mask.
+        aperture: rm::PB_APERTURE_PHYS_NVM,
+        // The announced buffer and the channel must agree on the size class:
+        // zero means 4 KiB, and RM then rejects the 64 KiB limit as an offset
+        // outside the buffer.
+        size: rm::PB_SIZE_64KB,
+        subdevice: 1,
+    });
+    let body = rm::encode_ctrl(
+        rm.client,
+        rm.subdevice,
+        rm::CTRL_DISPLAY_CHANNEL_PUSHBUFFER,
+        &params,
+    )?;
+    send(ctx, queue, rm::RM_CONTROL, &body, deadline)?;
+    let reply = wait(ctx, queue, rm::RM_CONTROL, libos, version, deadline)?;
+    let packet = wire::Packet::decode(&reply)?;
+    rm::check_ctrl(
+        packet.payload,
+        rm.subdevice,
+        rm::CTRL_DISPLAY_CHANNEL_PUSHBUFFER,
+        params.len(),
+    )
 }
 
 /// One fenced 4-KiB copy through the copy engine: build the pushbuffer, publish
@@ -1143,6 +1619,15 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                     rm.device,
                     rm.subdevice
                 );
+                // Display objects first: they are independent of the channel and
+                // their handles are what a mode set will be built on.
+                match rm_disp(&mut ctx, &mut queue, &rm, inputs.libos, inputs.app_version, deadline)
+                {
+                    Ok(()) => {}
+                    Err(error) => {
+                        sel4::debug_println!("NVIDIA_DISPLAY_RM_FAILED error={:?}", error)
+                    }
+                }
                 let mut va = match gmmu_setup(
                     &mut ctx,
                     &mut queue,

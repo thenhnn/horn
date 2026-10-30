@@ -67,6 +67,26 @@ the channel object itself. `GPFIFO_SCHEDULE` takes two `NvBool`s and `NvBool` is
 `NVIDIA_CHANNEL_OK cid=1` is the boundary of this record: the channel object
 exists in RM and accepts scheduling, but no engine has executed anything.
 
+Display, which is a separate boundary:
+
+- The VBIOS DCB names every connector and its DDC route; a bit-banged I2C master
+  and a GM200-layout DP AUX channel are both implemented, and EDID over
+  I2C-over-AUX works on real hardware. The panel behind the DisplayPort output is
+  identified as an LG ULTRAGEAR, 70x39 cm, with 13 modes; the preferred one is
+  2560x1440 at 119 Hz, 497.75 MHz, with 48/32/80 horizontal and 3/5/89 vertical
+  porch/sync/back-porch splits. DPCD reports revision 1.2, HBR2, four lanes.
+- The display RM objects that do work: a dedicated display client and device,
+  the instance memory announced with `DISPLAY_WRITE_INST_MEM`, the
+  `NV04_DISPLAY_COMMON` control object, `GET_SUPPORTED` and `GET_STATIC_INFO`
+  (four heads, eight windows, 84 channels), and the `AD102_DISP` root.
+- What does **not** work yet: the display channels. `AD102_DISP_CORE_CHANNEL_DMA`
+  is rejected with `NV_ERR_INVALID_OFFSET` for every offset we tried, and the
+  window and cursor classes answer a status that is not an NV code at all
+  (`0xffff`) even though the reply header echoes our handle and class. Neither
+  `MAP_MEMORY_DMA` nor `ALLOC_CTX_DMA` exists in this firmware
+  (`NV_ERR_INVALID_FUNCTION`), so the context-DMA path the kernel driver uses is
+  not available to us. No mode has been programmed.
+
 Two things this record does **not** establish:
 
 - **The VRAM aperture.** Reading `GP_PUT`/`GP_GET` and the RAMFC words through a

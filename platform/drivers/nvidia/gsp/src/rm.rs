@@ -183,6 +183,161 @@ pub fn ce_params(engine_type: u32) -> [u8; 8] {
     out
 }
 
+/// Display objects. The root class differs per chip family; AD10x uses
+/// `AD102_DISP`, and the common object carries the display control interface.
+pub const NV04_DISPLAY_COMMON: u32 = 0x73;
+pub const AD102_DISP: u32 = 0xc770;
+/// Handle for the display root: RM expects the class in the high half.
+pub const HANDLE_DISP_ROOT: u32 = AD102_DISP << 16;
+pub const HANDLE_DISP_COMMON: u32 = 0x0073_0000;
+
+/// `NV0073_CTRL_CMD_SYSTEM_GET_SUPPORTED` on the display common object.
+pub const CTRL_DISP_GET_SUPPORTED: u32 = 0x0073_0107;
+/// Display channel classes: one core channel, one window channel per head.
+pub const AD102_DISP_CORE_CHANNEL_DMA: u32 = 0xc77d;
+pub const GA102_DISP_WINDOW_CHANNEL_DMA: u32 = 0xc67e;
+/// `NV2080_CTRL_CMD_INTERNAL_DISPLAY_CHANNEL_PUSHBUFFER` on the subdevice.
+pub const CTRL_DISPLAY_CHANNEL_PUSHBUFFER: u32 = 0x2080_0a58;
+/// `ADDR_SYSMEM` and `ADDR_FBMEM` as the display controls spell them.
+pub const DISP_ADDR_SYSMEM: u32 = 1;
+pub const DISP_ADDR_FBMEM: u32 = 2;
+
+/// `NV2080_CTRL_INTERNAL_DISPLAY_CHANNEL_PUSHBUFFER_PARAMS`: 52 bytes of
+/// fields, 8-aligned to 56.
+pub struct DispPushbuffer {
+    pub address_space: u32,
+    pub physical: u64,
+    pub limit: u64,
+    pub cache_snoop: u32,
+    pub class: u32,
+    pub instance: u32,
+    pub valid: bool,
+    pub aperture: u32,
+    pub size: u32,
+    pub subdevice: u32,
+}
+
+pub fn disp_pushbuffer_params(pb: &DispPushbuffer) -> [u8; 56] {
+    let mut out = [0u8; 56];
+    out[0..4].copy_from_slice(&pb.address_space.to_le_bytes());
+    out[8..16].copy_from_slice(&pb.physical.to_le_bytes());
+    out[16..24].copy_from_slice(&pb.limit.to_le_bytes());
+    out[24..28].copy_from_slice(&pb.cache_snoop.to_le_bytes());
+    out[28..32].copy_from_slice(&pb.class.to_le_bytes());
+    out[32..36].copy_from_slice(&pb.instance.to_le_bytes());
+    out[36] = u8::from(pb.valid);
+    out[40..44].copy_from_slice(&pb.aperture.to_le_bytes());
+    out[44..48].copy_from_slice(&pb.size.to_le_bytes());
+    out[48..52].copy_from_slice(&pb.subdevice.to_le_bytes());
+    out
+}
+
+/// `PBTARGETAPERTURE`: which aperture the push buffer lives in. Zero is `IOVA`,
+/// which is why leaving it unset made RM reject the offset.
+pub const PB_APERTURE_PHYS_NVM: u32 = 1;
+/// `ChannelPBSize`: 0 means a 4 KiB buffer, so a 64 KiB buffer must say so or
+/// RM sees an announced size that does not match the channel.
+pub const PB_SIZE_64KB: u32 = 4;
+
+/// `GA102_DISP_CURSOR`: a PIO channel, allocated without a push buffer.
+pub const GA102_DISP_CURSOR: u32 = 0xc67a;
+
+/// `NV50VAIO_CHANNELPIO_ALLOCATION_PARAMETERS`: 16 bytes.
+pub fn disp_chan_pio_params(instance: u32) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    out[0..4].copy_from_slice(&instance.to_le_bytes());
+    out
+}
+
+/// `NV50VAIO_CHANNELDMA_ALLOCATION_PARAMETERS`: 36 bytes of fields, 8-aligned to
+/// 40. The push buffer itself is announced by the `DISPLAY_CHANNEL_PUSHBUFFER`
+/// control that precedes the allocation; this structure only names the instance,
+/// the size class and the subdevice mask.
+pub fn disp_chan_dma_params(instance: u32, offset: u32, h_object_buffer: u32) -> [u8; 40] {
+    let mut out = [0u8; 40];
+    out[0..4].copy_from_slice(&instance.to_le_bytes());
+    // hObjectBuffer: RM resolves this as the context DMA holding the push
+    // buffer, and derives the buffer's address and limit from it.
+    out[4..8].copy_from_slice(&h_object_buffer.to_le_bytes());
+    out[12..16].copy_from_slice(&offset.to_le_bytes());
+    out[28..32].copy_from_slice(&PB_SIZE_64KB.to_le_bytes());
+    // One-hot encoded subdevice id: bit 0 for the only subdevice.
+    out[32..36].copy_from_slice(&1u32.to_le_bytes());
+    out
+}
+
+/// RM expects the class in the high half of a display channel handle, with the
+/// channel instance in the low half.
+pub fn disp_chan_handle(class: u32, instance: u32) -> u32 {
+    (class << 16) | instance
+}
+
+/// `NV2080_CTRL_CMD_INTERNAL_DISPLAY_GET_STATIC_INFO` on the subdevice.
+pub const CTRL_DISPLAY_GET_STATIC_INFO: u32 = 0x2080_0a01;
+/// `NV2080_CTRL_CMD_INTERNAL_DISPLAY_WRITE_INST_MEM` on the subdevice.
+pub const CTRL_DISPLAY_WRITE_INST_MEM: u32 = 0x2080_0a49;
+
+/// `ADDR_FBMEM` and `NV_MEMORY_WRITECOMBINED`, as the display instance memory
+/// descriptor expects them.
+pub const DISP_INST_ADDR_SPACE: u32 = 2;
+pub const DISP_INST_CACHE_ATTR: u32 = 2;
+
+/// `NV2080_CTRL_INTERNAL_DISPLAY_WRITE_INST_MEM_PARAMS`.
+pub fn disp_inst_mem_params(phys: u64, size: u64) -> [u8; 24] {
+    let mut out = [0u8; 24];
+    out[0..8].copy_from_slice(&phys.to_le_bytes());
+    out[8..16].copy_from_slice(&size.to_le_bytes());
+    out[16..20].copy_from_slice(&DISP_INST_ADDR_SPACE.to_le_bytes());
+    out[20..24].copy_from_slice(&DISP_INST_CACHE_ATTR.to_le_bytes());
+    out
+}
+
+/// `NV0073_CTRL_SYSTEM_GET_SUPPORTED_PARAMS`: the subdevice instance is an input,
+/// the two masks are outputs.
+pub fn disp_supported_params() -> [u8; 12] {
+    [0u8; 12]
+}
+
+pub fn disp_supported_mask(body: &[u8]) -> Result<u32> {
+    let params = body
+        .get(CTRL_HEADER..CTRL_HEADER + 12)
+        .ok_or(Error::Malformed)?;
+    Ok(u32::from_le_bytes([
+        params[4], params[5], params[6], params[7],
+    ]))
+}
+
+/// `NV2080_CTRL_INTERNAL_DISPLAY_GET_STATIC_INFO_PARAMS` is 36 bytes: three
+/// words, a `NvBool` (one byte), five more words, two `NvBool`s and a final
+/// word. Sending the 12-byte supported-params buffer instead is rejected as an
+/// invalid argument.
+pub fn disp_static_info_params() -> [u8; 36] {
+    [0u8; 36]
+}
+
+/// The three fields of `NV2080_CTRL_INTERNAL_DISPLAY_GET_STATIC_INFO_PARAMS`
+/// the display path needs: present windows, heads and channels.
+#[derive(Clone, Copy, Debug)]
+pub struct DispStaticInfo {
+    pub window_mask: u32,
+    pub heads: u32,
+    pub channels: u32,
+}
+
+pub fn disp_static_info(body: &[u8]) -> Result<DispStaticInfo> {
+    let params = body
+        .get(CTRL_HEADER..CTRL_HEADER + 36)
+        .ok_or(Error::Malformed)?;
+    let word = |at: usize| {
+        u32::from_le_bytes([params[at], params[at + 1], params[at + 2], params[at + 3]])
+    };
+    Ok(DispStaticInfo {
+        window_mask: word(4),
+        heads: word(12),
+        channels: word(32),
+    })
+}
+
 /// `NV2080_CTRL_CMD_FIFO_GET_DEVICE_INFO_TABLE`: the engine table tells which
 /// engines this GPU exposes and which runlist each one uses. The runlist id is
 /// assigned by RM, so it cannot be assumed.
@@ -211,7 +366,9 @@ pub struct EngineEntry {
 }
 
 pub fn engine_entries(body: &[u8]) -> Result<Vec<EngineEntry>> {
-    let params = body.get(CTRL_HEADER..CTRL_HEADER + ENGINE_TABLE_BYTES).ok_or(Error::Malformed)?;
+    let params = body
+        .get(CTRL_HEADER..CTRL_HEADER + ENGINE_TABLE_BYTES)
+        .ok_or(Error::Malformed)?;
     let count = u32::from_le_bytes([params[4], params[5], params[6], params[7]]) as usize;
     if count > ENGINE_TABLE_ENTRIES {
         return Err(Error::Malformed);
@@ -247,8 +404,12 @@ pub fn mthdbuf_params() -> [u8; 4] {
 
 /// Required method-buffer size in bytes from the control reply body.
 pub fn mthdbuf_size(body: &[u8]) -> Result<u32> {
-    let params = body.get(CTRL_HEADER..CTRL_HEADER + 4).ok_or(Error::Malformed)?;
-    Ok(u32::from_le_bytes([params[0], params[1], params[2], params[3]]))
+    let params = body
+        .get(CTRL_HEADER..CTRL_HEADER + 4)
+        .ok_or(Error::Malformed)?;
+    Ok(u32::from_le_bytes([
+        params[0], params[1], params[2], params[3],
+    ]))
 }
 
 #[cfg(test)]
@@ -311,6 +472,10 @@ mod tests {
 /// `FERMI_VASPACE_A` path is driver-owned page tables, which we do not use.
 pub const ALLOC_MEMORY: u32 = abi::NV_VGPU_MSG_FUNCTION_ALLOC_MEMORY;
 pub const MAP_MEMORY_DMA: u32 = abi::NV_VGPU_MSG_FUNCTION_MAP_MEMORY_DMA;
+/// The other context-DMA entry point in the same ABI. RM answers
+/// `MAP_MEMORY_DMA` with `NV_ERR_INVALID_FUNCTION` on this part, so the older
+/// message is tried as well.
+pub const ALLOC_CTX_DMA: u32 = abi::NV_VGPU_MSG_FUNCTION_ALLOC_CTX_DMA;
 
 /// Memory classes (570.144 `class/cl0070.h`, `nvrm/fbsr.h`).
 pub const NV01_MEMORY_VIRTUAL: u32 = 0x0070;
@@ -622,6 +787,26 @@ const _: () = assert!(VRAM_PARAMS == 44 + 48 + 20 + 16);
 
 /// `NV_MEMORY_ALLOCATION_PARAMS` for a plain VRAM buffer. `h_vaspace` is 0:
 /// the allocation is not bound to a VA space here, the caller maps it.
+/// `NVOS32_ALLOC_FLAGS_FIXED_ADDRESS_ALLOCATE`: place the surface at the offset
+/// given in the request instead of letting RM choose.
+pub const ALLOC_FIXED_ADDRESS: u32 = 0x0000_0010;
+
+/// Ask for a surface at a chosen VRAM offset. The display engine addresses its
+/// buffers with 32-bit values, so they cannot live at the high offsets RM hands
+/// out by default.
+pub fn vram_params_fixed(owner: u32, size: u64, offset: u64) -> Result<[u8; VRAM_PARAMS]> {
+    if size == 0 || size & 4095 != 0 || offset & 4095 != 0 {
+        return Err(Error::Range);
+    }
+    let mut out = [0u8; VRAM_PARAMS];
+    out[0..4].copy_from_slice(&owner.to_le_bytes());
+    out[4..8].copy_from_slice(&NVOS32_TYPE_IMAGE.to_le_bytes());
+    out[8..12].copy_from_slice(&ALLOC_FIXED_ADDRESS.to_le_bytes());
+    out[64..72].copy_from_slice(&size.to_le_bytes());
+    out[80..88].copy_from_slice(&offset.to_le_bytes());
+    Ok(out)
+}
+
 pub fn vram_params(owner: u32, size: u64, alignment: u64) -> Result<[u8; VRAM_PARAMS]> {
     if size == 0 || size & 4095 != 0 || alignment & 4095 != 0 {
         return Err(Error::Range);
@@ -662,7 +847,10 @@ mod vram_tests {
         let unaligned = vram_params(HANDLE_CLIENT, 0x2000, 0).unwrap();
         assert_eq!(u32::from_le_bytes(unaligned[8..12].try_into().unwrap()), 0);
         assert_eq!(u64::from_le_bytes(unaligned[72..80].try_into().unwrap()), 0);
-        assert_eq!(u64::from_le_bytes(unaligned[64..72].try_into().unwrap()), 0x2000);
+        assert_eq!(
+            u64::from_le_bytes(unaligned[64..72].try_into().unwrap()),
+            0x2000
+        );
         assert!(vram_params(HANDLE_CLIENT, 0x1000, 1).is_err());
     }
 }
