@@ -12,6 +12,7 @@ registration, DMA allocation/free, kernel threads, or driver Drop semantics.
 | --- | --- | --- |
 | src/abi.rs | gsp/fw/r570_144/bindings.rs | checked-in layouts; core::ffi, remove Linux MaybeZeroable derives, explicit Rust 2024 unsafe blocks; no build-time transformation |
 | src/boot.rs | fb.rs, gsp.rs, gsp/fw.rs, firmware/radix3.rs | checked AD106 framebuffer/WPR, radix3, LibOS/args/log/queue builders; numerical spans are not grants; zero PTEs beyond committed queue pages |
+| src/queue.rs | gsp/cmdq.rs | bounded 63-page rings, volatile-word backend, private snapshots, publication barriers, peer-progress/index checks and fail-stop corruption; no automatic retry or deadline renewal |
 | src/wire.rs | gsp/{fw,cmdq,commands}.rs, gsp/cmdq/continuation.rs | bounded 64-KiB frames/checksums, distinct transport/inner sequences, bounded outgoing continuations and static-info payload validation; not a live RPC transport |
 | src/tlv.rs | firmware/tlv.rs | no kernel dependencies; fixed 32-tag bound; duplicate rejection; exact version |
 | src/falcon.rs | falcon.rs, falcon/{gsp,sec2}.rs, falcon/hal/ga102.rs, fb/{regs,hal/ga100}.rs, gpu/hal/tu102.rs, gsp/hal/tu102.rs, regs.rs | AD106-only reset/DMA/RSA3K/boot, explicit retained sysmem-flush grant, mailbox/FRTS checks; absolute clock deadlines, global software quarantine |
@@ -28,7 +29,7 @@ The task now receives named clock/alarm-signal capabilities after timerd READY.
 Its read-only probe checks timerd time/alarm and cancels the alarm on STOP.
 `task/src/native.rs` implements the Falcon Platform over seven scoped UC windows,
 accounted directional chunked DMA, explicit IRQ binding and bus-master activation.
-The backend is compiled but **not connected to firmware execution**: no DMA,
+The backend and volatile shared-queue adapter are compiled but **not connected to firmware execution**: no DMA,
 IRQ activation, reset, or GSP boot is performed by the current diagnostic task.
 Falcon failure also poisons the backend; neither layer frees pins on uncertainty.
 Raw DMA views have no Drop and require retained mapping/queue ownership for access.
@@ -53,8 +54,13 @@ authentication, reset, DMA-drain, interrupt-delivery or GSP-readiness evidence.
   bootloader/signatures/radix/LibOS/WPR metadata, logs and queues.
 - GIN source155 must use the assigned shared single-MSI route and correct
   device acknowledgment/rearm, not a fabricated MSI-X vector index.
-- Source-ordered GSP ROM/SEC2 handoff, r570_144 wire queues/framing/status and
-  continuations, real GspInitDone and validated GetGspStaticInfo remain pending.
+- The library now implements source-ordered FRTS/WPR2 → ROM → SEC2 → RISC-V
+  handoff, requiring staged SB/unloader inputs before execution; normal explicit
+  unload requires a suspended mailbox and never proves DMA drain. First failure
+  poisons both controller and native DMA/queue views, preserving its diagnostic.
+- Wire framing/builders and page-ring transport are implemented, not yet driven
+  by the task. Trusted system-info/registry inputs, audited CPU sequencer, GIN,
+  real GspInitDone and validated GetGspStaticInfo remain pending.
   None of the Falcon status/mailbox helpers may substitute for that gate.
 
 ## Pinned firmware (not GPL)

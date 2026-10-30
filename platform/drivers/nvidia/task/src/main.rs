@@ -6,6 +6,8 @@ extern crate alloc;
 #[allow(dead_code)] // Boot backend; firmware/RPC execution is not yet connected.
 mod native;
 mod prom;
+#[allow(dead_code)] // Live queue adapter; top-level boot not yet connected.
+mod shared;
 mod time;
 
 use core::ptr::NonNull;

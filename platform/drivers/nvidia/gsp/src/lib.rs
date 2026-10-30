@@ -8,6 +8,9 @@ pub mod falcon;
 pub mod firmware;
 #[cfg(test)]
 mod format_tests;
+pub mod queue;
+#[cfg(test)]
+mod queue_tests;
 pub mod tlv;
 pub mod vbios;
 pub mod wire;

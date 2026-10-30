@@ -61,6 +61,12 @@ pub enum Stage {
     Wpr,
     FwsecStatus,
     Riscv,
+    Framebuffer,
+    QueueNotify,
+    BooterStatus,
+    Shutdown,
+    Backend,
+    Rpc,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Diagnostic {
@@ -167,6 +173,63 @@ impl<'a> PinnedSource<'a> {
         Ok(Self { image, iova })
     }
 }
+/// Retained inputs for the GA102/Ada path, including mandatory staged cleanup.
+/// Nested metadata correctness and DMA ownership are the caller's obligations.
+pub struct Handoff<'s, 'image> {
+    pub framebuffer: &'s crate::boot::Framebuffer,
+    pub flush: crate::boot::Span,
+    pub libos: crate::boot::Span,
+    pub wpr_meta: crate::boot::Span,
+    pub frts: &'s PinnedSource<'image>,
+    pub sb: &'s PinnedSource<'image>,
+    pub loader: &'s PinnedSource<'image>,
+    pub unloader: &'s PinnedSource<'image>,
+    pub app_version: u32,
+}
+impl Handoff<'_, '_> {
+    fn validate(&self) -> Result<()> {
+        use crate::vbios::Command;
+        if self.flush.bytes() != 4096
+            || self.libos.bytes() != 4096
+            || self.wpr_meta.bytes() != 4096
+            || self.frts.image.target != Engine::Gsp
+            || self.sb.image.target != Engine::Gsp
+            || self.loader.image.target != Engine::Sec2
+            || self.unloader.image.target != Engine::Sec2
+            || self.loader.image.bytes.len() != 56832
+            || self.unloader.image.bytes.len() != 40704
+            || self.loader.image.command.is_some()
+            || self.unloader.image.command.is_some()
+            || !matches!(self.sb.image.command, Some(Command::Sb))
+        {
+            return Err(Error::State);
+        }
+        let frts = self.framebuffer.frts();
+        if !matches!(self.frts.image.command,Some(Command::Frts{address,bytes}) if address==frts.start&&bytes==frts.end-frts.start)
+        {
+            return Err(Error::Range);
+        }
+        let mut spans = [(0u64, 0u64); 7];
+        for (i, span) in [self.flush, self.libos, self.wpr_meta]
+            .into_iter()
+            .enumerate()
+        {
+            spans[i] = (span.address(), span.address() + span.bytes() as u64);
+        }
+        for (i, source) in [self.frts, self.sb, self.loader, self.unloader]
+            .into_iter()
+            .enumerate()
+        {
+            spans[i + 3] = (source.iova, source.iova + source.image.bytes.len() as u64);
+        }
+        for (i, a) in spans.iter().enumerate() {
+            if spans[..i].iter().any(|b| a.0 < b.1 && b.0 < a.1) {
+                return Err(Error::Range);
+            }
+        }
+        Ok(())
+    }
+}
 /// One serialized, assigned AD106 controller. Software quarantine covers both
 /// engines; constructing another Rust object is NOT permission to retry/reset.
 /// The platform must retain hardware-accessible resources on failure/drop.
@@ -203,6 +266,32 @@ impl<P: Platform> Ad106<P> {
             reset_ready_observed: false,
         }
     }
+    /// Serialized resource/IRQ adapter access, never permission to bypass the
+    /// Falcon phase machine with raw reset/load writes. Backend errors poison
+    /// the same controller and retained DMA views as Falcon failures.
+    pub fn with_platform<T>(&mut self, f: impl FnOnce(&mut P) -> Result<T>) -> Result<T> {
+        self.execute(|s| {
+            s.stage = Stage::Backend;
+            s.register = 0;
+            s.value = None;
+            f(&mut s.platform)
+        })
+    }
+    /// Mark a framing/semantic RPC failure without retry/reset or DMA release.
+    pub fn quarantine(&mut self, error: Error) -> Result<()> {
+        self.execute(|s| {
+            s.stage = Stage::Rpc;
+            s.register = 0;
+            s.value = None;
+            Err(error)
+        })
+    }
+    pub fn time_us(&mut self) -> Result<u64> {
+        self.execute(|s| s.now())
+    }
+    pub fn sleep_until(&mut self, deadline: u64) -> Result<()> {
+        self.execute(|s| s.sleep(deadline))
+    }
     pub fn diagnostic(&self) -> Option<Diagnostic> {
         self.fault
     }
@@ -213,14 +302,17 @@ impl<P: Platform> Ad106<P> {
         match f(self) {
             Ok(value) => Ok(value),
             Err(error) => {
-                self.platform.quarantine();
-                self.fault = Some(Diagnostic {
-                    stage: self.stage,
-                    register: self.register,
-                    value: self.value,
-                    clock_us: self.clock,
-                    error,
-                });
+                // Nested handoff operations preserve the FIRST hardware failure.
+                if self.fault.is_none() {
+                    self.platform.quarantine();
+                    self.fault = Some(Diagnostic {
+                        stage: self.stage,
+                        register: self.register,
+                        value: self.value,
+                        clock_us: self.clock,
+                        error,
+                    });
+                }
                 Err(error)
             }
         }
@@ -562,6 +654,106 @@ impl<P: Platform> Ad106<P> {
                 }
                 s.stage = Stage::Wpr;
                 if s.wpr2_inner()?.is_none_or(|range| range.start != address) {
+                    return Err(Error::State);
+                }
+            }
+            Ok(())
+        })
+    }
+    pub fn framebuffer(&mut self) -> Result<crate::boot::Framebuffer> {
+        if !self.ready {
+            return Err(Error::State);
+        }
+        self.execute(|s| {
+            s.stage = Stage::Framebuffer;
+            crate::boot::Framebuffer::from_registers(
+                s.read(0x1183a4)?,
+                s.read(0x820c04)?,
+                s.read(0x625f04)?,
+            )
+        })
+    }
+    /// After shared-queue publication and DMA barriers. May be used to prequeue
+    /// SetSystemInfo/SetRegistry before starting firmware, as in NOVA boot.rs.
+    pub fn notify_queue(&mut self) -> Result<()> {
+        if !self.ready {
+            return Err(Error::State);
+        }
+        self.execute(|s| {
+            s.stage = Stage::QueueNotify;
+            s.platform.dma_write_barrier();
+            s.write(0x110c00, 0)
+        })
+    }
+    /// Source order: retained sysmembar -> FWSEC-FRTS/WPR2 -> GSP boot ROM ->
+    /// signed SEC2 loader -> OS version -> bounded RISC-V-active wait.
+    /// Success is ONLY the handoff, not GspInitDone or RPC readiness.
+    ///
+    /// # Safety
+    /// All inputs/nested ABI pointers are committed, correctly staged mappings
+    /// on this exact SID, retained through shutdown/isolation and uncertainty.
+    /// Queue/log/LibOS/WPR/radix/firmware resources match the checked builders;
+    /// the framebuffer plan is from this board's post-GFW samples. IRQ is
+    /// prepared and bus mastering authorized. Cleanup SB/unloader inputs must
+    /// be prepared BEFORE this call; no Drop or failure path executes them.
+    pub unsafe fn handoff(&mut self, inputs: &Handoff<'_, '_>, outer: u64) -> Result<()> {
+        inputs.validate()?;
+        if !self.ready || self.flush.is_some() || self.phase != [Phase::Unknown; 2] {
+            return Err(Error::State);
+        }
+        self.execute(|s| {
+            // SAFETY: delegated retained-grant obligations above.
+            unsafe {
+                s.register_flush_page(inputs.flush.address(), outer)?;
+            }
+            s.run_fwsec(inputs.frts, outer)?;
+            s.reset(Engine::Gsp, outer)?;
+            unsafe {
+                s.boot_gsp_rom(inputs.libos.address(), inputs.libos.bytes() as u64, outer)?;
+            }
+            s.reset(Engine::Sec2, outer)?;
+            s.load(Engine::Sec2, inputs.loader, outer)?;
+            let address = inputs.wpr_meta.address();
+            let (status, _) = s.boot(
+                Engine::Sec2,
+                Some(address as u32),
+                Some((address >> 32) as u32),
+                outer,
+            )?;
+            s.stage = Stage::BooterStatus;
+            if status != 0 {
+                return Err(Error::FirmwareStatus(status));
+            }
+            s.write(0x110080, inputs.app_version)?;
+            s.stage = Stage::Riscv;
+            let deadline = s.limit(outer, 5_000_000)?;
+            s.poll(Engine::Gsp.second() + 0x388, 1 << 7, 1 << 7, deadline)?;
+            Ok(())
+        })
+    }
+    /// Normal explicit cleanup only. Suspended mailbox bit is required before
+    /// SB reset. Even success does NOT prove DMA drain or authorize freeing RAM.
+    ///
+    /// # Safety
+    /// A validated UnloadingGuestDriver RPC completed for this epoch. Inputs and
+    /// all DMA backing remain retained. No restart/reassignment is authorized.
+    pub unsafe fn unload(&mut self, inputs: &Handoff<'_, '_>, outer: u64) -> Result<()> {
+        inputs.validate()?;
+        self.execute(|s| {
+            s.stage = Stage::Shutdown;
+            if s.read(0x110040)? & (1 << 31) == 0 {
+                return Err(Error::State);
+            }
+            s.run_fwsec(inputs.sb, outer)?;
+            if s.wpr2_inner()?.is_some() {
+                s.reset(Engine::Sec2, outer)?;
+                s.load(Engine::Sec2, inputs.unloader, outer)?;
+                let (status, _) = s.boot(Engine::Sec2, Some(0xff), Some(0xff), outer)?;
+                s.stage = Stage::BooterStatus;
+                if status != 0 {
+                    return Err(Error::FirmwareStatus(status));
+                }
+                if s.wpr2_inner()?.is_some() {
                     return Err(Error::State);
                 }
             }

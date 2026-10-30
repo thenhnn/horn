@@ -2,7 +2,8 @@
 //! Accounted Horn resources for the AD106 boot core. No Linux DMA wrappers,
 //! physical-RAM mapping, Drop cleanup or guessed clock/interrupt vectors.
 use crate::{target, time::Time};
-use alloc::vec::Vec;
+use alloc::{rc::Rc, vec::Vec};
+use core::cell::Cell;
 use core::{
     ptr::NonNull,
     sync::atomic::{Ordering, fence},
@@ -17,9 +18,16 @@ pub struct DmaBlock {
     pub iova: u64,
     pointer: NonNull<u8>,
     pub bytes: usize,
+    poisoned: Rc<Cell<bool>>,
 }
 impl DmaBlock {
+    pub fn quarantine(&mut self) {
+        self.poisoned.set(true);
+    }
     fn bounds(&self, offset: usize, length: usize) -> Result<()> {
+        if self.poisoned.get() {
+            return Err(Error::Quarantined);
+        }
         if offset
             .checked_add(length)
             .is_none_or(|end| end > self.bytes)
@@ -82,7 +90,7 @@ pub struct Native {
     session: DeviceSession,
     time: Time,
     windows: Vec<(u32, MmioWindow)>,
-    poisoned: bool,
+    poisoned: Rc<Cell<bool>>,
 }
 impl Native {
     /// All PROM/probe temporary windows must have been explicitly closed first.
@@ -106,11 +114,11 @@ impl Native {
             session,
             time,
             windows,
-            poisoned: false,
+            poisoned: Rc::new(Cell::new(false)),
         }
     }
     fn healthy(&self) -> Result<()> {
-        if self.poisoned {
+        if self.poisoned.get() {
             Err(Error::Quarantined)
         } else {
             Ok(())
@@ -144,13 +152,14 @@ impl Native {
                 .checked_add(bytes as u64)
                 .is_none_or(|end| end > 1u64 << 47)
         {
-            self.poisoned = true;
+            self.poisoned.set(true);
             return Err(Error::Range); // retain, never free on uncertainty
         }
         Ok(DmaBlock {
             iova,
             pointer,
             bytes,
+            poisoned: self.poisoned.clone(),
         })
     }
     pub fn bind_irq(&mut self) -> Result<()> {
@@ -205,6 +214,6 @@ impl Platform for Native {
         fence(Ordering::SeqCst);
     }
     fn quarantine(&mut self) {
-        self.poisoned = true;
+        self.poisoned.set(true);
     }
 }
