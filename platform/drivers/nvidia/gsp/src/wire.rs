@@ -12,6 +12,19 @@ pub const HEADER: usize = size_of::<abi::GSP_MSG_QUEUE_ELEMENT>();
 pub const MAX_FRAME: usize = 65536;
 pub const MAX_PAYLOAD: usize = MAX_FRAME - HEADER;
 pub const INIT_DONE: u32 = abi::NV_VGPU_MSG_EVENT_GSP_INIT_DONE;
+pub const CPU_SEQUENCE: u32 = abi::NV_VGPU_MSG_EVENT_GSP_RUN_CPU_SEQUENCER;
+pub const SET_SYSTEM_INFO: u32 = abi::NV_VGPU_MSG_FUNCTION_GSP_SET_SYSTEM_INFO;
+pub const SET_REGISTRY: u32 = abi::NV_VGPU_MSG_FUNCTION_SET_REGISTRY;
+pub const UNLOADING: u32 = abi::NV_VGPU_MSG_FUNCTION_UNLOADING_GUEST_DRIVER;
+pub fn fatal_event(function: u32) -> bool {
+    matches!(
+        function,
+        abi::NV_VGPU_MSG_EVENT_OS_ERROR_LOG
+            | abi::NV_VGPU_MSG_EVENT_RC_TRIGGERED
+            | abi::NV_VGPU_MSG_EVENT_MMU_FAULT_QUEUED
+            | abi::NV_VGPU_MSG_EVENT_GSP_POST_NOCAT_RECORD
+    )
+}
 pub const STATIC_INFO: u32 = abi::NV_VGPU_MSG_FUNCTION_GET_GSP_STATIC_INFO;
 pub const CONTINUATION: u32 = abi::NV_VGPU_MSG_FUNCTION_CONTINUATION_RECORD;
 pub const STATIC_INFO_BYTES: usize = size_of::<abi::GspStaticConfigInfo_t>();

@@ -6,6 +6,7 @@ use crate::{
     Error, Result, abi,
     firmware::{Bundle, GSP_BYTES},
 };
+use alloc::vec::Vec;
 use core::{
     mem::{offset_of, size_of},
     ops::Range,
@@ -334,6 +335,63 @@ pub fn libos(logs: [Span; 3], rmargs: Span, out: &mut [u8; PAGE]) -> Result<()> 
         out[base + 25] = 1; // contiguous, sysmem; terminator stays zero
     }
     Ok(())
+}
+/// Inputs are the assigned function's trusted PCI snapshot, not caller-selected
+/// RAM/IOVA authority. Addresses describe guest PCI BARs only.
+pub fn system_info(bars: [u64; 3], bdf: u64, ids: [u32; 3]) -> Result<Vec<u8>> {
+    if ids[0] != 0x280310de || ids[1] != 0xf3061569 || bars.iter().any(|a| *a == 0 || a & 4095 != 0)
+    {
+        return Err(Error::Range);
+    }
+    let mut out = alloc::vec![0;size_of::<abi::GspSystemInfo>()];
+    macro_rules! q {
+        ($name:ident,$value:expr) => {
+            put64(&mut out, offset_of!(abi::GspSystemInfo, $name), $value)?
+        };
+    }
+    macro_rules! d {
+        ($name:ident,$value:expr) => {
+            put32(&mut out, offset_of!(abi::GspSystemInfo, $name), $value)?
+        };
+    }
+    q!(gpuPhysAddr, bars[0]);
+    q!(gpuPhysFbAddr, bars[1]);
+    q!(gpuPhysInstAddr, bars[2]);
+    q!(nvDomainBusDeviceFunc, bdf);
+    q!(maxUserVa, (1u64 << 47) - 4096);
+    d!(pciConfigMirrorBase, 0x88000);
+    d!(pciConfigMirrorSize, 0x1000);
+    d!(PCIDeviceID, ids[0]);
+    d!(PCISubDeviceID, ids[1]);
+    d!(PCIRevisionID, ids[2]);
+    Ok(out)
+}
+pub fn registry() -> Result<Vec<u8>> {
+    // No firmware-initiated secondary-bus reset or product-ID-check bypass.
+    let entries = [
+        ("RMSecBusResetEnable", 0),
+        ("RMForcePcieConfigSave", 1),
+        ("RMDevidCheckIgnore", 0),
+    ];
+    let strings = 8 + entries.len() * 16;
+    let bytes = strings
+        + entries
+            .iter()
+            .map(|(name, _)| name.len() + 1)
+            .sum::<usize>();
+    let mut out = alloc::vec![0;bytes];
+    put32(&mut out, 0, bytes as u32)?;
+    put32(&mut out, 4, entries.len() as u32)?;
+    let mut at = strings;
+    for (n, (name, value)) in entries.into_iter().enumerate() {
+        let base = 8 + n * 16;
+        put32(&mut out, base, at as u32)?;
+        out[base + 4] = abi::REGISTRY_TABLE_ENTRY_TYPE_DWORD as u8;
+        put32(&mut out, base + 8, value)?;
+        out[at..at + name.len()].copy_from_slice(name.as_bytes());
+        at += name.len() + 1;
+    }
+    Ok(out)
 }
 const _: () = assert!(size_of::<abi::LibosMemoryRegionInitArgument>() == 32);
 const _: () = assert!(size_of::<abi::msgqTxHeader>() == 32);

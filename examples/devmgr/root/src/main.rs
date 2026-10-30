@@ -81,7 +81,11 @@ fn serve(
         sel4::r#yield();
         return;
     }
-    if platform.manager.execution_fault(&info, badge).expect("hosted execution fault") {
+    if platform
+        .manager
+        .execution_fault(&info, badge)
+        .expect("hosted execution fault")
+    {
         server.recv_slot.delete().unwrap();
         return;
     }
@@ -132,7 +136,7 @@ fn serve(
 }
 // Root cannot use its own VM RPC allocator. Keep bounded space for resident
 // frame/tree metadata, including transient Vec growth as the TCP pool expands.
-#[root_task(stack_size = 256 * 1024, heap_size = 8 * 1024 * 1024)]
+#[root_task(stack_size = 256 * 1024, heap_size = if cfg!(large_images) {32 * 1024 * 1024} else {8 * 1024 * 1024})]
 fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
     let root = sel4::init_thread::slot::CNODE.cap();
     let empty = boot.empty().range();
@@ -166,7 +170,15 @@ fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
         )
     };
     unsafe {
-        manager.enable_launch(0xc000_0000..0xc200_0000).unwrap();
+        manager
+            .enable_launch(
+                0xc000_0000..if cfg!(large_images) {
+                    0xc800_0000
+                } else {
+                    0xc200_0000
+                },
+            )
+            .unwrap();
     }
     // Only the initial supervisor is bootstrapped here. No device/driver ELF,
     // matching, child budgets or service launch ordering are selected by root.
@@ -175,9 +187,17 @@ fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
             ELF,
             Config {
                 name: "supervisor",
-                ram_limit: 128 * 1024 * 1024,
+                ram_limit: if cfg!(large_images) {
+                    256 * 1024 * 1024
+                } else {
+                    128 * 1024 * 1024
+                },
                 cnode_bits: SUPERVISOR_CAPS_SIZE_BITS as _,
-                vm_window: 0x4000_0000..0x4800_0000,
+                vm_window: 0x4000_0000..if cfg!(large_images) {
+                    0x5000_0000
+                } else {
+                    0x4800_0000
+                },
                 cpu_budget_us: 1000,
                 cpu_period_us: 1000,
             },
@@ -254,8 +274,16 @@ fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
             bootstrap,
             LaunchPolicy {
                 max_children: 8, // Matches the supervisor's bounded job table.
-                max_ram: 64 * 1024 * 1024,
-                vm_window: 0x4000_0000..0x4400_0000,
+                max_ram: if cfg!(large_images) {
+                    256 * 1024 * 1024
+                } else {
+                    64 * 1024 * 1024
+                },
+                vm_window: 0x4000_0000..if cfg!(large_images) {
+                    0x5000_0000
+                } else {
+                    0x4400_0000
+                },
                 cpu_budget_us: 1000,
                 cpu_period_us: 1000,
             },

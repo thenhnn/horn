@@ -28,7 +28,8 @@ nix-shell --run 'cargo test --offline -p horn-nvidia'
 ```
 
 Seven focused host tests exercise those guards, not hardware behavior.
-There is still no public GPU API or connected native GSP boot/RPC path. A matching
+There is still no public GPU API. The native boot/RPC path is now connected but
+has not run against hardware. A matching
 570.144 firmware package is now pinned; see below.
 In particular there is no fake successful `boot()`.
 See [DESIGN.md](DESIGN.md) for the port plan, blockers and exact source map.
@@ -42,7 +43,7 @@ VBIOS snapshot parser locates production FWSEC and prepares FRTS/SB working
 copies; no board VBIOS snapshot has been exercised yet. The Falcon core now
 ports AD106 reset, DMA load, RSA3K BROM parameters and FWSEC-FRTS/SB execution
 checks, with a mandatory retained sysmembar DMA page. Its native MMIO/clock/DMA
-boot adapter is not connected; this is **not** hardware initialization evidence.
+boot adapter is connected to task execution; this is **not** hardware initialization evidence.
 The native read-only task now uses the parser on a real PROM snapshot when GFW
 is complete; no such snapshot has yet been read on the physical board.
 Every wait has a fixed deadline; uncertain failures quarantine both engines.
@@ -98,8 +99,11 @@ Both seL4-target task and embedded root build successfully. No passthrough run
 has been performed. A missing GPU does not synthesize one or emit probe READY.
 
 The module gives this assignment explicit 64-MiB DMA / 64-object ceilings for
-the upcoming GSP adapter, without changing virtio defaults. No DMA is allocated
-by the read-only task. Devmgr now supports remapped single MSI and fixed-chunk
+the GSP adapter, without changing virtio defaults. This opt-in module defaults to
+`nvidia.boot = true`: assigning the target GPU starts firmware execution.
+Set `nvidia.boot = false` for the old read-only diagnostic mode. Boot mode uses
+256-MiB task RAM / 192-MiB devmgr RAM and a 32-MiB root heap; use at least 1 GiB
+guest RAM for the initial run. No DMA is allocated by read-only mode. Devmgr now supports remapped single MSI and fixed-chunk
 contiguous IOVA reservations; GIN handling and actual GPU IRQ/DMA still need
 hardware validation.
 

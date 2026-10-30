@@ -24,50 +24,22 @@ registration, DMA allocation/free, kernel threads, or driver Drop semantics.
 NVIDIA copyright notices are preserved on adapted modules. New checks/platform
 adapters also use GPL-2.0-only. No files in work/nova are build dependencies.
 
-## Native adapter status
+## Native execution status
 
-The task now receives named clock/alarm-signal capabilities after timerd READY.
-Its read-only probe checks timerd time/alarm and cancels the alarm on STOP.
-`task/src/native.rs` implements the Falcon Platform over seven scoped UC windows,
-accounted directional chunked DMA, explicit IRQ binding and bus-master activation.
-The backend, volatile shared-queue adapter and GIN are compiled but **not connected to firmware execution**: no DMA,
-IRQ activation, reset, or GSP boot is performed by the current diagnostic task.
-Falcon failure also poisons the backend; neither layer frees pins on uncertainty.
-Raw DMA views have no Drop and require retained mapping/queue ownership for access.
+The opt-in task connects pinned firmware embedding, accounted staging, production
+FRTS/SB/load/unload preparation, sysmembar, FRTS → ROM → SEC2 handoff, private
+shared-queue snapshots, bounded cold-boot CPU sequencer, trusted PCI system-info
+and registry, and GIN155 single MSI. Unknown sequencer writes fail closed; PCI
+config, fuse and interrupt ownership are not delegated to firmware requests.
+READY requires actual GspInitDone and a validated GetGspStaticInfo reply.
 
-## Runtime integration still required
-
-The VBIOS parser is connected to the supervised read-only task; the Falcon
-boot path is not. No register writes
-or DMA in this module have run against the board yet. A successful build is not
-authentication, reset, DMA-drain, interrupt-delivery or GSP-readiness evidence.
-
-- Connect the compiled scoped-MMIO/clock/DMA adapter to boot, with acknowledged
-  isolation before reclaiming backing after uncertainty. Numeric IOVAs are not authority.
-- A sysmembar page must be registered before either engine's first reset and
-  retained through cleanup. Existing WPR2 is rejected, not automatically reset.
-  The soft GA102 RESET_READY wait is not a general timeout/retry exception.
-- PROM acquisition now uses individually revocable MMIO leases (still at most
-  eight exports). The native adapter reads one 64-KiB window at a time into a
-  bounded 1-MiB private snapshot, only after GFW reports complete. No huge BAR
-  mapping or PCI option-ROM execution. Physical PROM/parser evidence is pending.
-- Explicit ELF/runtime/DMA budgets must cover the 60.6-MiB image, working copies,
-  bootloader/signatures/radix/LibOS/WPR metadata, logs and queues.
-- GIN155's single-MSI adapter is implemented. Once all production signatures
-  (including SB/unloader) are prepared, native bind_irq explicitly revokes its
-  fuse window and maps GIN plus the narrow MSI-EOI mirror window, keeping the
-  eight-export bound. After boot polling it repeats tree/latch quiesce, ACKs
-  the kernel IRQ, enables leaf155/TOP2, then requires an immediate queue drain.
-  Device leaf/host-latch/MSI rearm precedes kernel ACK; other host causes are fatal.
-  This remains unwired and provides no interrupt-delivery evidence.
-- The library now implements source-ordered FRTS/WPR2 → ROM → SEC2 → RISC-V
-  handoff, requiring staged SB/unloader inputs before execution; normal explicit
-  unload requires a suspended mailbox and never proves DMA drain. First failure
-  poisons both controller and native DMA/queue views, preserving its diagnostic.
-- Wire framing/builders and page-ring transport are implemented, not yet driven
-  by the task. Trusted system-info/registry inputs, audited CPU sequencer,
-  real GspInitDone and validated GetGspStaticInfo remain pending.
-  None of the Falcon status/mailbox helpers may substitute for that gate.
+The 64-MiB/64-object DMA ceiling is unchanged. Boot mode explicitly reserves
+256-MiB driver RAM, 192-MiB devmgr RAM, larger image launch windows and a 32-MiB
+root heap; read-only mode remains available with `nvidia.boot = false`.
+Normal STOP requires shutdown RPC, suspended mailbox, SB/unloader and broker
+isolation acknowledgment. Failures abort without retry or implicit DMA release.
+No physical upload/reset, authentication, IRQ, DMA-drain or readiness has yet
+been demonstrated. No GPU/firmware-peer emulator was used.
 
 ## Pinned firmware (not GPL)
 

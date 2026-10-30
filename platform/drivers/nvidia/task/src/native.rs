@@ -129,7 +129,7 @@ impl Native {
             Ok(())
         }
     }
-    fn pointer(&self, offset: u32) -> Result<*mut u32> {
+    fn pointer(&mut self, offset: u32) -> Result<*mut u32> {
         self.healthy()?;
         if offset & 3 != 0 {
             return Err(Error::Range);
@@ -143,7 +143,41 @@ impl Native {
                 return Ok(unsafe { window.pointer().as_ptr().add(within as usize).cast::<u32>() });
             }
         }
-        Err(Error::Range)
+        if offset as usize >= horn_nvidia::probe::BAR0_BYTES {
+            return Err(Error::Range);
+        }
+        // Serialized UC access: no raw alias escapes the read/write call.
+        // Revoke before recycling an export, not by silently replacing a map.
+        if self.windows.len() == 8 {
+            let (_, window) = self.windows.remove(0);
+            self.session.close_window(window);
+        }
+        let base = offset & !4095;
+        let window = self.session.mmio_window(0, base as u64, 4096);
+        let pointer = unsafe {
+            window
+                .pointer()
+                .as_ptr()
+                .add((offset - base) as usize)
+                .cast()
+        };
+        self.windows.push((base, window));
+        Ok(pointer)
+    }
+    pub fn prom(&mut self) -> Result<Vec<u8>> {
+        self.healthy()?;
+        crate::prom::snapshot(&mut self.session, horn_nvidia::probe::BAR0_BYTES)
+            .map_err(|_| Error::Backend)
+    }
+    pub fn close(&mut self) -> Result<()> {
+        self.healthy()?;
+        self.time.cancel(&mut self.session)?;
+        self.session.control().close().map_err(|_| Error::Backend)?;
+        self.poisoned.set(true);
+        Ok(())
+    }
+    pub fn transport(&mut self) -> &mut horn_ipc::Sel4Transport<horn_ipc::Sel4CapSpace> {
+        self.session.transport()
     }
     pub fn allocate(&mut self, bytes: usize, access: DeviceAccess) -> Result<DmaBlock> {
         self.healthy()?;

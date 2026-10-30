@@ -5,6 +5,7 @@
 //! No Drop unmaps memory, resets hardware, or establishes a new hardware epoch.
 use crate::{Error, Result, firmware::Segment};
 use core::ops::Range;
+mod sequencer;
 
 #[cfg(test)]
 mod tests;
@@ -67,6 +68,7 @@ pub enum Stage {
     Shutdown,
     Backend,
     Rpc,
+    Sequencer,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Diagnostic {
@@ -728,6 +730,14 @@ impl<P: Platform> Ad106<P> {
             s.stage = Stage::Riscv;
             let deadline = s.limit(outer, 5_000_000)?;
             s.poll(Engine::Gsp.second() + 0x388, 1 << 7, 1 << 7, deadline)?;
+            Ok(())
+        })
+    }
+    pub fn wait_suspended(&mut self, outer: u64) -> Result<()> {
+        self.execute(|s| {
+            s.stage = Stage::Shutdown;
+            let deadline = s.limit(outer, 5_000_000)?;
+            s.poll(0x110040, 1 << 31, 1 << 31, deadline)?;
             Ok(())
         })
     }

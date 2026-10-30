@@ -7,6 +7,7 @@
 }: let
   driver = import ./. {
     workspace = config.rust.workspace;
+    firmware = if config.nvidia.boot then config.nvidia.firmware else null;
     pkgs = pkgs.pkgsBuildBuild;
   };
   elf = pkgs.pkgsBuildBuild.runCommand "nvidia-probe-runtime.elf" {
@@ -14,6 +15,7 @@
   } ''llvm-objcopy --strip-debug ${driver}/bin/nvidia_probe.elf "$out"'';
 in {
   imports = [../../../examples/devmgr/module.nix];
+  options.nvidia.boot = lib.mkOption {type = lib.types.bool; default = true;};
   options.nvidia.firmware = lib.mkOption {
     type = lib.types.package;
     readOnly = true;
@@ -29,12 +31,13 @@ in {
     devmgr-demo.net = lib.mkDefault false;
     devmgr-demo.shell = lib.mkDefault false;
     services.definitions.devmgr.publish = ["/diagnostics/nvidia"];
+    services.definitions.devmgr.ram = lib.mkForce ((if config.nvidia.boot then 192 else 64) * 1024 * 1024);
     devmgr.drivers = [
       {
         name = "nvidia-probe";
         clock = true;
         inherit elf;
-        ram = 16 * 1024 * 1024;
+        ram = (if config.nvidia.boot then 256 else 16) * 1024 * 1024;
         # Explicit future GSP budget, not an allocation or a larger virtio default.
         dmaBytes = 64 * 1024 * 1024;
         dmaObjects = 64;

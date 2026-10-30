@@ -81,6 +81,7 @@
       devmgr-demo-root = old: {
         features = (old.features or []) ++ lib.optional config.devmgr-demo.boot-tests "boot-tests";
         SUPERVISOR_ELF = "${runtimeElf childWorkspace.members.horn-supervisor-task "supervisor"}";
+        HORN_LARGE_IMAGES = if builtins.any (d: d.ram > 64 * 1024 * 1024) config.devmgr.drivers then "1" else "0";
         DEVMGR_TEST_VTD =
           if config.devmgr.drivers != []
           then "1"

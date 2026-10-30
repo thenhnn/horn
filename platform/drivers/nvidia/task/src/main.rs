@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: BSD-2-Clause
-//! Native, supervised read-only AD106 bring-up. No firmware upload or fake GSP boot.
+//! Supervised AD106 driver; optional pinned native GSP cold boot.
 #![no_std]
 #![no_main]
 extern crate alloc;
-#[allow(dead_code)] // Boot backend; firmware/RPC execution is not yet connected.
+#[cfg(gsp_boot)]
+mod boot;
+#[allow(dead_code)] // Optional helpers also compile in the read-only build.
 mod native;
 mod prom;
-#[allow(dead_code)] // Live queue adapter; top-level boot not yet connected.
+#[allow(dead_code)] // Optional live queue adapter, unused in read-only mode.
 mod shared;
 mod time;
 
@@ -91,6 +93,7 @@ impl p::NvidiaProbe for Reader<'_> {
         }
     }
 }
+#[allow(unreachable_code)]
 fn main() -> ! {
     let root = sel4::cap::CNode::from_bits(DEVICE_DRIVER_CAPS_SELF_SLOT as _);
     let transport = horn_runtime::transport(root, SLOTS.application()).expect("NVIDIA transport");
@@ -138,6 +141,8 @@ fn main() -> ! {
         bytes,
         msi.offset
     );
+    #[cfg(gsp_boot)]
+    boot::run(session, time, resources);
     let boot_window = session.mmio_window(0, 0, 4096);
     let gfw_window = session.mmio_window(0, 0x118000, 4096);
     let (gpu, gfw) = {
