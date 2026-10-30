@@ -318,6 +318,57 @@ impl SupervisorJob for Caller<'_> {
         self.manager.jobs[i].publications += 1;
         Ok(())
     }
+    fn require(
+        &mut self,
+        scope: Cap<RegistryNodeTag>,
+        path: List<u8, 96>,
+        slot: u32,
+    ) -> Result<(), SupervisorError> {
+        let i = self.owner()?;
+        if self.manager.jobs[i].lifecycle.state != ServiceStatus::Created {
+            return Err(SupervisorError::Busy);
+        }
+        let (owner, endpoint) = self
+            .manager
+            .namespace
+            .binding(scope.as_ref(), &path)
+            .map_err(|error| match error {
+                horn_registry::protocol::RegistryError::Denied => SupervisorError::Denied,
+                horn_registry::protocol::RegistryError::NotFound
+                | horn_registry::protocol::RegistryError::Unavailable => SupervisorError::NotFound,
+                _ => SupervisorError::Invalid,
+            })?;
+        if owner == (i + 1) as u64 {
+            return Err(SupervisorError::Invalid);
+        }
+        let new_dependency = !self.manager.jobs[i].dependencies.contains(&owner);
+        if new_dependency {
+            if self.manager.jobs[i].dependencies.len() >= 16 {
+                return Err(SupervisorError::Exhausted);
+            }
+            self.manager.jobs[i]
+                .dependencies
+                .try_reserve(1)
+                .map_err(|_| SupervisorError::Exhausted)?;
+        }
+        ProcessControlClient::new(
+            &mut self.manager.io,
+            Cap::from_ref(self.manager.jobs[i].process.as_ref()),
+        )
+        .install(
+            &cap(SUPERVISOR_CAPS_SELF_SLOT),
+            SUPERVISOR_CAPS_SIZE_BITS as _,
+            endpoint.as_ref().slot,
+            slot,
+            None,
+            (Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0) as _,
+        )
+        .map_err(|_| SupervisorError::Backend)?;
+        if new_dependency {
+            self.manager.jobs[i].dependencies.push(owner);
+        }
+        Ok(())
+    }
     fn client(&mut self) -> Result<Cap<SupervisedClientTag>, SupervisorError> {
         let i = self.owner()?;
         let cap = mint(

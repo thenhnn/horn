@@ -106,6 +106,12 @@ launched only after `/clocks/monotonic` becomes available through devmgr's
 scoped `/clocks` directory. A generation watch wakes the existing owner event
 loop; no startup spin or timerd↔devmgr dependency cycle. The child receives named
 clock and alarm-signal capabilities; ordinary drivers receive neither. The
+clock is installed through `SupervisorJob.require(scope, relative_path, slot)`:
+a same-endpoint kernel-unwrapped directory grant authorizes lookup, and the
+exporting owner is recorded as a lifetime dependency before execution. If timerd
+stops, supervisor stops the bound driver CPU before reclaiming timerd resources;
+devmgr must still acknowledge device isolation/cleanup. Discovery alone is not
+a lifetime dependency. The
 30-second READY deadline still starts with actual child execution.
 
 ### Quota-bound DMA reservations

@@ -20,6 +20,7 @@ from horn_idl import (
 )
 from horn_process import *
 from horn_vm import *
+from horn_registry import *
 
 
 @enum(base=U32)
@@ -136,6 +137,13 @@ class SupervisorJob:
     # Legal only after execution stopped and the owner completed external cleanup.
     @method
     def cleanup_done(self) -> Result[None, SupervisorError]: ...
+
+    # Bind through a kernel-authenticated directory scope, recording the
+    # exporting owner's lifetime dependency before child execution.
+    @method
+    def require(
+        self, scope: Cap[RegistryNode, Borrow], path: List[U8, 96], slot: U32
+    ) -> Result[None, SupervisorError]: ...
 
 
 @object(implements=(SupervisorJob,))

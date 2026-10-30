@@ -68,6 +68,32 @@ impl Namespace {
         }));
         Ok(Cap::from_ref(exported.as_ref()))
     }
+    /// Only a same-endpoint kernel-unwrapped grant is scope authority.
+    /// A path/node/owner number alone never selects a namespace grant.
+    pub fn binding(
+        &self,
+        scope: CapRef,
+        path: &List<u8, 96>,
+    ) -> Result<(u64, Cap<Endpoint>), r::RegistryError> {
+        let badge = scope.unwrapped_badge().ok_or(r::RegistryError::Denied)?;
+        let index = badge
+            .checked_sub(DIRECTORY_BADGE)
+            .ok_or(r::RegistryError::Denied)? as usize;
+        let grant = self
+            .grants
+            .get(index)
+            .and_then(Option::as_ref)
+            .ok_or(r::RegistryError::Denied)?;
+        let path = core::str::from_utf8(&path.data[..path.len as usize])
+            .map_err(|_| r::RegistryError::Invalid)?;
+        let node = self.tree.resolve(grant.scope, path)?;
+        let entry = self.tree.node(node);
+        if !entry.available {
+            return Err(r::RegistryError::Unavailable);
+        }
+        let endpoint = *self.tree.value(node).ok_or(r::RegistryError::Invalid)?;
+        Ok((entry.owner, endpoint))
+    }
     pub fn changed(&mut self, io: &mut Io) {
         for grant in self.grants.iter_mut().flatten() {
             if grant.armed && grant.generation != self.tree.node(grant.scope).generation {

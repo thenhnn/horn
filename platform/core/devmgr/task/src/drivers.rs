@@ -232,15 +232,39 @@ impl Drivers {
             None,
             Rights::WRITE,
         );
-        if let Some(clock) = clock {
-            BOOT.install(
-                io,
-                process,
-                d::DEVICE_DRIVER_CAPS_CLOCK_SLOT,
-                clock,
-                None,
-                Rights(Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0),
-            );
+        if clock.is_some() {
+            let mut path = List::default();
+            path.len = 9;
+            path.data[..9].copy_from_slice(b"monotonic");
+            #[cfg(feature = "boot-tests")]
+            {
+                assert_eq!(
+                    s::SupervisorJobClient::new(&mut *io, Cap::from_ref(managed.as_ref())).require(
+                        &Cap::from_ref(managed.as_ref()),
+                        path.clone(),
+                        d::DEVICE_DRIVER_CAPS_CLOCK_SLOT
+                    ),
+                    Err(CallError::Remote(s::SupervisorError::Denied))
+                );
+                let mut outside = List::default();
+                outside.len = 17;
+                outside.data[..17].copy_from_slice(b"../services/clock");
+                assert_eq!(
+                    s::SupervisorJobClient::new(&mut *io, Cap::from_ref(managed.as_ref())).require(
+                        &target(d::DEVICE_CAPS_CLOCKS_SLOT),
+                        outside,
+                        d::DEVICE_DRIVER_CAPS_CLOCK_SLOT
+                    ),
+                    Err(CallError::Remote(s::SupervisorError::Invalid))
+                );
+            }
+            s::SupervisorJobClient::new(&mut *io, Cap::from_ref(managed.as_ref()))
+                .require(
+                    &target(d::DEVICE_CAPS_CLOCKS_SLOT),
+                    path,
+                    d::DEVICE_DRIVER_CAPS_CLOCK_SLOT,
+                )
+                .unwrap();
             let signal = mint(
                 io,
                 sel4::cap::CNode::from_bits(d::DEVICE_CAPS_SELF_SLOT as _),
