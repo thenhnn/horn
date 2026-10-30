@@ -12,6 +12,7 @@ registration, DMA allocation/free, kernel threads, or driver Drop semantics.
 | --- | --- | --- |
 | src/abi.rs | gsp/fw/r570_144/bindings.rs | checked-in layouts; core::ffi, remove Linux MaybeZeroable derives, explicit Rust 2024 unsafe blocks; no build-time transformation |
 | src/boot.rs | fb.rs, gsp.rs, gsp/fw.rs, firmware/radix3.rs | checked AD106 framebuffer/WPR, radix3, LibOS/args/log/queue builders; numerical spans are not grants; zero PTEs beyond committed queue pages |
+| src/gin.rs | irq/{gsp,interrupt_tree,regs,hal/tu102}.rs, regs.rs | AD106 GIN155/shared single-MSI acknowledgment; host-routed latch selection, retrigger/rearm, explicit masking; no Drop or INTx |
 | src/queue.rs | gsp/cmdq.rs | bounded 63-page rings, volatile-word backend, private snapshots, publication barriers, peer-progress/index checks and fail-stop corruption; no automatic retry or deadline renewal |
 | src/wire.rs | gsp/{fw,cmdq,commands}.rs, gsp/cmdq/continuation.rs | bounded 64-KiB frames/checksums, distinct transport/inner sequences, bounded outgoing continuations and static-info payload validation; not a live RPC transport |
 | src/tlv.rs | firmware/tlv.rs | no kernel dependencies; fixed 32-tag bound; duplicate rejection; exact version |
@@ -29,7 +30,7 @@ The task now receives named clock/alarm-signal capabilities after timerd READY.
 Its read-only probe checks timerd time/alarm and cancels the alarm on STOP.
 `task/src/native.rs` implements the Falcon Platform over seven scoped UC windows,
 accounted directional chunked DMA, explicit IRQ binding and bus-master activation.
-The backend and volatile shared-queue adapter are compiled but **not connected to firmware execution**: no DMA,
+The backend, volatile shared-queue adapter and GIN are compiled but **not connected to firmware execution**: no DMA,
 IRQ activation, reset, or GSP boot is performed by the current diagnostic task.
 Falcon failure also poisons the backend; neither layer frees pins on uncertainty.
 Raw DMA views have no Drop and require retained mapping/queue ownership for access.
@@ -52,14 +53,19 @@ authentication, reset, DMA-drain, interrupt-delivery or GSP-readiness evidence.
   mapping or PCI option-ROM execution. Physical PROM/parser evidence is pending.
 - Explicit ELF/runtime/DMA budgets must cover the 60.6-MiB image, working copies,
   bootloader/signatures/radix/LibOS/WPR metadata, logs and queues.
-- GIN source155 must use the assigned shared single-MSI route and correct
-  device acknowledgment/rearm, not a fabricated MSI-X vector index.
+- GIN155's single-MSI adapter is implemented. Once all production signatures
+  (including SB/unloader) are prepared, native bind_irq explicitly revokes its
+  fuse window and maps GIN plus the narrow MSI-EOI mirror window, keeping the
+  eight-export bound. After boot polling it repeats tree/latch quiesce, ACKs
+  the kernel IRQ, enables leaf155/TOP2, then requires an immediate queue drain.
+  Device leaf/host-latch/MSI rearm precedes kernel ACK; other host causes are fatal.
+  This remains unwired and provides no interrupt-delivery evidence.
 - The library now implements source-ordered FRTS/WPR2 → ROM → SEC2 → RISC-V
   handoff, requiring staged SB/unloader inputs before execution; normal explicit
   unload requires a suspended mailbox and never proves DMA drain. First failure
   poisons both controller and native DMA/queue views, preserving its diagnostic.
 - Wire framing/builders and page-ring transport are implemented, not yet driven
-  by the task. Trusted system-info/registry inputs, audited CPU sequencer, GIN,
+  by the task. Trusted system-info/registry inputs, audited CPU sequencer,
   real GspInitDone and validated GetGspStaticInfo remain pending.
   None of the Falcon status/mailbox helpers may substitute for that gate.
 

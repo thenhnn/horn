@@ -8,6 +8,9 @@ pub mod falcon;
 pub mod firmware;
 #[cfg(test)]
 mod format_tests;
+pub mod gin;
+#[cfg(test)]
+mod gin_tests;
 pub mod queue;
 #[cfg(test)]
 mod queue_tests;

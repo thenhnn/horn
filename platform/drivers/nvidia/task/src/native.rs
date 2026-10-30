@@ -90,12 +90,15 @@ pub struct Native {
     session: DeviceSession,
     time: Time,
     windows: Vec<(u32, MmioWindow)>,
+    irq_prepared: bool,
+    events_enabled: bool,
     poisoned: Rc<Cell<bool>>,
 }
 impl Native {
     /// All PROM/probe temporary windows must have been explicitly closed first.
-    /// These seven exports fit the eight-window assignment bound; GIN gets the
-    /// final window in the interrupt adapter. No giant BAR1/BAR3 map is made.
+    /// These seven exports fit the eight-window assignment bound. After ALL
+    /// signature preparation, bind_irq revokes the fuse lease and adds GIN plus
+    /// the narrow single-MSI EOI mirror window. No giant BAR1/BAR3 map is made.
     pub fn new(mut session: DeviceSession, time: Time) -> Self {
         let mut windows = Vec::new();
         windows.try_reserve_exact(8).expect("AD106 window metadata");
@@ -114,6 +117,8 @@ impl Native {
             session,
             time,
             windows,
+            irq_prepared: false,
+            events_enabled: false,
             poisoned: Rc::new(Cell::new(false)),
         }
     }
@@ -162,12 +167,30 @@ impl Native {
             poisoned: self.poisoned.clone(),
         })
     }
+    /// After SB/unloader AND boot sources have been production-patched. The
+    /// fuse aperture is explicitly revoked before replacing its quota slot.
     pub fn bind_irq(&mut self) -> Result<()> {
         self.healthy()?;
+        if self.irq_prepared {
+            return Err(Error::State);
+        }
+        let fuse = self
+            .windows
+            .iter()
+            .position(|(base, _)| *base == 0x820000)
+            .ok_or(Error::State)?;
+        let (_, fuse) = self.windows.remove(fuse);
+        self.session.close_window(fuse);
+        for base in [0xb81000, 0x88000] {
+            self.windows
+                .push((base, self.session.mmio_window(0, base as u64, 4096)));
+        }
+        horn_nvidia_gsp::gin::quiesce(self)?;
         self.session.interrupt_on(
             &target(DEVICE_DRIVER_CAPS_IRQ_SIGNAL_SLOT),
             target(DEVICE_DRIVER_CAPS_WAKE_SLOT),
         );
+        self.irq_prepared = true;
         Ok(())
     }
     /// # Safety
@@ -175,7 +198,47 @@ impl Native {
     /// fresh firmware epoch established. Clearing bus-master is not a drain.
     pub unsafe fn activate(&mut self) -> Result<()> {
         self.healthy()?;
+        if !self.irq_prepared {
+            return Err(Error::State);
+        }
         self.session.activate();
+        Ok(())
+    }
+    /// Transition from boot polling only AFTER handoff/RPC setup. The caller
+    /// immediately drains queues, including notifications posted before clear.
+    pub fn enable_gsp_events(&mut self) -> Result<()> {
+        self.healthy()?;
+        if !self.irq_prepared || self.events_enabled {
+            return Err(Error::State);
+        }
+        horn_nvidia_gsp::gin::quiesce(self)?;
+        self.time.take_irq();
+        self.session.ack_interrupt();
+        horn_nvidia_gsp::gin::enable(self)?;
+        self.events_enabled = true;
+        Ok(())
+    }
+    pub fn service_gsp_event(&mut self) -> Result<horn_nvidia_gsp::gin::Report> {
+        self.healthy()?;
+        if !self.events_enabled {
+            return Err(Error::State);
+        }
+        let report = horn_nvidia_gsp::gin::service(self)?;
+        // Device source/tree/MSI acknowledgment completed before this seL4 ack.
+        self.session.ack_interrupt();
+        if report.faults != 0 || report.remaining != 0 {
+            self.poisoned.set(true);
+            return Err(Error::FirmwareStatus(report.faults | report.remaining));
+        }
+        Ok(report)
+    }
+    pub fn disable_gsp_events(&mut self) -> Result<()> {
+        self.healthy()?;
+        if !self.events_enabled {
+            return Err(Error::State);
+        }
+        horn_nvidia_gsp::gin::disable(self)?;
+        self.events_enabled = false;
         Ok(())
     }
     pub fn take_irq(&mut self) -> bool {
