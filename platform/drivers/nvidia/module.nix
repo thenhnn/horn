@@ -26,7 +26,10 @@ in {
     };
   };
   config = {
-    sel4.settings.KernelRootCNodeSizeBits = 18;
+    # Untyped split trees + retained frames + transient sealed ELF uploads.
+    # Root gives half its free slots to KernelAllocator; 18 bits exhausts that
+    # pool while supervisor uploads the firmware-bearing devmgr ELF.
+    sel4.settings.KernelRootCNodeSizeBits = if config.nvidia.boot then 20 else 18;
     devmgr-demo.console = lib.mkDefault false;
     devmgr-demo.net = lib.mkDefault false;
     devmgr-demo.shell = lib.mkDefault false;

@@ -134,13 +134,29 @@ fn serve(
     }
     platform.manager.finish_reply(server).unwrap();
 }
+const ROOT_HEAP_BYTES: usize = if cfg!(large_images) {
+    64 * 1024 * 1024
+} else {
+    8 * 1024 * 1024
+};
 // Root cannot use its own VM RPC allocator. Keep bounded space for resident
 // frame/tree metadata, including transient Vec growth as the TCP pool expands.
-#[root_task(stack_size = 256 * 1024, heap_size = if cfg!(large_images) {32 * 1024 * 1024} else {8 * 1024 * 1024})]
+#[root_task(stack_size = 256 * 1024, heap_size = ROOT_HEAP_BYTES)]
 fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
     let root = sel4::init_thread::slot::CNODE.cap();
     let empty = boot.empty().range();
     let split = empty.start + empty.len() / 2;
+    sel4::debug_println!(
+        "ROOT_RESOURCES cspace_slots={} kernel_slots={} ipc_slots={} heap_bytes={}",
+        empty.end,
+        split - empty.start,
+        empty.end - split - platform::TEMP_SLOTS - 1,
+        ROOT_HEAP_BYTES
+    );
+    assert!(
+        !cfg!(large_images) || empty.end >= 1 << 20,
+        "large firmware images require KernelRootCNodeSizeBits >= 20; rebuild kernel AND root"
+    );
     let mut sources = boot
         .untyped_list()
         .iter()

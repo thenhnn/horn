@@ -34,8 +34,8 @@ config, fuse and interrupt ownership are not delegated to firmware requests.
 READY requires actual GspInitDone and a validated GetGspStaticInfo reply.
 
 The 64-MiB/64-object DMA ceiling is unchanged. Boot mode explicitly reserves
-256-MiB driver RAM, 192-MiB devmgr RAM, larger image launch windows and a 32-MiB
-root heap; read-only mode remains available with `nvidia.boot = false`.
+256-MiB driver RAM, 192-MiB devmgr RAM, larger image launch windows, a 64-MiB
+root heap and a 20-bit root CSpace; read-only mode remains available with `nvidia.boot = false`.
 Normal STOP requires shutdown RPC, suspended mailbox, SB/unloader and broker
 isolation acknowledgment. Failures abort without retry or implicit DMA release.
 No physical upload/reset, authentication, IRQ, DMA-drain or readiness has yet

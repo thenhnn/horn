@@ -102,7 +102,7 @@ The module gives this assignment explicit 64-MiB DMA / 64-object ceilings for
 the GSP adapter, without changing virtio defaults. This opt-in module defaults to
 `nvidia.boot = true`: assigning the target GPU starts firmware execution.
 Set `nvidia.boot = false` for the old read-only diagnostic mode. Boot mode uses
-256-MiB task RAM / 192-MiB devmgr RAM and a 32-MiB root heap; use at least 1 GiB
+256-MiB task RAM / 192-MiB devmgr RAM, a 64-MiB root heap and a 20-bit root CSpace; use at least 1 GiB
 guest RAM for the initial run. No DMA is allocated by read-only mode. Devmgr now supports remapped single MSI and fixed-chunk
 contiguous IOVA reservations; GIN handling and actual GPU IRQ/DMA still need
 hardware validation.
