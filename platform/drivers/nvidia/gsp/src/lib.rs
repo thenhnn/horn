@@ -4,6 +4,11 @@
 extern crate alloc;
 mod abi;
 pub mod boot;
+pub mod aux;
+pub mod ce;
+pub mod dcb;
+pub mod edid;
+pub mod i2c;
 pub mod falcon;
 pub mod firmware;
 #[cfg(test)]

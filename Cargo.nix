@@ -850,6 +850,25 @@ rec {
         };
         resolvedDefaultFeatures = [ "boot-tests" ];
       };
+      "display-types" = rec {
+        crateName = "display-types";
+        version = "0.5.0";
+        edition = "2024";
+        sha256 = "11fl0i3xdxylijyv3bgr8mfzzlgqkinym40z85d67vqbcqdgkawv";
+        libName = "display_types";
+        dependencies = [
+          {
+            name = "bitflags";
+            packageId = "bitflags 2.13.2";
+          }
+        ];
+        features = {
+          "default" = [ "std" ];
+          "serde" = [ "dep:serde" "bitflags/serde" ];
+          "std" = [ "alloc" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" ];
+      };
       "dlmalloc" = rec {
         crateName = "dlmalloc";
         version = "0.2.14";
@@ -1397,6 +1416,14 @@ rec {
         ];
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/drivers/nvidia/gsp; };
         libName = "horn_nvidia_gsp";
+        dependencies = [
+          {
+            name = "piaf";
+            packageId = "piaf";
+            usesDefaultFeatures = false;
+            features = [ "alloc" ];
+          }
+        ];
         features = {
         };
         resolvedDefaultFeatures = [ "host" ];
@@ -2472,6 +2499,35 @@ rec {
         features = {
           "stack-guard" = [ "dep:stacker" "dep:psm" ];
         };
+      };
+      "piaf" = rec {
+        crateName = "piaf";
+        version = "0.5.0";
+        edition = "2024";
+        sha256 = "0naqml8njmsjy3zmg5aj900adwi4aszq7rhkv0qfx5xpasibkqxx";
+        dependencies = [
+          {
+            name = "bitflags";
+            packageId = "bitflags 2.13.2";
+          }
+          {
+            name = "display-types";
+            packageId = "display-types";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror";
+            usesDefaultFeatures = false;
+          }
+        ];
+        features = {
+          "alloc" = [ "display-types/alloc" ];
+          "default" = [ "std" ];
+          "serde" = [ "dep:serde" "bitflags/serde" "display-types/serde" ];
+          "std" = [ "alloc" "display-types/std" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" ];
       };
       "prettyplease 0.2.37" = rec {
         crateName = "prettyplease";

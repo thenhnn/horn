@@ -287,7 +287,8 @@ def test_cnode_layout_uses_one_flat_cnode():
     one = build_layout(caps(MAX_LAYOUT_CAPS))
     assert one.root_count == 1
     assert one.cnode is not None
-    assert one.cnode.size_bits == 8
+    # A flat CNode just large enough for the whole layout.
+    assert one.cnode.size_bits == (MAX_LAYOUT_CAPS + 1).bit_length() - 1
     assert len(one.cnode.slots) == MAX_LAYOUT_CAPS
 
     with pytest.raises(ValueError, match="CNode limit"):
@@ -583,7 +584,7 @@ class Bootstrap:
     assert "HORN_HANDLES_SIZE_BITS 8u" in header
 
 
-@pytest.mark.parametrize("capacity", [0, 1, 3, 512])
+@pytest.mark.parametrize("capacity", [0, 1, 3, 1024])
 def test_capset_rejects_invalid_capacity(tmp_path, capacity):
     with pytest.raises(DeclarationError):
         load_source(

@@ -21,6 +21,11 @@ pub struct DmaBlock {
     poisoned: Rc<Cell<bool>>,
 }
 impl DmaBlock {
+    /// CPU view of the block. The caller must not hand it to the device as an
+    /// alias of anything else; it is the same memory the device sees.
+    pub fn pointer(&self) -> NonNull<u8> {
+        self.pointer
+    }
     pub fn quarantine(&mut self) {
         self.poisoned.set(true);
     }
@@ -97,7 +102,7 @@ impl DmaBlock {
 }
 /// Cached on-demand pages. Two more fixed windows and one transient PROM window
 /// stay inside the eight-export assignment bound.
-const LIVE_WINDOWS: usize = 5;
+const LIVE_WINDOWS: usize = 3;
 pub struct Native {
     session: DeviceSession,
     time: Time,
@@ -172,6 +177,19 @@ impl Native {
         };
         self.windows.push((base, window));
         Ok(pointer)
+    }
+    /// Map a window of the VRAM aperture (BAR1). The USERD and the channel
+    /// instance live in video memory, which the CPU reaches only this way.
+    pub fn vram_window(&mut self, offset: u64, length: usize) -> Result<MmioWindow> {
+        self.healthy()?;
+        if length == 0 || length > 65536 || length & 4095 != 0 || offset & 4095 != 0 {
+            return Err(Error::Range);
+        }
+        Ok(self.session.mmio_window(1, offset, length))
+    }
+    /// Release a VRAM window: revokes the CPU alias and the lease.
+    pub fn close_vram_window(&mut self, window: MmioWindow) {
+        self.session.close_window(window);
     }
     pub fn prom(&mut self) -> Result<Vec<u8>> {
         self.healthy()?;

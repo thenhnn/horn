@@ -6,6 +6,7 @@ extern crate alloc;
 #[cfg(gsp_boot)]
 mod boot;
 #[allow(dead_code)] // Optional helpers also compile in the read-only build.
+mod display;
 mod native;
 mod prom;
 #[allow(dead_code)] // Optional live queue adapter, unused in read-only mode.

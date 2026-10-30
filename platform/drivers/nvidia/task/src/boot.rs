@@ -11,6 +11,7 @@ use alloc::{vec, vec::Vec};
 use horn_devmgr::protocol::*;
 use horn_driver::{DeviceAccess, DeviceSession};
 use horn_ipc::*;
+use horn_nvidia_gsp::ce as gsp_ce;
 use horn_nvidia_gsp::{
     Error, FirmwareStatus, Result,
     boot::{self, PAGE, Span},
@@ -168,7 +169,6 @@ fn rm_client<M: Memory>(
 struct Va {
     base: u64,
     root: u64,
-    source: u64,
     arena: DmaBlock,
     bytes: Vec<u8>,
 }
@@ -197,7 +197,9 @@ impl Va {
     }
 }
 
-const VA_BASE: u64 = 0x1_0000_0000;
+/// The GPFIFO entry carries the pushbuffer address in 30 bits, so everything
+/// the channel addresses through its page directory has to live below 4 GiB.
+const VA_BASE: u64 = 0x2000_0000;
 
 fn gmmu_setup<M: Memory>(
     ctx: &mut Ad106<Native>,
@@ -207,7 +209,6 @@ fn gmmu_setup<M: Memory>(
     version: u32,
     deadline: u64,
 ) -> Result<Va> {
-    let source = ctx.with_platform(|p| p.allocate(gmmu::PAGE, DeviceAccess::ReadWrite))?;
     let mut arena = ctx.with_platform(|p| p.allocate(5 * gmmu::PAGE, DeviceAccess::ReadWrite))?;
     let mut bytes = vec![0u8; 5 * gmmu::PAGE];
     {
@@ -218,7 +219,6 @@ fn gmmu_setup<M: Memory>(
         tables.write(gmmu::index(VA_BASE, 1)?, 1, gmmu::pde(root + 2 * page)?)?;
         tables.write(gmmu::index(VA_BASE, 2)?, 2, gmmu::pde(root + 3 * page)?)?;
         tables.write(gmmu::index(VA_BASE, 3)?, 3, gmmu::pde(root + 4 * page)?)?;
-        tables.write(gmmu::index(VA_BASE, 4)?, 4, gmmu::pte_sys(source.iova)?)?;
     }
     unsafe {
         arena.zero()?;
@@ -275,7 +275,6 @@ fn gmmu_setup<M: Memory>(
     Ok(Va {
         base: VA_BASE,
         root: arena.iova,
-        source: source.iova,
         arena,
         bytes,
     })
@@ -422,13 +421,18 @@ fn rm_channel<M: Memory>(
     deadline: u64,
 ) -> Result<(u32, u64)> {
     const INSTANCE: u64 = 0x1000;
-    // gf100_chan_userd.size: a channel's USERD window is one page.
-    const USERD: u64 = 0x1000;
+    // gv100_chan_userd.size: one 0x200 slot per channel inside the USERD page.
+    const USERD: u64 = 0x200;
     const RAMFC: u64 = 0x200;
     const GPFIFO_ENTRIES: u32 = 512;
 
     let mut gpfifo =
         ctx.with_platform(|p| p.allocate(GPFIFO_ENTRIES as usize * 8, DeviceAccess::ReadWrite))?;
+    // USERD in system memory: the driver publishes GP_PUT with a plain store,
+    // so the kick path needs no video-memory aperture at all.
+    let mut userd_block =
+        ctx.with_platform(|p| p.allocate(gmmu::PAGE, DeviceAccess::ReadWrite))?;
+    unsafe { userd_block.zero()? };
     // The GPFIFO is addressed by VA in the channel's vspace, so it has to be
     // mapped there before the channel can use it.
     const GPFIFO_SLOT: u64 = 0x8000;
@@ -455,7 +459,7 @@ fn rm_channel<M: Memory>(
     // vspace and would otherwise fail the allocation with NO_MEMORY.
     // USERD (0x200) and RAMFC (0x200) are not page aligned inside the block, so
     // map the whole VRAM allocation page by page instead of per object.
-    if let Some(va) = va {
+    if let Some(va) = va.as_deref_mut() {
         let page = gmmu::PAGE as u64;
         let mut slot = INSTANCE;
         let mut offset = 0;
@@ -466,7 +470,8 @@ fn rm_channel<M: Memory>(
         }
     }
     let instance = rm::memory_desc(vram, INSTANCE, 2, 1);
-    let userd = rm::memory_desc(vram + INSTANCE, USERD, 2, 1);
+    let userd =
+        rm::memory_desc(userd_block.iova + USERD * rm::CHANNEL_CID as u64, USERD, 1, 0);
     // RAMFC lives inside the instance block: nouveau passes the instance base
     // again instead of an offset past USERD.
     let ramfc = rm::memory_desc(vram, RAMFC, 2, 1);
@@ -493,7 +498,7 @@ fn rm_channel<M: Memory>(
         rm::CHANNEL_CID,
         vram,
         INSTANCE,
-        vram + INSTANCE,
+        userd_block.iova + USERD * rm::CHANNEL_CID as u64,
         USERD,
         vram,
         RAMFC,
@@ -524,7 +529,7 @@ fn rm_channel<M: Memory>(
         rm::HANDLE_CHANNEL,
         rm::HANDLE_CE,
         rm::AMPERE_DMA_COPY_B,
-        &[],
+        &rm::ce_params(rm::ENGINE_COPY0),
         libos,
         version,
         deadline,
@@ -533,7 +538,176 @@ fn rm_channel<M: Memory>(
         sel4::debug_println!("NVIDIA_CHANNEL_FAILED step=ce error={:?}", error);
         error
     })?;
+    // Bind the engine and allow scheduling: an allocated channel is inert until
+    // both controls have been acknowledged by RM.
+    let bind = rm::encode_ctrl(
+        rm.client,
+        rm::HANDLE_CHANNEL,
+        rm::CTRL_CHANNEL_BIND,
+        &rm::bind_params(rm::ENGINE_COPY0),
+    )?;
+    send(ctx, queue, rm::RM_CONTROL, &bind, deadline)?;
+    let reply = wait(ctx, queue, rm::RM_CONTROL, libos, version, deadline)?;
+    let packet = wire::Packet::decode(&reply)?;
+    rm::check_ctrl(
+        packet.payload,
+        rm::HANDLE_CHANNEL,
+        rm::CTRL_CHANNEL_BIND,
+        4,
+    )
+    .map_err(|error| {
+        sel4::debug_println!("NVIDIA_CHANNEL_FAILED step=bind error={:?}", error);
+        error
+    })?;
+    let schedule = rm::encode_ctrl(
+        rm.client,
+        rm::HANDLE_CHANNEL,
+        rm::CTRL_CHANNEL_GPFIFO_SCHEDULE,
+        &rm::schedule_params(true),
+    )?;
+    send(ctx, queue, rm::RM_CONTROL, &schedule, deadline)?;
+    let reply = wait(ctx, queue, rm::RM_CONTROL, libos, version, deadline)?;
+    let packet = wire::Packet::decode(&reply)?;
+    rm::check_ctrl(
+        packet.payload,
+        rm::HANDLE_CHANNEL,
+        rm::CTRL_CHANNEL_GPFIFO_SCHEDULE,
+        rm::schedule_params(true).len(),
+    )
+    .map_err(|error| {
+        sel4::debug_println!("NVIDIA_CHANNEL_FAILED step=schedule error={:?}", error);
+        error
+    })?;
+    sel4::debug_println!("NVIDIA_CHANNEL_BOUND engine={}", rm::ENGINE_COPY0);
+    let (source, destination, fence) =
+        ce_copy(ctx, queue, va, &mut gpfifo, &mut userd_block, libos, version, deadline)?;
+    sel4::debug_println!(
+        "NVIDIA_CE_COPY_OK source={:#x} destination={:#x} fence={:#x} bytes={}",
+        source,
+        destination,
+        fence,
+        CE_COPY_BYTES
+    );
     Ok((rm::CHANNEL_CID, gpfifo_va))
+}
+
+/// One fenced 4-KiB copy through the copy engine: build the pushbuffer, publish
+/// a GPFIFO entry, ring the channel and poll the fence the engine writes.
+const CE_COPY_BYTES: usize = 4096;
+const PUSH_SLOT: u64 = 0x9000;
+/// `NV_RAMUSERD_GP_PUT`, in dwords, inside the channel's USERD slot.
+const USERD_GP_PUT: usize = 0x8c;
+const USERD_GP_GET: usize = 0x88;
+
+fn ce_copy<M: Memory>(
+    ctx: &mut Ad106<Native>,
+    queue: &mut Queue<M>,
+    mut va: Option<&mut Va>,
+    gpfifo: &mut DmaBlock,
+    userd_block: &mut DmaBlock,
+    libos: Span,
+    version: u32,
+    deadline: u64,
+) -> Result<(u64, u64, u64)> {
+    // One allocation for source, destination, fence and pushbuffer: every DMA
+    // object costs two capability slots in devmgr, and the service CSpace is
+    // the scarce resource here, not memory.
+    const SRC: usize = 0;
+    const DST: usize = CE_COPY_BYTES;
+    const FENCE: usize = 2 * CE_COPY_BYTES;
+    const PUSH: usize = 3 * CE_COPY_BYTES;
+    let mut block = ctx.with_platform(|p| p.allocate(4 * CE_COPY_BYTES, DeviceAccess::ReadWrite))?;
+    let pattern: Vec<u8> = (0..CE_COPY_BYTES).map(|i| (i as u8) ^ 0x5a).collect();
+    unsafe {
+        block.zero()?;
+        block.initialize(SRC, &pattern)?;
+    }
+    // The pushbuffer is reached through the channel's page directory.
+    if let Some(va) = va.as_deref_mut() {
+        va.map_sys(PUSH_SLOT, block.iova + PUSH as u64)?;
+    }
+    let push_va = VA_BASE + PUSH_SLOT;
+    let mut words = Vec::new();
+    gsp_ce::encode_copy(
+        &gsp_ce::Copy {
+            source: block.iova + SRC as u64,
+            destination: block.iova + DST as u64,
+            bytes: CE_COPY_BYTES as u32,
+            fence: block.iova + FENCE as u64,
+        },
+        &mut words,
+    )?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(words.len() * 4).map_err(|_| Error::Exhausted)?;
+    for word in &words {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    unsafe { block.initialize(PUSH, &bytes)? };
+    let entry = gsp_ce::gpfifo_entry(push_va, words.len() as u32)?;
+    unsafe { gpfifo.initialize(0, &entry.to_le_bytes())? };
+    sel4::debug_println!(
+        "NVIDIA_CE_SUBMIT pushbuffer={:#x} dwords={} entry={:#x} source={:#x} destination={:#x} fence={:#x}",
+        push_va,
+        words.len(),
+        entry,
+        block.iova + SRC as u64,
+        block.iova + DST as u64,
+        block.iova + FENCE as u64
+    );
+    // Publish the entry: GP_PUT is one past the last submitted entry, and the
+    // USERD lives in system memory so a plain store is enough.
+    const USERD_SLOT: usize = 0x200;
+    let slot = USERD_SLOT * rm::CHANNEL_CID as usize;
+    unsafe {
+        userd_block
+            .pointer()
+            .as_ptr()
+            .add(slot + USERD_GP_PUT)
+            .cast::<u32>()
+            .write_volatile(1);
+    }
+    let (put, get) = unsafe {
+        let base = userd_block.pointer().as_ptr().add(slot);
+        (
+            base.add(USERD_GP_PUT).cast::<u32>().read_volatile(),
+            base.add(USERD_GP_GET).cast::<u32>().read_volatile(),
+        )
+    };
+    sel4::debug_println!("NVIDIA_CE_USERD put={} get={}", put, get);
+    // Ring the channel's doorbell: the FIFO only samples GP_PUT when its
+    // doorbell is written with (runlist << 16) | chid.
+    let doorbell: u32 = 0x00bb_0000 + 0x90;
+    ctx.with_platform(|p| {
+        p.write32(doorbell, rm::CHANNEL_CID)?;
+        Ok(())
+    })?;
+    sel4::debug_println!("NVIDIA_CE_DOORBELL offset={:#x} value={}", doorbell, rm::CHANNEL_CID);
+    // The engine writes the payload when the copy retires; a timeout here is a
+    // real failure, never a "probably fine".
+    loop {
+        let now = ctx.time_us()?;
+        if now >= deadline {
+            sel4::debug_println!("NVIDIA_CE_COPY_TIMEOUT");
+            return Err(Error::Timeout);
+        }
+        let word = unsafe {
+            (block.pointer().as_ptr().add(FENCE) as *const u32).read_volatile()
+        };
+        if word == gsp_ce::FENCE_PAYLOAD {
+            break;
+        }
+    }
+    let copied =
+        unsafe { core::slice::from_raw_parts(block.pointer().as_ptr().add(DST), CE_COPY_BYTES) };
+    if copied != pattern.as_slice() {
+        sel4::debug_println!("NVIDIA_CE_COPY_MISMATCH");
+        return Err(Error::Checksum);
+    }
+    Ok((
+        block.iova + SRC as u64,
+        block.iova + DST as u64,
+        block.iova + FENCE as u64,
+    ))
 }
 
 fn wait<M: Memory>(
@@ -911,6 +1085,47 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
             packet.header.transport_sequence,
             packet.header.rpc_sequence
         );
+        // Display first: it depends on nothing RM provides, and it is what the
+        // operator can see, so it must not sit behind a channel timeout.
+        match ctx.with_platform(|p| crate::display::probe(p, &prom)) {
+            Ok(report) => {
+                sel4::debug_println!(
+                    "NVIDIA_DISPLAY connector={} kind=dp aux={} pad={} dpcd={:02x?}",
+                    report.connector,
+                    report.aux_channel,
+                    report.pad,
+                    report.dpcd
+                );
+                sel4::debug_println!(
+                    "NVIDIA_MONITOR name={} manufacturer={} size={:?}x{:?}cm modes={}",
+                    report.monitor.name.as_deref().unwrap_or("unknown"),
+                    report.monitor.manufacturer.as_deref().unwrap_or("unknown"),
+                    report.monitor.width_cm,
+                    report.monitor.height_cm,
+                    report.monitor.modes.len()
+                );
+                for (index, mode) in report.monitor.modes.iter().enumerate() {
+                    sel4::debug_println!(
+                        "NVIDIA_MODE index={} {}x{}{} full={} preferred={} refresh_mhz={:?} clock_khz={:?} h={}/{:?}/{:?} v={}/{:?}/{:?}",
+                        index,
+                        mode.width,
+                        mode.height,
+                        if mode.interlaced { "i" } else { "p" },
+                        mode.pixel_clock_khz.is_some(),
+                        index == 0 && mode.pixel_clock_khz.is_some(),
+                        mode.refresh_mhz,
+                        mode.pixel_clock_khz,
+                        mode.h_front_porch,
+                        mode.h_sync,
+                        mode.h_back_porch,
+                        mode.v_front_porch,
+                        mode.v_sync,
+                        mode.v_back_porch
+                    );
+                }
+            }
+            Err(error) => sel4::debug_println!("NVIDIA_DISPLAY_FAILED error={:?}", error),
+        }
         horn_runtime::notify_ready(DEVICE_DRIVER_CAPS_READY_SLOT);
         // First RM client above the firmware: root -> device -> subdevice.
         // A failure here is reported but must not tear down a healthy GSP.
@@ -938,11 +1153,10 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                 ) {
                     Ok(va) => {
                         sel4::debug_println!(
-                            "NVIDIA_GMMU_READY va={:#x} root={:#x} vspace={:#x} source={:#x}",
+                            "NVIDIA_GMMU_READY va={:#x} root={:#x} vspace={:#x}",
                             va.base,
                             va.root,
-                            rm::HANDLE_VASPACE,
-                            va.source
+                            rm::HANDLE_VASPACE
                         );
                         Some(va)
                     }

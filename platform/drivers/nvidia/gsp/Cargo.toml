@@ -14,3 +14,4 @@ path = "src/bin/fwcheck.rs"
 required-features = ["host"]
 
 [dependencies]
+piaf = { version = "0.5.0", default-features = false, features = ["alloc"] }

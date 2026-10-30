@@ -156,6 +156,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "display-types"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9babf91a660bef635a411f90ea6d9cf8d1ff5d45f9adb1bd8cd4f7d64704d485"
+dependencies = [
+ "bitflags 2.13.2",
+]
+
+[[package]]
 name = "dlmalloc"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -349,6 +358,9 @@ version = "0.1.0"
 [[package]]
 name = "horn-nvidia-gsp"
 version = "0.1.0"
+dependencies = [
+ "piaf",
+]
 
 [[package]]
 name = "horn-nvidia-task"
@@ -672,6 +684,17 @@ checksum = "97e6cd2217057fa86b6eaa512917e58089d875b957a31e35e7ab729977e0a5f2"
 dependencies = [
  "psm",
  "stacker",
+]
+
+[[package]]
+name = "piaf"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bde3b9a256b797ee30d813e683bf5624f2a60048529557fff052576911ad5859"
+dependencies = [
+ "bitflags 2.13.2",
+ "display-types",
+ "thiserror",
 ]
 
 [[package]]

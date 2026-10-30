@@ -157,6 +157,32 @@ pub fn check_ctrl(body: &[u8], h_object: u32, cmd: u32, params_size: usize) -> R
     }
 }
 
+/// `NVA06F_CTRL_CMD_BIND` and `NVA06F_CTRL_CMD_GPFIFO_SCHEDULE`: after the
+/// channel object exists, RM must be told which engine to bind and that the
+/// GPFIFO may be scheduled. Without these two controls the channel is inert.
+pub const CTRL_CHANNEL_BIND: u32 = 0xa06f_0104;
+pub const CTRL_CHANNEL_GPFIFO_SCHEDULE: u32 = 0xa06f_0103;
+
+pub fn bind_params(engine_type: u32) -> [u8; 4] {
+    engine_type.to_le_bytes()
+}
+
+/// `NVA06F_CTRL_GPFIFO_SCHEDULE_PARAMS` is two `NvBool`s, and `NvBool` is
+/// `NvU8`, so the wire payload is two bytes; a wider payload is rejected as an
+/// invalid argument.
+pub fn schedule_params(enable: bool) -> [u8; 2] {
+    [u8::from(enable), 0]
+}
+
+/// `NVC0B5_ALLOCATION_PARAMETERS`: the copy-engine object carries a version and
+/// the engine instance it drives.
+pub fn ce_params(engine_type: u32) -> [u8; 8] {
+    let mut out = [0u8; 8];
+    out[0..4].copy_from_slice(&1u32.to_le_bytes());
+    out[4..8].copy_from_slice(&engine_type.to_le_bytes());
+    out
+}
+
 /// `NV2080_CTRL_CMD_FIFO_GET_DEVICE_INFO_TABLE`: the engine table tells which
 /// engines this GPU exposes and which runlist each one uses. The runlist id is
 /// assigned by RM, so it cannot be assumed.
