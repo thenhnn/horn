@@ -19,8 +19,8 @@ from horn_idl import (
     sel4,
 )
 from horn_process import *
-from horn_vm import *
 from horn_registry import *
+from horn_vm import *
 
 
 @enum(base=U32)

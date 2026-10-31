@@ -1,4 +1,9 @@
-{config, lib, pkgs, ...}: let
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
   linux = import ./. {
     pkgs = pkgs.pkgsBuildBuild;
     sources = import ../../nix/npins;
@@ -16,16 +21,28 @@ in {
     capset = "LinuxCaps";
     ram = 64 * 1024 * 1024;
     requires = {
-      console = {path = "/consoles"; select = "first";};
+      console = {
+        path = "/consoles";
+        select = "first";
+      };
       clock = {path = "/services/clock";};
     };
     objects.events = {
       kind = "Notification";
       bindings = {
         events.rights = 1;
-        user_signal = {badge = 1; rights = 2;};
-        clock_signal = {badge = 2; rights = 2;};
-        console_signal = {badge = 4; rights = 2;};
+        user_signal = {
+          badge = 1;
+          rights = 2;
+        };
+        clock_signal = {
+          badge = 2;
+          rights = 2;
+        };
+        console_signal = {
+          badge = 4;
+          rights = 2;
+        };
       };
     };
   };

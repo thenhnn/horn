@@ -12,14 +12,31 @@
     } ''llvm-objcopy --strip-debug ${package}/bin/${name}.elf "$out"'';
   idl = import ../../tools/idl {pkgs = pkgs.pkgsBuildBuild;};
   bootstrap = idl.capsets;
-  driverCatalog = pkgs.pkgsBuildBuild.writeText "horn-drivers.rs" (''      static DRIVERS: &[DriverConfig] = &[
-    ''
+  driverCatalog = pkgs.pkgsBuildBuild.writeText "horn-drivers.rs" ("static DRIVERS: &[DriverConfig] = &["
     + lib.concatMapStrings (d: let
       option = v:
         if v == null
         then "None"
         else "Some(${toString v})";
-    in ''      DriverConfig{clock:${lib.boolToString d.clock},name:${builtins.toJSON d.name},ram:${toString d.ram},dma:horn_devmgr::dma::DmaPolicy{bytes:${toString d.dmaBytes},objects:${toString d.dmaObjects}},namespace:${builtins.toJSON d.publish.namespace},badge:${toString d.publish.badge},rights:${toString d.publish.rights},elf:include_bytes!(${builtins.toJSON (toString d.elf)}),rule:horn_devmgr::matching::PciMatch{vendor:${option (d.pci.vendor or null)},device:${option (d.pci.device or null)},class:${toString (d.pci.class or 0)},class_mask:${toString (d.pci.classMask or 0)}}},
+    in ''
+      DriverConfig {
+        clock: ${lib.boolToString d.clock},
+        name: ${builtins.toJSON d.name},
+        ram: ${toString d.ram},
+        dma:horn_devmgr::dma::DmaPolicy{
+          bytes: ${toString d.dmaBytes},
+          objects: ${toString d.dmaObjects}},
+          namespace: ${builtins.toJSON d.publish.namespace},
+          badge: ${toString d.publish.badge},
+          rights: ${toString d.publish.rights},
+          elf: include_bytes!(${builtins.toJSON (toString d.elf)}),
+          rule: horn_devmgr::matching::PciMatch {
+            vendor: ${option (d.pci.vendor or null)},
+            device: ${option (d.pci.device or null)},
+            class: ${toString (d.pci.class or 0)},
+            class_mask: ${toString (d.pci.classMask or 0)}
+          }
+        },
     '')
     config.devmgr.drivers
     + "];\n");
@@ -82,7 +99,10 @@
       devmgr-demo-root = old: {
         features = (old.features or []) ++ lib.optional config.devmgr-demo.boot-tests "boot-tests";
         SUPERVISOR_ELF = "${runtimeElf childWorkspace.members.horn-supervisor-task "supervisor"}";
-        HORN_LARGE_IMAGES = if builtins.any (d: d.ram > 64 * 1024 * 1024) config.devmgr.drivers then "1" else "0";
+        HORN_LARGE_IMAGES =
+          if builtins.any (d: d.ram > 64 * 1024 * 1024) config.devmgr.drivers
+          then "1"
+          else "0";
         DEVMGR_TEST_VTD =
           if config.devmgr.drivers != []
           then "1"
@@ -102,7 +122,10 @@ in {
     type = lib.types.listOf (lib.types.submodule {
       options = {
         name = lib.mkOption {type = lib.types.str;};
-        clock = lib.mkOption {type = lib.types.bool; default = false;};
+        clock = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+        };
         elf = lib.mkOption {type = lib.types.path;};
         ram = lib.mkOption {type = lib.types.ints.positive;};
         dmaBytes = lib.mkOption {
@@ -234,7 +257,10 @@ in {
             rights = 15;
           };
         };
-        namespaces.clocks = {path = "/clocks"; minReady = 0;};
+        namespaces.clocks = {
+          path = "/clocks";
+          minReady = 0;
+        };
         publish = ["/consoles"] ++ lib.optional config.devmgr-demo.net "/net/ethernet";
         objects = {
           service = {

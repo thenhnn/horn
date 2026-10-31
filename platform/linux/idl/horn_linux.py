@@ -1,8 +1,10 @@
 """Private bootstrap for one hosted Linux vCPU."""
-from horn_idl import *
-from horn_process import *
+
 from horn_clock import *
 from horn_console import *
+from horn_idl import *
+from horn_process import *
+
 
 @capset(capacity=256)
 class LinuxCaps:

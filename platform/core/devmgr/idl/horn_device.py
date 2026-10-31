@@ -20,10 +20,10 @@ from horn_idl import (
     record,
     sel4,
 )
+from horn_registry import *
 
 # The collector needs imported object dependencies in this module's namespace.
 from horn_vm import *
-from horn_registry import *
 
 
 @enum(base=U32)
@@ -219,7 +219,10 @@ class DeviceControl:
     # Same bounds as bar_window, with independent acknowledged revocation.
     @method
     def map_bar_window(
-        self, index: U32, offset: U64, length: U64,
+        self,
+        index: U32,
+        offset: U64,
+        length: U64,
         space: Cap[VmAddressSpaceObject, Borrow],
     ) -> Result[Cap[DeviceMmioObject, Move], DeviceError]: ...
 
