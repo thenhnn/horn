@@ -421,6 +421,7 @@ dependencies = [
  "horn-procd",
  "horn-registry",
  "horn-runtime",
+ "owo-colors",
  "sel4",
 ]
 
@@ -632,6 +633,12 @@ checksum = "cbb10614a03e671fcbb7f1421656788f9a761aab44563b83b07140c354fa9334"
 dependencies = [
  "lock_api",
 ]
+
+[[package]]
+name = "owo-colors"
+version = "4.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c45bb4a6ae1280ec0803b1ef9d3455eb50f01efbbe1447ab020f1d54fba9d8"
 
 [[package]]
 name = "pest"

@@ -1,13 +1,26 @@
-//! Monotonic time and bounded independent one-shot alarms; no periodic tick.
 #![no_std]
 #![no_main]
+
 extern crate alloc;
+
 use alloc::vec::Vec;
-use horn_clock::{ClockPage, cycles, invariant_tsc, protocol::*};
+use horn_clock::{
+    TimeManager,
+    protocol::*,
+    x86_64::{TscClockPage, TscTimeManager, cycles, invariant_tsc},
+};
 use horn_ipc::*;
 use horn_supervisor::client::{copy, mint};
+
 const SLOTS: TaskSlots = TaskSlots::new(TIMER_CAPS_FIRST_FREE_SLOT, TIMER_CAPS_SIZE_BITS);
-horn_runtime::task!(main,vm:horn_runtime::VmBootstrap{cnode:TIMER_CAPS_SELF_SLOT,factory:TIMER_CAPS_VM_SLOT,address_space:TIMER_CAPS_ADDRESS_SPACE_SLOT,slots:SLOTS});
+
+horn_runtime::task!(main, vm:horn_runtime::VmBootstrap{
+  cnode: TIMER_CAPS_SELF_SLOT,
+  factory: TIMER_CAPS_VM_SLOT,
+  address_space: TIMER_CAPS_ADDRESS_SPACE_SLOT,
+  slots: SLOTS
+});
+
 type Io = Sel4Transport<Sel4CapSpace>;
 fn root() -> sel4::cap::CNode {
     sel4::cap::CNode::from_bits(TIMER_CAPS_SELF_SLOT as _)
@@ -20,22 +33,22 @@ fn hardware_now(io: &mut Io) -> u64 {
         .source_now()
         .unwrap()
 }
+
 struct Alarm {
     deadline: Option<u64>,
     signal: Option<Cap<Notification>>,
     _anchor: Cap<Endpoint>,
 }
+
 struct Service {
     io: Io,
-    page: ClockPage,
+    page: TscClockPage,
     alarms: Vec<Alarm>,
     programmed: Option<u64>,
 }
 impl Service {
     fn now(&mut self) -> u64 {
-        self.page
-            .fast_now()
-            .unwrap_or_else(|| hardware_now(&mut self.io))
+        TscTimeManager::now(&self.page).unwrap_or_else(|| hardware_now(&mut self.io))
     }
     fn pump(&mut self) {
         let now = self.now();
@@ -97,7 +110,6 @@ impl ClockInterface for Caller<'_> {
         }
         let c = self.service.page;
         Ok(ClockCalibration {
-            version: c.version,
             flags: c.flags,
             base_cycles: c.base_cycles,
             base_us: c.base_us,
@@ -167,8 +179,8 @@ fn main() -> ! {
     let t1 = cycles();
     let end = hardware_now(&mut io);
     assert!(end > start && t1 > t0);
-    let page = ClockPage {
-        version: 1,
+    let page = TscClockPage {
+        abi: 1,
         // Invariant TSC alone does not establish cross-CPU synchronization.
         // Every client uses the hardware/RPC domain until that is validated.
         flags: (placement.cpu_count == 1 && invariant_tsc()) as u64,

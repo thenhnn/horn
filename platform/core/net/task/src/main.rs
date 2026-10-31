@@ -5,7 +5,7 @@ extern crate alloc;
 mod ethernet;
 mod tcp;
 use alloc::vec;
-use horn_clock::{ClockPage, protocol as c};
+use horn_clock::{DefaultTimeManager, DefaultTimePage, TimeManager, protocol as c};
 use horn_ipc::*;
 use horn_net::protocol::*;
 use horn_vm::protocol as v;
@@ -25,18 +25,17 @@ fn cap<T: CapType>(slot: u32) -> Cap<T> {
     horn_runtime::bootstrap_cap(root(), slot)
 }
 struct Time {
-    page: *const ClockPage,
+    page: *const DefaultTimePage,
     _memory: Cap<v::VmMemoryObjectTag>,
     _region: Cap<v::VmRegionObjectTag>,
 }
 impl Time {
     fn new(io: &mut Io) -> Self {
-        let page = ClockPage::from(
+        let page = DefaultTimePage::from(
             c::ClockInterfaceClient::new(&mut *io, cap(NETD_CAPS_CLOCK_SLOT))
                 .calibration()
                 .unwrap(),
         );
-        assert!(page.version == 1 && page.flags & !1 == 0 && page.span_cycles != 0);
         let memory = v::VmFactoryClient::new(&mut *io, cap(NETD_CAPS_VM_SLOT))
             .allocate(4096, v::VmBacking::Resident, v::VmProtection(3))
             .unwrap();
@@ -72,7 +71,7 @@ impl Time {
             )
             .unwrap();
         unsafe {
-            (address as *mut ClockPage).write(page);
+            (address as *mut DefaultTimePage).write(page);
         }
         v::VmRegionClient::new(&mut *io, Cap::from_ref(writable.as_ref()))
             .destroy()
@@ -113,13 +112,13 @@ impl Time {
             )
             .unwrap();
         Self {
-            page: address as *const ClockPage,
+            page: address as *const DefaultTimePage,
             _memory: memory,
             _region: region,
         }
     }
     fn now(&self, io: &mut Io) -> u64 {
-        unsafe { &*self.page }.fast_now().unwrap_or_else(|| {
+        DefaultTimeManager::now(unsafe { &*self.page }).unwrap_or_else(|| {
             c::ClockInterfaceClient::new(io, cap(NETD_CAPS_CLOCK_SLOT))
                 .now()
                 .unwrap()

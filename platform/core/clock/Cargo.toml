@@ -8,4 +8,3 @@ horn-ipc = {path = "../../runtime/rust/horn-ipc"}
 
 [build-dependencies]
 horn-idl-build.workspace = true
-

@@ -28,7 +28,6 @@ class ClockSource:
 
 @record
 class ClockCalibration:
-    version: U64
     flags: U64
     base_cycles: U64
     base_us: U64

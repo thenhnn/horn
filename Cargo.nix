@@ -1626,6 +1626,10 @@ rec {
             packageId = "horn-runtime";
           }
           {
+            name = "owo-colors";
+            packageId = "owo-colors";
+          }
+          {
             name = "sel4";
             packageId = "sel4";
           }
@@ -2296,6 +2300,20 @@ rec {
           }
         ];
 
+      };
+      "owo-colors" = rec {
+        crateName = "owo-colors";
+        version = "4.4.0";
+        edition = "2021";
+        sha256 = "1n59zda1s3q2md3i9gpv3vq51ssm6jfyzc8313n804mflss5pi0k";
+        libName = "owo_colors";
+        authors = [
+          "jam1garner <8260240+jam1garner@users.noreply.github.com>"
+        ];
+        features = {
+          "supports-color" = [ "dep:supports-color" ];
+          "supports-colors" = [ "dep:supports-color-2" "supports-color" ];
+        };
       };
       "pest" = rec {
         crateName = "pest";

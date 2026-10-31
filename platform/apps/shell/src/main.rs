@@ -1,12 +1,15 @@
 //! Tiny native console shell. No POSIX, login, process-launch or device control.
 #![no_std]
 #![no_main]
+
 use core::fmt::{self, Write};
 use horn_console::protocol as c;
 use horn_devmgr::protocol as d;
 use horn_ipc::*;
 use horn_procd::protocol as p;
 use horn_shell::protocol as a;
+use owo_colors::OwoColorize;
+
 const SLOTS: TaskSlots = TaskSlots::new(a::SHELL_CAPS_FIRST_FREE_SLOT, a::SHELL_CAPS_SIZE_BITS);
 horn_runtime::task!(main,vm:horn_runtime::VmBootstrap{
     cnode:a::SHELL_CAPS_SELF_SLOT,factory:a::SHELL_CAPS_VM_SLOT,
@@ -237,7 +240,8 @@ fn main() -> ! {
         output: [0; 256],
         output_len: 0,
     };
-    shell.bytes(b"\x1b[1;36mHorn v0.1 started\x1b[0m\r\n$ ");
+    write!(shell, "{}", "Horn development shell\r\n".blue());
+    shell.bytes(b"$ ");
     shell.flush();
     horn_runtime::notify_ready(a::SHELL_CAPS_READY_SLOT);
     let mut line = [0u8; 256];
