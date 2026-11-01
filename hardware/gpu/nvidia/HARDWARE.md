@@ -139,3 +139,21 @@ modeset. RM rounded the backing allocation to 64 KiB while accepting a 4-KiB
 ring. The run changed root parameters, the display subdevice and ring size
 together; it does not identify which change resolved INVALID_OFFSET.
 No window/cursor or compute requests were attempted in this run.
+
+
+## Operator follow-up — core NOP and UPDATE prefixes consumed
+
+The ordinary module, using a 4-KiB coherent sysmem ring at IOVA 0x3dc3000,
+allocated the core with the same 120-byte roots and display subdevice:
+
+```
+NVIDIA_DISPLAY_CORE_REGS put_raw=0x0 get_raw=0x0
+NVIDIA_DISPLAY_CORE_SUBMIT kind=nop put=4 put_raw=0x10
+NVIDIA_DISPLAY_CORE_FETCHED kind=nop put=4 get=4 notifier=disabled
+NVIDIA_DISPLAY_CORE_SUBMIT kind=update put=11 put_raw=0x2c
+NVIDIA_DISPLAY_CORE_FETCHED kind=update put=11 get=11 notifier=disabled
+```
+
+This confirms consumption through the coherent DMA path and legacy MMIO
+byte-pointer encoding. It does not confirm UPDATE completion, notifier writes,
+link training, scanout or a visible image.

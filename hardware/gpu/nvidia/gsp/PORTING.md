@@ -108,10 +108,9 @@ header field additions. NvP64 fields are opaque address bits, never dereferenced
 The SDK root parameters are **120 bytes** (including pOsPidInfo); the separate
 `ALLOC_ROOT` RPC's `rpc_alloc_root_v07_00` is **108 bytes**. Do not assume that
 the latter is the parameter type for generic `GSP_RM_ALLOC`. Nouveau r570 uses
-the SDK type there. Typed `Root` preserves Horn's earlier accepted request for
-comparison; `Root570` uses the SDK type in the opt-in
-[display core experiment](../DISPLAY-EXPERIMENT.md). Its hardware result is
-still unproven.
+the SDK type there. Typed `Root` now unconditionally uses that SDK type;
+the operator's [core allocation run](../HARDWARE.md) accepted it for both
+clients. The old 108-byte recipe is removed.
 
 `rm::Client` binds class/command IDs to generated parameter types using small
 mapping macros. It owns no GPU backing and adds no capability authority. The

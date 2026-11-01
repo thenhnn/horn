@@ -20,7 +20,7 @@ pub use raw::{NV01_DEVICE_0, NV01_ROOT, NV20_SUBDEVICE_0};
 
 const HEADER: usize = size_of::<raw::rpc_gsp_rm_alloc_v03_00>();
 const CTRL_HEADER: usize = size_of::<raw::rpc_gsp_rm_control_v03_00>();
-const ROOT_PARAMS: usize = size_of::<raw::rpc_alloc_root_v07_00>();
+const ROOT_PARAMS: usize = size_of::<raw::NV0000_ALLOC_PARAMETERS>();
 const DEVICE_PARAMS: usize = size_of::<raw::NV0080_ALLOC_PARAMETERS>();
 const SUBDEVICE_PARAMS: usize = size_of::<raw::NV2080_ALLOC_PARAMETERS>();
 
@@ -44,7 +44,7 @@ fn check_status(status: u32) -> Result<()> {
     }
 }
 pub fn root_params(h_client: u32) -> [u8; ROOT_PARAMS] {
-    fixed(raw::rpc_alloc_root_v07_00 {
+    fixed(raw::NV0000_ALLOC_PARAMETERS {
         hClient: h_client,
         processID: u32::MAX,
         ..Default::default()
@@ -205,10 +205,6 @@ pub fn disp_pushbuffer_params(
 /// `PBTARGETAPERTURE`: zero is `IOVA`; nouveau r570 explicitly uses
 /// `PHYS_NVM` for VRAM. This selection alone has not fixed channel allocation.
 pub const PB_APERTURE_PHYS_NVM: u32 = 1;
-/// `ChannelPBSize`: the earlier 64-KiB experiment's explicit ring size.
-/// Nouveau r570 instead leaves this field zero (4 KiB).
-pub const PB_SIZE_64KB: u32 = raw::ChannelPBSize_PB_SIZE_64KB;
-
 /// `GA102_DISP_CURSOR`: a PIO channel, allocated without a push buffer.
 pub const GA102_DISP_CURSOR: u32 = raw::NVC67A_CURSOR_IMM_CHANNEL_PIO;
 
@@ -235,7 +231,7 @@ pub fn disp_chan_dma_params(
         channelInstance: instance,
         hObjectBuffer: h_object_buffer,
         offset,
-        channelPBSize: raw::ChannelPBSize_PB_SIZE_64KB,
+        channelPBSize: raw::ChannelPBSize_PB_SIZE_4KB,
         subDeviceId: 1,
         ..Default::default()
     })
@@ -397,7 +393,10 @@ mod tests {
         let body = encode(0, 0, 0x1000, NV01_ROOT, &root_params(0x1000)).unwrap();
         assert_eq!(body.len(), HEADER + ROOT_PARAMS);
         assert_eq!(u32::from_le_bytes(body[8..12].try_into().unwrap()), 0x1000);
-        assert_eq!(u32::from_le_bytes(body[20..24].try_into().unwrap()), 108);
+        assert_eq!(
+            u32::from_le_bytes(body[20..24].try_into().unwrap()),
+            ROOT_PARAMS as u32
+        );
 
         let device = device_params(0x1000);
         assert_eq!(u32::from_le_bytes(device[4..8].try_into().unwrap()), 0x1000);

@@ -17,6 +17,7 @@ pub mod raw {
 pub mod aux;
 pub mod boot;
 pub mod ce;
+pub mod display;
 pub mod dcb;
 pub mod edid;
 pub mod falcon;

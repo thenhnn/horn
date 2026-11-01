@@ -107,9 +107,11 @@ That is firmware bring-up only: MSI/GIN delivery, STOP/unload, repeat boots and
 everything above the GSP (RM clients, GPU memory, channels) are still unproven.
 A build or a parser success never substitutes for these markers.
 
-The opt-in [display core experiment](DISPLAY-EXPERIMENT.md) compares our
-channel setup with nouveau r570. `display-core.nix` selects its 4-KiB core-only
-probe; it has been built but has not yet run on the GPU.
+The [display core investigation](DISPLAY-EXPERIMENT.md) follows nouveau r570.
+The operator confirmed core allocation with the 120-byte root parameters,
+display subdevice and 4-KiB ring; these are now unconditional. The next probe
+submits NOPs and a notifier-disabled UPDATE through coherent sysmem, checking
+GET/PUT. That submission path is not yet hardware-validated or a modeset.
 
 `run-vfio.sh` rebuilds the kernel and root task, checks that the GPU and its
 audio sibling are already bound to `vfio-pci`, and launches QEMU with the GPU

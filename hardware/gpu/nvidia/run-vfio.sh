@@ -16,7 +16,6 @@
 #   AUDIO=0000:01:00.1   sibling function, checked but NOT passed
 #   MEM=1024             guest RAM in MiB
 #   CPUS=1               guest vCPUs
-#   MODULE=<path>        Nix module override (e.g. display-core.nix beside this script)
 #   PROFILE=pc-dev       seL4 profile
 #   QEMU=<path>          qemu-system-x86_64 override
 #   PRIV=<cmd>           elevation command for QEMU only (default: doas, then sudo)
@@ -24,7 +23,7 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
-module=${MODULE:-$repo_root/hardware/gpu/nvidia/module.nix}
+module="$repo_root/hardware/gpu/nvidia/module.nix"
 gpu=${GPU:-0000:01:00.0}
 audio=${AUDIO:-0000:01:00.1}
 mem=${MEM:-1024}

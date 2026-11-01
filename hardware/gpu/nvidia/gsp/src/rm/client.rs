@@ -32,11 +32,8 @@ macro_rules! control {
     )*};
 }
 alloc_class! {
-    // Preserve Horn's earlier accepted 108-byte recipe as a baseline. Nouveau
-    // r570 uses NV0000_ALLOC_PARAMETERS with GSP_RM_ALLOC, not ALLOC_ROOT's
-    // separate RPC structure. The opt-in display probe follows that recipe.
-    Root: raw::NV01_ROOT => raw::rpc_alloc_root_v07_00;
-    Root570: raw::NV01_ROOT => raw::NV0000_ALLOC_PARAMETERS;
+    // GSP_RM_ALLOC takes SDK class parameters, not ALLOC_ROOT's legacy RPC.
+    Root: raw::NV01_ROOT => raw::NV0000_ALLOC_PARAMETERS;
     Device: raw::NV01_DEVICE_0 => raw::NV0080_ALLOC_PARAMETERS;
     Subdevice: raw::NV20_SUBDEVICE_0 => raw::NV2080_ALLOC_PARAMETERS;
     Vram: raw::NV01_MEMORY_LOCAL_USER => raw::NV_MEMORY_ALLOCATION_PARAMS;

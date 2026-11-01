@@ -303,6 +303,15 @@ impl Native {
         self.events_enabled = true;
         Ok(())
     }
+    /// Clock waits can consume a wake notification while saving its IRQ badge.
+    /// Pollers must service that saved device IRQ before returning to recv.
+    pub fn service_pending_gsp_event(&mut self) -> Result<()> {
+        self.healthy()?;
+        if self.time.take_irq() {
+            self.service_gsp_event()?;
+        }
+        Ok(())
+    }
     pub fn service_gsp_event(&mut self) -> Result<horn_nvidia_gsp::gin::Report> {
         self.healthy()?;
         if !self.events_enabled {

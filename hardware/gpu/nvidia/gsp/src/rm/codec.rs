@@ -145,11 +145,6 @@ fields!(NV0000_ALLOC_PARAMETERS {
     processName,
     pOsPidInfo
 });
-fields!(rpc_alloc_root_v07_00 {
-    hClient,
-    processID,
-    processName
-});
 fields!(NV0080_ALLOC_PARAMETERS {
     deviceId,
     hClientShare,

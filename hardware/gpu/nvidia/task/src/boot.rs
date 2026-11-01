@@ -11,7 +11,6 @@ use alloc::{vec, vec::Vec};
 use horn_devmgr::protocol::*;
 use horn_driver::{DeviceAccess, DeviceSession};
 use horn_ipc::*;
-use horn_nvidia_gsp::ce as gsp_ce;
 use horn_nvidia_gsp::{
     Error, FirmwareStatus, Result,
     boot::{self, PAGE, Span},
@@ -24,6 +23,7 @@ use horn_nvidia_gsp::{
     vbios::{Command, Fwsec},
     wire,
 };
+use horn_nvidia_gsp::{ce as gsp_ce, display as gsp_disp};
 mod images {
     include!(concat!(env!("OUT_DIR"), "/images.rs"));
 }
@@ -118,36 +118,15 @@ fn rm_root<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
     api: &mut rm::Client<T>,
     client: u32,
 ) -> Result<()> {
-    sel4::debug_println!(
-        "NVIDIA_RM_ROOT_INPUT client={:#x} params_bytes={}",
+    api.alloc::<api::Root>(
         client,
-        if cfg!(display_core_only) {
-            core::mem::size_of::<raw::NV0000_ALLOC_PARAMETERS>()
-        } else {
-            core::mem::size_of::<raw::rpc_alloc_root_v07_00>()
-        }
-    );
-    if cfg!(display_core_only) {
-        api.alloc::<api::Root570>(
-            client,
-            client,
-            &raw::NV0000_ALLOC_PARAMETERS {
-                hClient: client,
-                processID: u32::MAX,
-                ..Default::default()
-            },
-        )?;
-    } else {
-        api.alloc::<api::Root>(
-            client,
-            client,
-            &raw::rpc_alloc_root_v07_00 {
-                hClient: client,
-                processID: u32::MAX,
-                ..Default::default()
-            },
-        )?;
-    }
+        client,
+        &raw::NV0000_ALLOC_PARAMETERS {
+            hClient: client,
+            processID: u32::MAX,
+            ..Default::default()
+        },
+    )?;
     Ok(())
 }
 
@@ -603,20 +582,9 @@ const HANDLE_DISP_CLIENT: u32 = 0xc2d0_0000;
 const HANDLE_DISP_DEVICE: u32 = 0xde2d_0000;
 const HANDLE_DISP_SUBDEVICE: u32 = 0x5d2d_0000;
 const HANDLE_DISP_INST: u32 = 0x0041_0000;
-const HANDLE_DISP_CORE_PB: u32 = 0x0042_0000;
-const HANDLE_DISP_WINDOW_PB: u32 = 0x0043_0000;
-/// The opt-in reference probe uses nouveau's 4-KiB pushbuffer and default ring
-/// size. Keep the earlier 64-KiB recipe available as a baseline.
-const DISP_PB_BYTES: u64 = if cfg!(display_core_only) {
-    0x1000
-} else {
-    0x1_0000
-};
-const DISP_PB_SIZE: u32 = if cfg!(display_core_only) {
-    raw::ChannelPBSize_PB_SIZE_4KB
-} else {
-    raw::ChannelPBSize_PB_SIZE_64KB
-};
+/// Nouveau's Ada path normally uses a 4-KiB coherent system-memory ring.
+const DISP_PB_BYTES: u64 = 0x1000;
+const DISP_PB_SIZE: u32 = raw::ChannelPBSize_PB_SIZE_4KB;
 const DISP_INST_BYTES: u64 = 0x1_0000;
 
 fn rm_disp<M: Memory>(
@@ -627,28 +595,35 @@ fn rm_disp<M: Memory>(
     version: u32,
     deadline: u64,
 ) -> Result<()> {
-    if cfg!(display_core_only) {
-        sel4::debug_println!("NVIDIA_DISPLAY_EXPERIMENT recipe=nouveau-r570-core");
+    let mut core_pb =
+        ctx.with_platform(|p| p.allocate(DISP_PB_BYTES as usize, DeviceAccess::Read))?;
+    // Fully initialize before publication. Never rewrite GPU-visible words,
+    // including after a timeout; the session retains this DMA allocation.
+    unsafe {
+        core_pb.zero()?;
+        for (index, word) in gsp_disp::probe_words()?.iter().enumerate() {
+            core_pb.write32(index * 4, *word)?;
+        }
     }
-    let mut api = rm_api(ctx, queue, HANDLE_DISP_CLIENT, libos, version, deadline);
-    rm_root(&mut api, HANDLE_DISP_CLIENT)?;
-    api.alloc::<api::Device>(
-        HANDLE_DISP_CLIENT,
-        HANDLE_DISP_DEVICE,
-        &raw::NV0080_ALLOC_PARAMETERS {
-            hClientShare: HANDLE_DISP_CLIENT,
-            ..Default::default()
-        },
-    )?;
-    sel4::debug_println!(
-        "NVIDIA_DISPLAY_RM step=client handle={:#x} device={:#x}",
-        HANDLE_DISP_CLIENT,
-        HANDLE_DISP_DEVICE
-    );
+    {
+        let mut api = rm_api(ctx, queue, HANDLE_DISP_CLIENT, libos, version, deadline);
+        rm_root(&mut api, HANDLE_DISP_CLIENT)?;
+        api.alloc::<api::Device>(
+            HANDLE_DISP_CLIENT,
+            HANDLE_DISP_DEVICE,
+            &raw::NV0080_ALLOC_PARAMETERS {
+                hClientShare: HANDLE_DISP_CLIENT,
+                ..Default::default()
+            },
+        )?;
+        sel4::debug_println!(
+            "NVIDIA_DISPLAY_RM step=client handle={:#x} device={:#x}",
+            HANDLE_DISP_CLIENT,
+            HANDLE_DISP_DEVICE
+        );
 
-    if cfg!(display_core_only) {
-        // nvkm_gsp_client_device_ctor creates this even though the display
-        // controls below deliberately use the internal client's subdevice.
+        // Nouveau creates this even though display controls use the internal
+        // client's subdevice. Keep the hardware-validated object tree.
         api.alloc::<api::Subdevice>(
             HANDLE_DISP_DEVICE,
             HANDLE_DISP_SUBDEVICE,
@@ -658,67 +633,64 @@ fn rm_disp<M: Memory>(
             "NVIDIA_DISPLAY_RM step=subdevice handle={:#x}",
             HANDLE_DISP_SUBDEVICE
         );
-    }
-    let instance = display_memory(&mut api, HANDLE_DISP_INST, DISP_INST_BYTES)?;
-    api.for_client(rm.client).control::<api::DisplayInstMem>(
-        rm.subdevice,
-        &raw::NV2080_CTRL_INTERNAL_DISPLAY_WRITE_INST_MEM_PARAMS {
-            instMemPhysAddr: instance,
-            instMemSize: DISP_INST_BYTES,
-            instMemAddrSpace: rm::DISP_INST_ADDR_SPACE,
-            instMemCpuCacheAttr: rm::DISP_INST_CACHE_ATTR,
-        },
-    )?;
-    sel4::debug_println!("NVIDIA_DISPLAY_RM step=inst-mem");
-    api.alloc::<api::DisplayCommon>(HANDLE_DISP_DEVICE, rm::HANDLE_DISP_COMMON, &())?;
-    sel4::debug_println!(
-        "NVIDIA_DISPLAY_RM step=common handle={:#x}",
-        rm::HANDLE_DISP_COMMON
-    );
-    let supported =
-        api.control::<api::DisplaySupported>(rm::HANDLE_DISP_COMMON, &Default::default())?;
-    sel4::debug_println!(
-        "NVIDIA_DISPLAY_RM step=supported mask={:#x}",
-        supported.displayMask
-    );
-    let info = api
-        .for_client(rm.client)
-        .control::<api::DisplayStaticInfo>(rm.subdevice, &Default::default())?;
-    sel4::debug_println!(
-        "NVIDIA_DISPLAY_RM step=static mask={:#x} windows={:#x} heads={} channels={}",
-        supported.displayMask,
-        info.windowPresentMask,
-        info.numHeads,
-        info.numDispChannels
-    );
-    api.alloc::<api::Display>(HANDLE_DISP_DEVICE, rm::HANDLE_DISP_ROOT, &())?;
-    sel4::debug_println!(
-        "NVIDIA_DISPLAY_RM step=root handle={:#x}",
-        rm::HANDLE_DISP_ROOT
-    );
+        let instance = display_memory(&mut api, HANDLE_DISP_INST, DISP_INST_BYTES)?;
+        api.for_client(rm.client).control::<api::DisplayInstMem>(
+            rm.subdevice,
+            &raw::NV2080_CTRL_INTERNAL_DISPLAY_WRITE_INST_MEM_PARAMS {
+                instMemPhysAddr: instance,
+                instMemSize: DISP_INST_BYTES,
+                instMemAddrSpace: rm::DISP_INST_ADDR_SPACE,
+                instMemCpuCacheAttr: rm::DISP_INST_CACHE_ATTR,
+            },
+        )?;
+        sel4::debug_println!("NVIDIA_DISPLAY_RM step=inst-mem");
+        api.alloc::<api::DisplayCommon>(HANDLE_DISP_DEVICE, rm::HANDLE_DISP_COMMON, &())?;
+        sel4::debug_println!(
+            "NVIDIA_DISPLAY_RM step=common handle={:#x}",
+            rm::HANDLE_DISP_COMMON
+        );
+        let supported =
+            api.control::<api::DisplaySupported>(rm::HANDLE_DISP_COMMON, &Default::default())?;
+        sel4::debug_println!(
+            "NVIDIA_DISPLAY_RM step=supported mask={:#x}",
+            supported.displayMask
+        );
+        let info = api
+            .for_client(rm.client)
+            .control::<api::DisplayStaticInfo>(rm.subdevice, &Default::default())?;
+        sel4::debug_println!(
+            "NVIDIA_DISPLAY_RM step=static mask={:#x} windows={:#x} heads={} channels={}",
+            supported.displayMask,
+            info.windowPresentMask,
+            info.numHeads,
+            info.numDispChannels
+        );
+        api.alloc::<api::Display>(HANDLE_DISP_DEVICE, rm::HANDLE_DISP_ROOT, &())?;
+        sel4::debug_println!(
+            "NVIDIA_DISPLAY_RM step=root handle={:#x}",
+            rm::HANDLE_DISP_ROOT
+        );
 
-    let core_pb = display_memory(&mut api, HANDLE_DISP_CORE_PB, DISP_PB_BYTES)?;
-    display_pushbuffer(&mut api, rm, rm::AD102_DISP_CORE_CHANNEL_DMA, core_pb)?;
-    let core_handle = rm::disp_chan_handle(rm::AD102_DISP_CORE_CHANNEL_DMA, 0);
-    sel4::debug_println!(
-        "NVIDIA_DISPLAY_CORE_INPUT client={:#x} parent={:#x} handle={:#x} pb={:#x} bytes={} size_class={} get_put=0 subdevices=1",
-        HANDLE_DISP_CLIENT,
-        rm::HANDLE_DISP_ROOT,
-        core_handle,
-        core_pb,
-        DISP_PB_BYTES,
-        DISP_PB_SIZE
-    );
-    let core = api.alloc::<api::DisplayCore>(
-        rm::HANDLE_DISP_ROOT,
-        core_handle,
-        &raw::NV50VAIO_CHANNELDMA_ALLOCATION_PARAMETERS {
-            channelPBSize: DISP_PB_SIZE,
-            subDeviceId: 1,
-            ..Default::default()
-        },
-    );
-    if cfg!(display_core_only) {
+        display_pushbuffer(&mut api, rm, core_pb.iova)?;
+        let core_handle = rm::disp_chan_handle(rm::AD102_DISP_CORE_CHANNEL_DMA, 0);
+        sel4::debug_println!(
+            "NVIDIA_DISPLAY_CORE_INPUT client={:#x} parent={:#x} handle={:#x} pb={:#x} bytes={} size_class={} get_put=0 subdevices=1 target=coherent-sysmem",
+            HANDLE_DISP_CLIENT,
+            rm::HANDLE_DISP_ROOT,
+            core_handle,
+            core_pb.iova,
+            DISP_PB_BYTES,
+            DISP_PB_SIZE
+        );
+        let core = api.alloc::<api::DisplayCore>(
+            rm::HANDLE_DISP_ROOT,
+            core_handle,
+            &raw::NV50VAIO_CHANNELDMA_ALLOCATION_PARAMETERS {
+                channelPBSize: DISP_PB_SIZE,
+                subDeviceId: 1,
+                ..Default::default()
+            },
+        );
         let reply = core.map_err(|error| {
             sel4::debug_println!("NVIDIA_DISPLAY_RM step=core error={:?}", error);
             error
@@ -730,54 +702,8 @@ fn rm_disp<M: Memory>(
             reply.channelPBSize,
             reply.subDeviceId
         );
-        // Allocation only: no methods submitted, no modeset/scanout claim.
-        return Ok(());
-    }
-    match core {
-        Ok(_) => sel4::debug_println!(
-            "NVIDIA_DISPLAY_RM step=core handle={:#x} pushbuffer={:#x}",
-            core_handle,
-            core_pb
-        ),
-        Err(error) => sel4::debug_println!(
-            "NVIDIA_DISPLAY_RM step=core error={:?} handle={:#x} pushbuffer={:#x}",
-            error,
-            core_handle,
-            core_pb
-        ),
-    }
-    let window_pb = display_memory(&mut api, HANDLE_DISP_WINDOW_PB, DISP_PB_BYTES)?;
-    display_pushbuffer(&mut api, rm, rm::GA102_DISP_WINDOW_CHANNEL_DMA, window_pb)?;
-    let window_handle = rm::disp_chan_handle(rm::GA102_DISP_WINDOW_CHANNEL_DMA, 0);
-    let window = api.alloc::<api::DisplayWindow>(
-        rm::HANDLE_DISP_ROOT,
-        window_handle,
-        &raw::NV50VAIO_CHANNELDMA_ALLOCATION_PARAMETERS {
-            channelPBSize: raw::ChannelPBSize_PB_SIZE_64KB,
-            subDeviceId: 1,
-            ..Default::default()
-        },
-    );
-    match window {
-        Ok(_) => sel4::debug_println!(
-            "NVIDIA_DISPLAY_RM step=window handle={:#x} pushbuffer={:#x}",
-            window_handle,
-            window_pb
-        ),
-        Err(error) => sel4::debug_println!(
-            "NVIDIA_DISPLAY_RM step=window error={:?} handle={:#x} pushbuffer={:#x}",
-            error,
-            window_handle,
-            window_pb
-        ),
-    }
-    let cursor_handle = rm::disp_chan_handle(rm::GA102_DISP_CURSOR, 0);
-    match api.alloc::<api::DisplayCursor>(rm::HANDLE_DISP_ROOT, cursor_handle, &Default::default())
-    {
-        Ok(_) => sel4::debug_println!("NVIDIA_DISPLAY_RM step=cursor handle={:#x}", cursor_handle),
-        Err(error) => sel4::debug_println!("NVIDIA_DISPLAY_RM step=cursor error={:?}", error),
-    }
-    Ok(())
+    } // End the RPC client's exclusive transport borrow before direct submission.
+    core_submit(ctx, queue, libos, version, deadline)
 }
 
 /// Allocation policy stays here; the ABI and reply decoding live in the client.
@@ -811,25 +737,131 @@ fn display_memory<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
 fn display_pushbuffer<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
     api: &mut rm::Client<T>,
     rm: &Rm,
-    class: u32,
-    physical: u64,
+    iova: u64,
 ) -> Result<()> {
     api.for_client(rm.client)
         .control::<api::DisplayPushbuffer>(
             rm.subdevice,
             &raw::NV2080_CTRL_INTERNAL_DISPLAY_CHANNEL_PUSHBUFFER_PARAMS {
-                addressSpace: rm::DISP_ADDR_FBMEM,
-                physicalAddr: physical,
+                addressSpace: rm::DISP_ADDR_SYSMEM,
+                physicalAddr: iova,
                 limit: DISP_PB_BYTES - 1,
-                cacheSnoop: 0,
-                hclass: class,
+                cacheSnoop: 1,
+                hclass: rm::AD102_DISP_CORE_CHANNEL_DMA,
                 channelInstance: 0,
                 valid: 1,
-                pbTargetAperture: rm::PB_APERTURE_PHYS_NVM,
+                // Same PHYS_PCI_COHERENT selector used by nouveau r570.
+                pbTargetAperture: raw::NV_DMA_TARGET_NODE_PHYSICAL_PCI_COHERENT,
                 channelPBSize: DISP_PB_SIZE,
                 subDeviceId: 1,
             },
         )?;
+    Ok(())
+}
+
+/// Publish two preloaded prefixes without rewriting or recycling the live ring.
+/// GET advancement demonstrates consumption only, not UPDATE completion.
+fn core_submit<M: Memory>(
+    ctx: &mut Ad106<Native>,
+    queue: &mut Queue<M>,
+    libos: Span,
+    version: u32,
+    boot_deadline: u64,
+) -> Result<()> {
+    let deadline = ctx
+        .time_us()?
+        .checked_add(2_000_000)
+        .ok_or(Error::Range)?
+        .min(boot_deadline);
+    let read = |p: &mut Native| -> Result<(u32, u32)> {
+        Ok((
+            p.read32(gsp_disp::CORE_USER + gsp_disp::PUT)?,
+            p.read32(gsp_disp::CORE_USER + gsp_disp::GET)?,
+        ))
+    };
+    let (put, get) = ctx.with_platform(read)?;
+    sel4::debug_println!(
+        "NVIDIA_DISPLAY_CORE_REGS put_raw={:#x} get_raw={:#x}",
+        put,
+        get
+    );
+    if put != 0 || get != 0 {
+        return Err(Error::State); // no ring reset or guessed resume position
+    }
+    let mut previous = 0;
+    for (kind, target) in [("nop", gsp_disp::NOP_PUT), ("update", gsp_disp::UPDATE_PUT)] {
+        if ctx.time_us()? >= deadline {
+            return Err(Error::Timeout);
+        }
+        // x86 coherent DMA writes precede the MMIO PUT doorbell. Do not use
+        // BAR1 or a GPU VA for this sysmem ring; RM was given its scoped IOVA.
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        let value = gsp_disp::put_word(target)?;
+        ctx.with_platform(|p| p.write32(gsp_disp::CORE_USER + gsp_disp::PUT, value))?;
+        sel4::debug_println!(
+            "NVIDIA_DISPLAY_CORE_SUBMIT kind={} put={} put_raw={:#x}",
+            kind,
+            target,
+            value
+        );
+        loop {
+            ctx.with_platform(Native::service_pending_gsp_event)?;
+            // Service firmware events while polling, as in the RPC wait path.
+            // No synchronous RPC is outstanding during direct submission.
+            if let Some(bytes) = queue.try_receive()? {
+                let packet = wire::Packet::decode(&bytes)?;
+                if packet.header.function == wire::CPU_SEQUENCE {
+                    unsafe {
+                        ctx.run_sequence(packet.payload, libos, version, deadline)?;
+                    }
+                } else if wire::fatal_event(packet.header.function) {
+                    sel4::debug_println!(
+                        "NVIDIA_DISPLAY_CORE_FATAL event={:#x}",
+                        packet.header.function
+                    );
+                    return Err(Error::FirmwareStatus(FirmwareStatus(
+                        packet.header.function,
+                    )));
+                } else if packet.header.function < 4096 {
+                    return Err(Error::Malformed);
+                }
+            }
+            let (put, get_raw) = ctx.with_platform(read)?;
+            let get = gsp_disp::get_dwords(get_raw);
+            let now = ctx.time_us()?;
+            if put != value || get_raw == u32::MAX || get < previous || get > target {
+                sel4::debug_println!(
+                    "NVIDIA_DISPLAY_CORE_BAD_REGS kind={} put_raw={:#x} get_raw={:#x}",
+                    kind,
+                    put,
+                    get_raw
+                );
+                return Err(Error::State);
+            }
+            if now >= deadline {
+                sel4::debug_println!(
+                    "NVIDIA_DISPLAY_CORE_TIMEOUT kind={} put={} get={} put_raw={:#x} get_raw={:#x}",
+                    kind,
+                    target,
+                    get,
+                    put,
+                    get_raw
+                );
+                return Err(Error::Timeout);
+            }
+            if get == target {
+                sel4::debug_println!(
+                    "NVIDIA_DISPLAY_CORE_FETCHED kind={} put={} get={} notifier=disabled",
+                    kind,
+                    target,
+                    get
+                );
+                previous = get;
+                break;
+            }
+            ctx.sleep_until(now.saturating_add(1000).min(deadline))?;
+        }
+    }
     Ok(())
 }
 
@@ -1394,84 +1426,20 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                 );
                 // Display objects first: they are independent of the channel and
                 // their handles are what a mode set will be built on.
-                match rm_disp(
+                rm_disp(
                     &mut ctx,
                     &mut queue,
                     &rm,
                     inputs.libos,
                     inputs.app_version,
                     deadline,
-                ) {
-                    Ok(()) => {}
-                    Err(error) => {
-                        sel4::debug_println!("NVIDIA_DISPLAY_RM_FAILED error={:?}", error)
-                    }
-                }
-                if !cfg!(display_core_only) {
-                    let mut va = match gmmu_setup(
-                        &mut ctx,
-                        &mut queue,
-                        &rm,
-                        inputs.libos,
-                        inputs.app_version,
-                        deadline,
-                    ) {
-                        Ok(va) => {
-                            sel4::debug_println!(
-                                "NVIDIA_GMMU_READY va={:#x} root={:#x} vspace={:#x}",
-                                va.base,
-                                va.root,
-                                rm::HANDLE_VASPACE
-                            );
-                            Some(va)
-                        }
-                        Err(error) => {
-                            sel4::debug_println!("NVIDIA_GMMU_FAILED error={:?}", error);
-                            None
-                        }
-                    };
-                    match rm_vram(
-                        &mut ctx,
-                        &mut queue,
-                        &rm,
-                        inputs.libos,
-                        inputs.app_version,
-                        deadline,
-                    ) {
-                        Ok((offset, limit)) => {
-                            sel4::debug_println!(
-                                "NVIDIA_RM_VRAM_OK size={} offset={:#x} limit={:#x}",
-                                VRAM_BYTES,
-                                offset,
-                                limit
-                            );
-                            match rm_channel(
-                                &mut ctx,
-                                &mut queue,
-                                &rm,
-                                va.as_mut(),
-                                offset,
-                                inputs.libos,
-                                inputs.app_version,
-                                deadline,
-                            ) {
-                                Ok((cid, gpfifo)) => sel4::debug_println!(
-                                    "NVIDIA_CHANNEL_OK cid={} gpfifo={:#x}",
-                                    cid,
-                                    gpfifo
-                                ),
-                                Err(error) => {
-                                    sel4::debug_println!("NVIDIA_CHANNEL_FAILED error={:?}", error)
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            sel4::debug_println!("NVIDIA_RM_VRAM_FAILED error={:?}", error)
-                        }
-                    }
-                } else {
-                    sel4::debug_println!("NVIDIA_DISPLAY_EXPERIMENT_DONE compute=skipped");
-                }
+                )
+                .map_err(|error| {
+                    sel4::debug_println!("NVIDIA_DISPLAY_RM_FAILED error={:?}", error);
+                    error
+                })?;
+                // Compute/GMMU and window/cursor probes remain parked while
+                // validating the display core; no timeout-heavy CE side path.
             }
             Err(error) => sel4::debug_println!("NVIDIA_RM_FAILED error={:?}", error),
         }

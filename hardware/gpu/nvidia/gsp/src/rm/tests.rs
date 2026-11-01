@@ -27,8 +27,7 @@ fn generated_layout_and_padding_are_used() {
         raw::NV2080_CTRL_INTERNAL_DISPLAY_CHANNEL_PUSHBUFFER_PARAMS::read(&bytes[..55]).is_err()
     );
     assert_eq!(size_of::<raw::NV0000_ALLOC_PARAMETERS>(), 120);
-    assert_eq!(<Root as Alloc>::Params::SIZE, 108);
-    assert_eq!(<Root570 as Alloc>::Params::SIZE, 120);
+    assert_eq!(<Root as Alloc>::Params::SIZE, 120);
     let root = raw::NV0000_ALLOC_PARAMETERS {
         hClient: 7,
         processID: u32::MAX,

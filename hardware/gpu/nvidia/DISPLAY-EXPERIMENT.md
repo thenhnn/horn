@@ -1,112 +1,108 @@
-# Display core experiment — prepared, not hardware evidence
+# Display core: reference, allocation evidence and command probe
 
 ## Reference inspected
 
-Linux drm/rust/kernel `3497a403264b094ebd61b8b755165d56e7d9dc37`
-(the same checkout used for the original Nova boot adaptation). These are
-source observations, not a trace captured from a running nouveau driver.
-
-Paths relative to `drivers/gpu/` in that revision:
+Linux drm/rust/kernel `3497a403264b094ebd61b8b755165d56e7d9dc37`, the same
+checkout used for the original Nova adaptation. These are source observations,
+not a trace captured from a running nouveau driver. Paths below are relative
+to `drivers/gpu/` in that revision:
 
 - `drm/nouveau/nvkm/subdev/gsp/rm/r570/disp.c`:
-  `r570_disp_chan_set_pushbuf`, `r570_dmac_alloc`, `r570_disp` dispatch table.
+  `r570_disp_chan_set_pushbuf`, `r570_dmac_alloc`, `r570_disp` dispatch.
 - `drm/nouveau/nvkm/subdev/gsp/rm/r535/disp.c`:
-  `r535_disp_oneinit`, `r535_disp_init`, `r535_dmac_init`, `r535_curs_init`.
-  r570 reuses the surrounding lifecycle while overriding the channel wire API.
-- `drm/nouveau/nvkm/subdev/gsp/rm/r535/device.c`:
-  `r535_gsp_device_ctor` creates a subdevice after the device.
-- `drm/nouveau/nvkm/subdev/gsp/rm/ad10x.c`: AD102 display/core class selection
-  (`0xc770`, `0xc77d`), matching Horn.
-- `drm/nouveau/dispnv50/disp.c`: `kmsChanPush` allocation is `0x1000` bytes.
-- `drm/nova/driver.rs`: render registration and GEM, no KMS setup in this
-  revision. No display/channel recipe was found in this revision's nova-core.
+  surrounding lifecycle, `r535_dmac_init`, `r535_curs_init`, `r535_chan_user`.
+- `drm/nouveau/nvkm/subdev/gsp/rm/r535/device.c`: device constructor also
+  creates a subdevice, even though display controls use the internal client.
+- `drm/nouveau/nvkm/subdev/gsp/rm/r570/client.c`: generic `GSP_RM_ALLOC`
+  uses the 120-byte SDK root parameters, not the old `ALLOC_ROOT` RPC layout.
+- `drm/nouveau/nvkm/subdev/gsp/rm/ad10x.c`: classes `0xc770`, `0xc77d`.
+- `drm/nouveau/dispnv50/disp.c`: `nv50_dmac_create`, `nv50_dmac_kick`,
+  `nv50_dmac_free`; 4-KiB ring, coherent sysmem by default on Ada. Pascal's
+  automatic VRAM selection is a separate hardware workaround.
+- `drm/nouveau/dispnv50/corec57d.c`: full initial bounds/notifier setup.
+- `drm/nouveau/dispnv50/corec37d.c`: UPDATE sequence and notifier completion.
+- `drm/nouveau/include/nvif/pushc37b.h`: method packet encoding.
+- `drm/nova/driver.rs`: render/GEM registration, no KMS setup in this revision.
   This is not a statement about all newer Nova revisions.
 
-No reference source or generated C/Rust declarations are vendored here.
-Firmware and bindgen headers remain pinned at 570.144.
+No reference source or generated declarations are vendored here. The firmware
+and build-time bindgen headers remain pinned at 570.144.
 
-## What the comparison establishes
+## Allocation experiment: accepted on hardware
 
-| Step | nouveau r570 | Horn baseline |
-| --- | --- | --- |
-| Instance announcement | internal client/subdevice | same internal control routing |
-| Root parameters in generic alloc | 120-byte `NV0000_ALLOC_PARAMETERS` | 108-byte `rpc_alloc_root_v07_00` from the separate `ALLOC_ROOT` RPC |
-| Display object tree | separate client, device **and subdevice** | client and device only |
-| Pushbuffer announcement | internal client/subdevice | same internal control routing |
-| DMA alloc parent | display root in display client | same |
-| `hObjectBuffer` | zero | zero |
-| Initial `offset` | saved GET/PUT position; zero on initial creation | zero |
-| PB size / ring size class | 4 KiB / default zero | 64 KiB / explicit 64-KiB class |
-| Cursor preparation | pushbuffer control with `valid = 0`, then PIO alloc | no preceding control |
+The operator's trace in [HARDWARE.md](HARDWARE.md) confirms core allocation
+with all three changes together: 120-byte roots, a display subdevice, and a
+4-KiB ring. RM rounded the VRAM backing allocation to 64 KiB; the announced
+ring size and class were still 4 KiB. This does not isolate which change
+resolved INVALID_OFFSET. No commands were submitted in that run.
 
-Thus, using different clients for the controls and channel objects is **not**
-by itself a deviation from nouveau. Nor does `hObjectBuffer = 0` establish a
-missing context-DMA object in this path. `offset` is not the physical PB base.
-The cursor failure cannot yet be used as evidence against a PB-related issue:
-our cursor preparation was incomplete compared with nouveau.
+The successful recipe is now unconditional in `module.nix`. The experimental
+flag, separate module, 108-byte root variant and 64-KiB baseline are removed.
+Window/cursor and timeout-heavy compute bring-up remain parked.
 
-Other differences remain outside the first experiment: nouveau announces
-instance memory before constructing the display client; builds a RAMHT in it;
-performs additional DP/head/output/notification setup; and has a different
-memory manager. This experiment is not a byte-for-byte reproduction of the
-complete nouveau lifecycle.
+Two earlier suspicions were not deviations from nouveau: the internal-client
+routing of instance/PB controls, and zero `hObjectBuffer` in DMA allocation.
+The allocation `offset` is the initial GET/PUT position, not the physical PB
+base. Nouveau also sends a PB control with `valid = 0` before cursor PIO
+allocation; the old cursor failure therefore did not disprove a PB issue.
 
-## Opt-in experiment
+## Next probe: command fetch, not modeset
 
-`display-core.nix` enables `nvidia.display-core-only`; the normal `module.nix`
-keeps the previous recipe available as a baseline.
+The command probe changes the PB backing from VRAM to one accounted 4-KiB
+coherent sysmem allocation, following nouveau's Ada default. It never uses
+our untrusted BAR1 aperture. This new backing/submission path has **not** yet
+been exercised on hardware; the allocation-only result above was with VRAM.
 
-The experimental profile makes three functional changes before core allocation:
+Before publication the complete ring is zeroed and preloaded once. Then:
 
-1. Use the 120-byte SDK root parameters for both internal and display clients,
-   with `pOsPidInfo = NULL`, matching nouveau r570's generic alloc. Preserve the
-   108-byte recipe only in the baseline. Successful earlier root allocation does
-   not prove those parameter types are interchangeable.
-2. Create the display client's `NV20_SUBDEVICE_0`, as the nouveau device
-   constructor does. Controls still use the internal client's subdevice.
-3. Use a 4-KiB VRAM pushbuffer, `limit = 4095`, and the default 4-KiB size
-   class in both pushbuffer control and DMA allocation. Preserve zero initial
-   GET/PUT, zero `hObjectBuffer`, and `subDeviceId = BIT(0)`.
+1. Publish four NOP words and poll GET until it reaches that PUT.
+2. Publish the remaining words: disable notifier, clear cursor/window
+   interlocks, and UPDATE with normal handling / RELEASE_ELV, as in
+   `corec37d_update(..., ntfy=false)`.
+3. Poll GET again. Both stages share one absolute two-second deadline bounded
+   by the existing boot deadline. No ring wrap, rewriting, resetting, retry or
+   uncertain DMA release is attempted. Errors fail-stop the driver epoch.
 
-It stops the display probe on the first error or on successful core allocation.
-It does not attempt window/cursor allocation, GPU VA/GMMU or CE bring-up. The
-normal service/IRQ/STOP loop remains in place. There are no retries or frees of
-uncertain firmware-owned resources; existing shutdown/isolation policy applies.
-No methods are submitted and no mode or link is programmed.
+Method headers retain byte methods in bits 13:2; they are not method offsets
+shifted down to bit zero. Nouveau accesses BAR0 user PUT/GET with the legacy
+NV507C byte-pointer layout (11:2). The pinned SDK's NV917C definitions have
+that same register layout; bindgen computes their shifts/masks. Do not confuse
+this MMIO encoding with logical C77D class PUT/GET fields (9:0). BAR0 core
+base and the coherent PCI target selector come from the published display
+header. Method numbers and values come from `clc77d.h` through bindgen.
 
-This deliberately tests a small reference-derived recipe, **not one variable
-at a time**. Success would justify isolating which change matters; it would not
-prove the root format, missing subdevice or 64-KiB ring was individually the cause.
+Firmware queue events are serviced while polling, including fatal events and
+CPU sequencer requests. IRQ badges saved by clock waits are serviced with
+GIN acknowledgment before kernel ACK. The DMA mapping stays retained for the
+GPU epoch even after GET advances; GET does not prove the engine is finished
+with every side effect.
 
-## Operator procedure (only when the GPU is available)
+This is **not** the complete `corec57d_init`: it deliberately omits the
+notifier/context-DMA/RAMHT binding, window usage bounds and head assignment.
+No timing, surface, DP link, or scanout is programmed. GET advancement means
+command consumption, not successful UPDATE completion. A real notifier and
+subsequent modeset are separate milestones.
 
-The assistant has not detached, rebound, reset, or launched the host GPU.
-The operator performs host release separately. After both GPU functions have
-been assigned to vfio-pci by the operator:
+## Operator run
+
+Only the operator releases/rebinds the host GPU. Once both functions are
+available under vfio-pci, the ordinary command now runs this path:
 
 ```sh
-MODULE="$PWD/hardware/gpu/nvidia/display-core.nix" \
-  hardware/gpu/nvidia/run-vfio.sh
+hardware/gpu/nvidia/run-vfio.sh
 ```
 
-For the current typed-ABI baseline on a separate clean run, omit `MODULE`.
-Do not compare only with old pre-bindgen logs: the new baseline has not yet
-been exercised on hardware either. Do not automatically reboot/retry after a
-failure; STOP/unload and repeat-boot determinism remain unproven.
+Relevant serial markers:
 
-Relevant serial output:
+- `NVIDIA_DISPLAY_CORE_INPUT ... target=coherent-sysmem`: new PB path selected.
+- `NVIDIA_DISPLAY_CORE_ALLOC_OK`: allocation only.
+- `NVIDIA_DISPLAY_CORE_REGS`: untouched initial raw PUT/GET; nonzero state
+  fails instead of guessing a resume position.
+- `NVIDIA_DISPLAY_CORE_SUBMIT kind=nop|update`: logical PUT and raw MMIO value.
+- `NVIDIA_DISPLAY_CORE_FETCHED kind=nop|update`: GET reached that prefix,
+  with notifier disabled. **Not** a modeset/completion success marker.
+- `NVIDIA_DISPLAY_CORE_TIMEOUT`, `BAD_REGS`, `FATAL`: diagnostic before
+  fail-stop; backing is retained, not reused or freed speculatively.
 
-- `NVIDIA_RM_ROOT_INPUT` records the root parameter length, including for the
-  initial internal client before any display request.
-- `NVIDIA_DISPLAY_EXPERIMENT recipe=nouveau-r570-core` selects the display probe.
-- `NVIDIA_DISPLAY_RM step=subdevice` confirms that allocation succeeded.
-- `NVIDIA_DISPLAY_CORE_INPUT` records PB address, size class and selectors.
-- `NVIDIA_RM_RPC_FAIL` distinguishes an outer RPC rejection (including private
-  status) from an inner RM status reported at the display stage.
-- `NVIDIA_DISPLAY_CORE_ALLOC_OK` means **allocation only**, not channel
-  retirement, a modeset, scanout, or a visible image.
-- `NVIDIA_DISPLAY_RM_FAILED` is failure; `NVIDIA_DISPLAY_EXPERIMENT_DONE
-  compute=skipped` only means the probe has finished and compute was skipped.
-
-A successful build is not new hardware evidence. Record the actual run and
-exact failure stage in HARDWARE.md only after the operator's experiment.
+Builds/tests do not establish new hardware success. STOP/unload and repeated
+boots remain unproven; do not automatically reset/retry after failure.
