@@ -1399,7 +1399,7 @@ rec {
         crateName = "horn-nvidia";
         version = "0.1.0";
         edition = "2024";
-        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/drivers/nvidia; };
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./hardware/gpu/nvidia; };
         libName = "horn_nvidia";
 
       };
@@ -1414,7 +1414,7 @@ rec {
             requiredFeatures = [ "host" ];
           }
         ];
-        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/drivers/nvidia/gsp; };
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./hardware/gpu/nvidia/gsp; };
         libName = "horn_nvidia_gsp";
         dependencies = [
           {
@@ -1439,7 +1439,7 @@ rec {
             requiredFeatures = [ ];
           }
         ];
-        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/drivers/nvidia/task; };
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./hardware/gpu/nvidia/task; };
         dependencies = [
           {
             name = "horn-devmgr";

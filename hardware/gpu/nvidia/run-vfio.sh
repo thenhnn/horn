@@ -8,8 +8,8 @@
 # explicitly authorized host operation done by the operator.
 #
 # Usage:
-#   platform/drivers/nvidia/run-vfio.sh              # build + run
-#   DRY_RUN=1 platform/drivers/nvidia/run-vfio.sh    # build + print command
+#   hardware/gpu/nvidia/run-vfio.sh              # build + run
+#   DRY_RUN=1 hardware/gpu/nvidia/run-vfio.sh    # build + print command
 #
 # Environment:
 #   GPU=0000:01:00.0     GPU function passed to the guest
@@ -23,7 +23,7 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
-module="$repo_root/platform/drivers/nvidia/module.nix"
+module="$repo_root/hardware/gpu/nvidia/module.nix"
 gpu=${GPU:-0000:01:00.0}
 audio=${AUDIO:-0000:01:00.1}
 mem=${MEM:-1024}

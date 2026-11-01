@@ -51,7 +51,7 @@ The four register/deadline unit checks do not emulate firmware or RPC.
 
 ```sh
 nix-build nix -A nvidia.firmware --argstr profile pc-dev \
-  --arg modules '[ ./platform/drivers/nvidia/module.nix ]' --no-out-link
+  --arg modules '[ ./hardware/gpu/nvidia/module.nix ]' --no-out-link
 ```
 
 The build runs the native host checker against the **actual** five firmware
@@ -92,7 +92,7 @@ MMIO revocation/teardown before signaling STOPPED.
 Build kernel and root ELF (no GPU/host access performed):
 ```sh
 nix-build nix -A sel4.out -A root-task.package --argstr profile pc-dev \
-  --arg modules '[ ./platform/drivers/nvidia/module.nix ]' --no-out-link
+  --arg modules '[ ./hardware/gpu/nvidia/module.nix ]' --no-out-link
 ```
 
 **First hardware milestone reached:** on the physical board, passed through to
@@ -112,8 +112,8 @@ unbind/bind, no `driver_override`, no PCI reset. Binding the functions to
 `vfio-pci` stays a separate, explicitly authorized operator step.
 
 ```sh
-platform/drivers/nvidia/run-vfio.sh            # build + run, log under work/
-DRY_RUN=1 platform/drivers/nvidia/run-vfio.sh  # build + print the QEMU command
+hardware/gpu/nvidia/run-vfio.sh            # build + run, log under work/
+DRY_RUN=1 hardware/gpu/nvidia/run-vfio.sh  # build + print the QEMU command
 ```
 
 `host-gpu.sh` is the only script that changes host driver state, and it is
@@ -123,10 +123,10 @@ prompt only when explicitly requested. It never issues a PCI reset, never uses
 `rmmod -f`, and never touches ACS or IOMMU parameters.
 
 ```sh
-platform/drivers/nvidia/host-gpu.sh status            # read-only
-platform/drivers/nvidia/host-gpu.sh release --dry-run # show the plan
-platform/drivers/nvidia/host-gpu.sh release           # nvidia -> vfio-pci
-platform/drivers/nvidia/host-gpu.sh restore           # vfio-pci -> nvidia
+hardware/gpu/nvidia/host-gpu.sh status            # read-only
+hardware/gpu/nvidia/host-gpu.sh release --dry-run # show the plan
+hardware/gpu/nvidia/host-gpu.sh release           # nvidia -> vfio-pci
+hardware/gpu/nvidia/host-gpu.sh restore           # vfio-pci -> nvidia
 ```
 
 `release` stops the display manager and `nvidia-persistenced`, refuses to

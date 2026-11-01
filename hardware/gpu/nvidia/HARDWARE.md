@@ -112,5 +112,5 @@ Raw serial logs (gitignored, local to this checkout):
 - `work/evidence/gsp-boot-2026-10-30-b.log`
 - original runs under `work/nvidia-vfio-20261030-1830*/serial.log`
 
-Reproduce: `platform/drivers/nvidia/run-vfio.sh` with the GPU already bound to
-`vfio-pci` (`platform/drivers/nvidia/host-gpu.sh status`).
+Reproduce: `hardware/gpu/nvidia/run-vfio.sh` with the GPU already bound to
+`vfio-pci` (`hardware/gpu/nvidia/host-gpu.sh status`).

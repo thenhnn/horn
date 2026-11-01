@@ -9,7 +9,7 @@
     "horn_registry": "platform/core/registry/idl/horn_registry.py",
     "horn_clock": "platform/core/clock/idl/horn_clock.py",
     "horn_net": "platform/core/net/idl/horn_net.py",
-    "nvidia_probe": "platform/drivers/nvidia/task/idl/nvidia_probe.py",
+    "nvidia_probe": "hardware/gpu/nvidia/task/idl/nvidia_probe.py",
     "horn_linux": "platform/linux/idl/horn_linux.py",
     "horn_shell": "platform/apps/shell/idl/horn_shell.py",
     "idl_demo": "examples/idl/demo/schema.py",
