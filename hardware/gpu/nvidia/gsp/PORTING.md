@@ -125,3 +125,29 @@ migration covers the RM API, not every pre-boot ABI. Driver-owned page tables
 and FERMI_VASPACE_A remain the GPU VA model. Earlier context-DMA experiments used
 unverified RPC payloads; their failures do not prove that firmware lacks the
 corresponding operations.
+
+## Display notifier and preferred timing
+
+`src/display/instance.rs` follows nouveau `r535_dmac_bind`,
+`nvkm_ramht_hash/update`, `gv100_dmaobj_bind/new` and
+`ga102_disp.ramht_size`: an 8-KiB RAMHT at instance offset zero and a
+24-byte coherent/small-page DMA descriptor at offset 0x2000. The core channel
+user ID is zero. Binding uses the descriptor offset shifted by 9 and the
+display client's low 14 bits, not the internal client or a physical pointer.
+PRAMIN aperture handling follows Nova `mm/pramin.rs` and the TU102 HAL.
+Each write has a readback check; only the owned instance is accessed. The
+notifier is a retained, accounted ReadWrite DMA page; BAR1 is not used.
+
+The third preloaded core prefix follows `corec37d_update(ntfy=true)`.
+GET=PUT alone cannot satisfy it: the GPU-written notifier at offset zero must
+report FINISHED within the original bounded polling deadline. No notifier
+slot or ring space is reused. An operator run now confirms FINISHED status
+0x80000000 at GET=PUT=22 on the physical AD106; see ../HARDWARE.md.
+
+`src/display/timing.rs` translates exact DTD geometry to nouveau head timing
+coordinates and checks RGB8 sink bandwidth. `edid.rs` keeps piaf's source and
+sync interpretation but reads exact base-DTD vertical blanking: piaf's
+rounded refresh rate must not be used to reconstruct totals. Unknown totals,
+sync polarity, borders, interlace or insufficient bandwidth reject the
+preferred target instead of choosing a different mode. Source-cap/watermark
+checks, window setup, scanout and DP training remain pending.

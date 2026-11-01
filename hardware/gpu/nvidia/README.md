@@ -109,9 +109,11 @@ A build or a parser success never substitutes for these markers.
 
 The [display core investigation](DISPLAY-EXPERIMENT.md) follows nouveau r570.
 The operator confirmed core allocation with the 120-byte root parameters,
-display subdevice and 4-KiB ring; these are now unconditional. The next probe
-submits NOPs and a notifier-disabled UPDATE through coherent sysmem, checking
-GET/PUT. That submission path is not yet hardware-validated or a modeset.
+display subdevice and 4-KiB ring; these are now unconditional. A subsequent
+operator run confirmed NOP/UPDATE consumption through coherent sysmem (GET=PUT).
+The operator also confirmed the local RAMHT notifier prefix: FINISHED status
+0x80000000 at GET=PUT=22 establishes UPDATE completion. Exact preferred-DTD timing is preflighted, not programmed;
+there is still no modeset or scanout.
 
 `run-vfio.sh` rebuilds the kernel and root task, checks that the GPU and its
 audio sibling are already bound to `vfio-pci`, and launches QEMU with the GPU

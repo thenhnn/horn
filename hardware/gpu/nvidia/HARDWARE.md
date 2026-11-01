@@ -157,3 +157,21 @@ NVIDIA_DISPLAY_CORE_FETCHED kind=update put=11 get=11 notifier=disabled
 This confirms consumption through the coherent DMA path and legacy MMIO
 byte-pointer encoding. It does not confirm UPDATE completion, notifier writes,
 link training, scanout or a visible image.
+
+
+## Operator follow-up — core UPDATE completion through RAMHT notifier
+
+The ordinary module completed the new third prefix on the physical AD106:
+
+```
+NVIDIA_DISPLAY_RAMHT_OK instance=0x1ee5c0000 notifier=0x3dc3000 bytes=4096 handle=0x1000
+NVIDIA_DISPLAY_CORE_SUBMIT kind=notifier put=22 put_raw=0x58
+NVIDIA_DISPLAY_CORE_FETCHED kind=notifier put=22 get=22 notifier=enabled
+NVIDIA_DISPLAY_CORE_COMPLETE kind=update status=0x80000000 put=22 get=22
+```
+
+The preceding NOP and notifier-disabled UPDATE again reached GET=PUT at 4
+and 11. Status 0x80000000 is the published C77D notifier FINISHED value.
+This confirms the local RAMHT binding, coherent GPU notifier write and UPDATE
+completion path, not merely command consumption. It does not establish
+window setup, modeset, DP link training or visible scanout.

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! AD102 core DMA command probe, following nouveau's corec37d_update(ntfy=false).
-//! No notifier context, head/window assignment, timing, surface or link setup.
+//! The initial prefixes establish consumption; the third requests completion.
+pub mod instance;
+pub mod timing;
 use crate::{Error, Result, raw};
 
 /// r535_chan_user in nouveau maps the core class's user registers here.
@@ -52,9 +54,63 @@ pub fn probe_words() -> Result<[u32; PROBE_WORDS]> {
     ])
 }
 
+pub const NOTIFIER_PUT: u32 = UPDATE_PUT + 11;
+
+/// Append once before any publication. No live-ring rewriting or wraparound.
+pub fn notifier_words(handle: u32) -> Result<[u32; 11]> {
+    if handle == 0 {
+        return Err(Error::Range);
+    }
+    Ok([
+        header(raw::NVC77D_SET_CONTEXT_DMA_NOTIFIER, 1)?,
+        handle,
+        header(raw::NVC77D_SET_NOTIFIER_CONTROL, 1)?,
+        raw::HORN_NOTIFIER_ENABLED,
+        header(raw::NVC77D_SET_INTERLOCK_FLAGS, 2)?,
+        0,
+        0,
+        header(raw::NVC77D_UPDATE, 1)?,
+        raw::HORN_DISP_UPDATE,
+        header(raw::NVC77D_SET_NOTIFIER_CONTROL, 1)?,
+        raw::HORN_DISP_NOTIFIER_DISABLED,
+    ])
+}
+pub fn notifier_finished(word: u32) -> Result<bool> {
+    let status = (word >> raw::HORN_NOTIFIER_STATUS_SHIFT) & raw::HORN_NOTIFIER_STATUS_MASK;
+    match status {
+        raw::NV_DISP_NOTIFIER__0_STATUS_NOT_BEGUN | raw::NV_DISP_NOTIFIER__0_STATUS_BEGUN => {
+            Ok(false)
+        }
+        raw::NV_DISP_NOTIFIER__0_STATUS_FINISHED => Ok(true),
+        _ => Err(Error::State),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn notifier_is_enabled_only_for_one_update() {
+        let words = notifier_words(0x1000).unwrap();
+        assert_eq!(words[0], 0x0004_0208);
+        assert_eq!(words[1], 0x1000);
+        assert_eq!(words[10], 0);
+        assert!(!notifier_finished(0).unwrap());
+        assert!(
+            !notifier_finished(
+                raw::NV_DISP_NOTIFIER__0_STATUS_BEGUN << raw::HORN_NOTIFIER_STATUS_SHIFT
+            )
+            .unwrap()
+        );
+        assert!(
+            notifier_finished(
+                raw::NV_DISP_NOTIFIER__0_STATUS_FINISHED << raw::HORN_NOTIFIER_STATUS_SHIFT
+            )
+            .unwrap()
+        );
+        assert!(notifier_finished(u32::MAX).is_err());
+        assert!(notifier_words(0).is_err());
+    }
     #[test]
     fn headers_keep_byte_methods_and_bound_fields() {
         assert_eq!(header(0x218, 2).unwrap(), 0x0008_0218);

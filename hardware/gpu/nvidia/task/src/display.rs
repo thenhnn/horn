@@ -15,6 +15,8 @@ use crate::native::Native;
 /// What the probe learned, for the boot log.
 pub struct Report {
     pub connector: u8,
+    pub dcb_index: u8,
+    pub heads: u8,
     pub kind: u8,
     pub aux_channel: u8,
     pub pad: u8,
@@ -68,6 +70,8 @@ pub fn probe(native: &mut Native, vbios: &[u8]) -> Result<Report> {
             Ok((dpcd, monitor)) => {
                 return Ok(Report {
                     connector: output.connector,
+                    dcb_index: output.index,
+                    heads: output.heads,
                     kind: output.kind,
                     aux_channel,
                     pad,
@@ -88,7 +92,10 @@ pub fn probe(native: &mut Native, vbios: &[u8]) -> Result<Report> {
         }
     }
     if candidates == 0 {
-        sel4::debug_println!("NVIDIA_DISPLAY_STEP name=dcb outputs={}", table.outputs.len());
+        sel4::debug_println!(
+            "NVIDIA_DISPLAY_STEP name=dcb outputs={}",
+            table.outputs.len()
+        );
         return Err(Error::Unsupported);
     }
     Err(first_error.unwrap_or(Error::Unavailable))

@@ -12,6 +12,7 @@
 /* Legacy user-register byte pointers, as used by nouveau's NV507C accessor. */
 #include <class/cl917c.h>
 #include <swref/published/disp/v03_00/dev_disp.h>
+#include <swref/published/maxwell/gm107/dev_bus.h>
 #include <class/clc0b5.h>
 #include <class/clc0b5sw.h>
 #include <class/clc56f.h>
@@ -20,9 +21,14 @@
 #include <class/clc770.h>
 #include <class/clc77d.h>
 #include <class/clc67e.h>
+#include <class/clc57e.h>
+#include <class/clc37e.h>
 #include <class/clc67a.h>
 #include <alloc/alloc_channel.h>
 #include <ctrl/ctrl0073/ctrl0073system.h>
+#include <ctrl/ctrl0073/ctrl0073specific.h>
+#include <ctrl/ctrl0073/ctrl0073dfp.h>
+#include <ctrl/ctrl0073/ctrl0073dp.h>
 #include <ctrl/ctrl0080/ctrl0080dma.h>
 #include <ctrl/ctrl2080/ctrl2080internal.h>
 #include <ctrl/ctrl2080/ctrl2080fifo.h>
@@ -34,6 +40,14 @@
 /* Evaluate NVIDIA's function-like/range macros with clang, not handwritten
  * Rust shifts. This adds no ABI declarations or copied field definitions. */
 enum {
+    HORN_PRAMIN_WINDOW = NV_PBUS_BAR0_WINDOW,
+    HORN_PRAMIN_TARGET_MASK = DRF_SHIFTMASK(NV_PBUS_BAR0_WINDOW_TARGET),
+    HORN_PRAMIN_BASE_MASK = DRF_MASK(NV_PBUS_BAR0_WINDOW_BASE),
+    HORN_PRAMIN_BASE_SHIFT = DRF_SHIFT(NV_PBUS_BAR0_WINDOW_BASE),
+    HORN_NOTIFIER_ENABLED = DRF_DEF(C77D, _SET_NOTIFIER_CONTROL, _MODE, _WRITE) |
+                            DRF_DEF(C77D, _SET_NOTIFIER_CONTROL, _NOTIFY, _ENABLE),
+    HORN_NOTIFIER_STATUS_SHIFT = DRF_SHIFT(NV_DISP_NOTIFIER__0_STATUS),
+    HORN_NOTIFIER_STATUS_MASK = DRF_MASK(NV_DISP_NOTIFIER__0_STATUS),
     HORN_VASPACE_EXTERNALLY_OWNED = NV_VASPACE_ALLOCATION_FLAGS_IS_EXTERNALLY_OWNED,
     HORN_CHANNEL_PRIVILEGED = DRF_DEF(OS04, _FLAGS, _PRIVILEGED_CHANNEL, _TRUE),
     HORN_CHANNEL_USERD_PAGE_FIXED = DRF_DEF(OS04, _FLAGS, _CHANNEL_USERD_INDEX_PAGE_FIXED, _TRUE),

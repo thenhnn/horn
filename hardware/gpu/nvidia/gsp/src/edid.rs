@@ -13,11 +13,15 @@ use crate::{Error, Result};
 
 /// One advertised mode, reduced to the numbers a mode set programs.
 ///
-/// The engine needs totals, and EDID states them implicitly: the crate gives the
-/// horizontal blanking and the porches, so the vertical total is derived from
-/// the pixel clock and the exact refresh rate instead of being guessed.
+/// Never recover vertical totals from the library's rounded refresh rate.
+/// For base-block DTDs, read the exact vertical blanking field after piaf has
+/// validated the EDID. The remaining timing interpretation stays with piaf.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mode {
+    pub preferred: bool,
+    pub has_border: bool,
+    pub h_sync_positive: Option<bool>,
+    pub v_sync_positive: Option<bool>,
     pub width: u16,
     pub height: u16,
     /// Refresh rate in millihertz, exact when the source stated it.
@@ -63,7 +67,7 @@ pub fn parse(bytes: &[u8]) -> Result<Monitor> {
         .try_reserve_exact(caps.supported_modes.len())
         .map_err(|_| Error::Exhausted)?;
     for mode in &caps.supported_modes {
-        let refresh_mhz = mode.refresh_rate.map(|rate| {
+        let mut refresh_mhz = mode.refresh_rate.map(|rate| {
             // Millihertz keeps 59.94 distinct from 60.
             u32::try_from(u64::from(rate.numer()) * 1000 / u64::from(rate.denom())).unwrap_or(0)
         });
@@ -71,20 +75,42 @@ pub fn parse(bytes: &[u8]) -> Result<Monitor> {
         let h_back_porch = mode
             .h_blank
             .map(|blank| blank.saturating_sub(mode.h_front_porch + mode.h_sync_width));
-        // refresh = pixel_clock / (h_total * v_total), so v_total follows from
-        // the exact rate; without either input it stays unknown.
-        let v_total = match (mode.pixel_clock_khz, h_total, mode.refresh_rate) {
-            (Some(clock), Some(htotal), Some(rate)) if htotal != 0 && rate.numer() != 0 => {
-                let numerator = u64::from(clock) * 1000 * u64::from(rate.denom());
-                let denominator = u64::from(htotal) * u64::from(rate.numer());
-                u16::try_from(numerator / denominator).ok()
+        let source = mode.source;
+        let preferred = bytes[24] & 2 != 0
+            && matches!(
+                source,
+                Some(piaf::model::capabilities::ModeSource::Dtd { block: 0, index: 0 })
+            );
+        let v_total = match source {
+            Some(piaf::model::capabilities::ModeSource::Dtd { block: 0, index }) if index < 4 => {
+                let at = 54 + usize::from(index) * 18;
+                let dtd = bytes.get(at..at + 18).ok_or(Error::Malformed)?;
+                let blank = u16::from(dtd[6]) | (u16::from(dtd[7] & 15) << 8);
+                mode.height.checked_add(blank)
             }
-            _ => None,
+            _ => None, // incomplete timing is metadata only, never a modeset fallback
+        };
+        if let (Some(clock), Some(ht), Some(vt)) = (mode.pixel_clock_khz, h_total, v_total) {
+            let denominator = u64::from(ht) * u64::from(vt);
+            refresh_mhz = (u64::from(clock) * 1_000_000)
+                .checked_div(denominator)
+                .and_then(|rate| u32::try_from(rate).ok());
+        }
+        let (h_sync_positive, v_sync_positive) = match mode.sync {
+            Some(piaf::model::SyncDefinition::DigitalSeparate {
+                h_sync_positive,
+                v_sync_positive,
+            }) => (Some(h_sync_positive), Some(v_sync_positive)),
+            _ => (None, None),
         };
         let v_back_porch = v_total.map(|total| {
             total.saturating_sub(mode.height + mode.v_front_porch + mode.v_sync_width)
         });
         modes.push(Mode {
+            preferred,
+            has_border: mode.h_border != 0 || mode.v_border != 0,
+            h_sync_positive,
+            v_sync_positive,
             width: mode.width,
             height: mode.height,
             refresh_mhz,
@@ -104,7 +130,7 @@ pub fn parse(bytes: &[u8]) -> Result<Monitor> {
     // EDID lists established and standard timings before the detailed ones, but
     // only a detailed timing carries a pixel clock and blanking, so only those
     // can be programmed. Put them first and keep the rest as a fallback.
-    modes.sort_by_key(|mode| mode.pixel_clock_khz.is_none());
+    modes.sort_by_key(|mode| (!mode.preferred, mode.pixel_clock_khz.is_none()));
 
     Ok(Monitor {
         name: caps.display_name.as_ref().map(|name| name.as_str().into()),
@@ -138,6 +164,7 @@ mod tests {
         block[21] = 52; // 52 cm
         block[22] = 29; // 29 cm
         block[23] = 120; // gamma 2.20
+        block[24] = 2; // first base DTD is preferred
         // Preferred detailed timing: 1920x1080@60, 148.5 MHz.
         let dtd = &mut block[54..72];
         dtd[0] = 0x02;
@@ -155,6 +182,7 @@ mod tests {
         dtd[12] = 0xfd; // 1920 mm x 1080 mm
         dtd[13] = 0x1e;
         dtd[14] = 0x11;
+        dtd[17] = 0x1e; // digital separate sync, positive H/V
         // Monitor name descriptor.
         block[72..90].copy_from_slice(&[
             0x00, 0x00, 0x00, 0xfc, 0x00, b'H', b'O', b'R', b'N', b' ', b'P', b'A', b'N', b'E',
@@ -190,8 +218,35 @@ mod tests {
         assert_eq!(preferred.h_total, Some(2200));
         assert_eq!(preferred.v_front_porch, 4);
         assert_eq!(preferred.v_sync, 5);
+        assert!(preferred.preferred);
+        assert_eq!(preferred.h_sync_positive, Some(true));
         assert_eq!(preferred.v_total, Some(1125));
         assert_eq!(preferred.v_back_porch, Some(36));
+    }
+
+    #[test]
+    fn fractional_refresh_never_reconstructs_vertical_blanking() {
+        let mut bytes = edid();
+        bytes[54..56].copy_from_slice(&14835u16.to_le_bytes()); // 148.35 MHz
+        bytes[127] = 0;
+        bytes[127] = 0u8.wrapping_sub(bytes.iter().copied().fold(0u8, u8::wrapping_add));
+        let monitor = parse(&bytes).unwrap();
+        let mode = monitor.modes.iter().find(|m| m.preferred).unwrap();
+        assert_eq!(mode.pixel_clock_khz, Some(148350));
+        assert_eq!(mode.v_total, Some(1125));
+        assert_eq!(mode.v_back_porch, Some(36));
+        assert_eq!(mode.refresh_mhz, Some(59939));
+    }
+
+    #[test]
+    fn first_dtd_is_not_silently_preferred_without_feature_bit() {
+        let mut bytes = edid();
+        bytes[24] = 0;
+        bytes[127] = 0;
+        bytes[127] = 0u8.wrapping_sub(bytes.iter().copied().fold(0u8, u8::wrapping_add));
+        let monitor = parse(&bytes).unwrap();
+        assert!(monitor.modes.iter().all(|mode| !mode.preferred));
+        assert!(crate::display::timing::Timing::preferred(&monitor).is_err());
     }
 
     #[test]

@@ -119,6 +119,121 @@ macro_rules! fields {
         }
     };
 }
+fields!(NV0073_CTRL_SPECIFIC_GET_CONNECTOR_DATA_PARAMS {
+    subDeviceInstance,
+    displayId,
+    flags,
+    DDCPartners,
+    count,
+    data,
+    platform
+});
+fields!(
+    NV0073_CTRL_SPECIFIC_GET_CONNECTOR_DATA_PARAMS__bindgen_ty_1 {
+        index,
+        type_,
+        location
+    }
+);
+fields!(NV0073_CTRL_SPECIFIC_OR_GET_INFO_PARAMS {
+    subDeviceInstance,
+    displayId,
+    index,
+    type_,
+    protocol,
+    ditherType,
+    ditherAlgo,
+    location,
+    rootPortId,
+    dcbIndex,
+    vbiosAddress,
+    bIsLitByVbios,
+    bIsDispDynamic
+});
+fields!(NV0073_CTRL_CMD_DSC_CAP_PARAMS {
+    bDscSupported,
+    encoderColorFormatMask,
+    lineBufferSizeKB,
+    rateBufferSizeKB,
+    bitsPerPixelPrecision,
+    maxNumHztSlices,
+    lineBufferBitDepth
+});
+fields!(NV0073_CTRL_DFP_ASSIGN_SOR_INFO {
+    displayMask,
+    sorType
+});
+fields!(NV0073_CTRL_DFP_ASSIGN_SOR_PARAMS {
+    subDeviceInstance,
+    displayId,
+    sorExcludeMask,
+    slaveDisplayId,
+    forceSublinkConfig,
+    bIs2Head1Or,
+    sorAssignList,
+    sorAssignListWithTag,
+    reservedSorMask,
+    flags
+});
+fields!(NV0073_CTRL_DP_CTRL_PARAMS {
+    subDeviceInstance,
+    displayId,
+    cmd,
+    data,
+    err,
+    retryTimeMs,
+    eightLaneDpcdBaseAddr
+});
+fields!(NV0073_CTRL_CMD_DP_CONFIG_STREAM_PARAMS {
+    subDeviceInstance,
+    head,
+    sorIndex,
+    dpLink,
+    bEnableOverride,
+    bMST,
+    singleHeadMultistreamMode,
+    hBlankSym,
+    vBlankSym,
+    colorFormat,
+    bEnableTwoHeadOneOr,
+    MST,
+    SST
+});
+fields!(NV0073_CTRL_CMD_DP_CONFIG_STREAM_PARAMS__bindgen_ty_1 {
+    slotStart,
+    slotEnd,
+    PBN,
+    Timeslice,
+    sendACT,
+    singleHeadMSTPipeline,
+    bEnableAudioOverRightPanel
+});
+fields!(NV0073_CTRL_CMD_DP_CONFIG_STREAM_PARAMS__bindgen_ty_2 {
+    bEnhancedFraming,
+    tuSize,
+    waterMark,
+    bEnableAudioOverRightPanel
+});
+fields!(NV0073_CTRL_CMD_DP_SET_MANUAL_DISPLAYPORT_PARAMS { subDeviceInstance });
+fields!(NV0073_CTRL_CMD_DP_GET_CAPS_PARAMS {
+    subDeviceInstance,
+    sorIndex,
+    maxLinkRate,
+    dpVersionsSupported,
+    UHBRSupportedByGpu,
+    minPClkForCompressed,
+    bIsMultistreamSupported,
+    bIsSCEnabled,
+    bHasIncreasedWatermarkLimits,
+    bIsPC2Disabled,
+    isSingleHeadMSTSupported,
+    bFECSupported,
+    bIsTrainPhyRepeater,
+    bOverrideLinkBw,
+    bUseRgFlushSequence,
+    bSupportDPDownSpread,
+    DSC
+});
 fields!(rpc_gsp_rm_alloc_v03_00 {
     hClient,
     hParent,

@@ -585,7 +585,8 @@ const HANDLE_DISP_INST: u32 = 0x0041_0000;
 /// Nouveau's Ada path normally uses a 4-KiB coherent system-memory ring.
 const DISP_PB_BYTES: u64 = 0x1000;
 const DISP_PB_SIZE: u32 = raw::ChannelPBSize_PB_SIZE_4KB;
-const DISP_INST_BYTES: u64 = 0x1_0000;
+const DISP_INST_BYTES: u64 = gsp_disp::instance::INSTANCE_BYTES;
+const DISP_NOTIFIER_HANDLE: u32 = 0x1000;
 
 fn rm_disp<M: Memory>(
     ctx: &mut Ad106<Native>,
@@ -595,17 +596,25 @@ fn rm_disp<M: Memory>(
     version: u32,
     deadline: u64,
 ) -> Result<()> {
+    let mut notifier = ctx.with_platform(|p| p.allocate(4096, DeviceAccess::ReadWrite))?;
+    unsafe {
+        notifier.zero()?;
+    } // before any descriptor/publication; initially NOT_BEGUN
     let mut core_pb =
         ctx.with_platform(|p| p.allocate(DISP_PB_BYTES as usize, DeviceAccess::Read))?;
     // Fully initialize before publication. Never rewrite GPU-visible words,
     // including after a timeout; the session retains this DMA allocation.
     unsafe {
         core_pb.zero()?;
-        for (index, word) in gsp_disp::probe_words()?.iter().enumerate() {
+        for (index, word) in gsp_disp::probe_words()?
+            .iter()
+            .chain(gsp_disp::notifier_words(DISP_NOTIFIER_HANDLE)?.iter())
+            .enumerate()
+        {
             core_pb.write32(index * 4, *word)?;
         }
     }
-    {
+    let instance = {
         let mut api = rm_api(ctx, queue, HANDLE_DISP_CLIENT, libos, version, deadline);
         rm_root(&mut api, HANDLE_DISP_CLIENT)?;
         api.alloc::<api::Device>(
@@ -633,7 +642,10 @@ fn rm_disp<M: Memory>(
             "NVIDIA_DISPLAY_RM step=subdevice handle={:#x}",
             HANDLE_DISP_SUBDEVICE
         );
-        let instance = display_memory(&mut api, HANDLE_DISP_INST, DISP_INST_BYTES)?;
+        display_memory(&mut api, HANDLE_DISP_INST, DISP_INST_BYTES)?
+    };
+    {
+        let mut api = rm_api(ctx, queue, HANDLE_DISP_CLIENT, libos, version, deadline);
         api.for_client(rm.client).control::<api::DisplayInstMem>(
             rm.subdevice,
             &raw::NV2080_CTRL_INTERNAL_DISPLAY_WRITE_INST_MEM_PARAMS {
@@ -703,7 +715,25 @@ fn rm_disp<M: Memory>(
             reply.subDeviceId
         );
     } // End the RPC client's exclusive transport borrow before direct submission.
-    core_submit(ctx, queue, libos, version, deadline)
+    ctx.with_platform(|p| {
+        gsp_disp::instance::install_notifier(
+            p,
+            instance,
+            HANDLE_DISP_CLIENT,
+            DISP_NOTIFIER_HANDLE,
+            notifier.iova,
+            notifier.bytes,
+            deadline,
+        )
+    })?;
+    sel4::debug_println!(
+        "NVIDIA_DISPLAY_RAMHT_OK instance={:#x} notifier={:#x} bytes={} handle={:#x}",
+        instance,
+        notifier.iova,
+        notifier.bytes,
+        DISP_NOTIFIER_HANDLE
+    );
+    core_submit(ctx, queue, libos, version, deadline, &notifier)
 }
 
 /// Allocation policy stays here; the ABI and reply decoding live in the client.
@@ -759,14 +789,15 @@ fn display_pushbuffer<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
     Ok(())
 }
 
-/// Publish two preloaded prefixes without rewriting or recycling the live ring.
-/// GET advancement demonstrates consumption only, not UPDATE completion.
+/// Publish three preloaded prefixes without rewriting or recycling the live ring.
+/// The third requires the GPU-written notifier as well as GET advancement.
 fn core_submit<M: Memory>(
     ctx: &mut Ad106<Native>,
     queue: &mut Queue<M>,
     libos: Span,
     version: u32,
     boot_deadline: u64,
+    notifier: &DmaBlock,
 ) -> Result<()> {
     let deadline = ctx
         .time_us()?
@@ -789,7 +820,12 @@ fn core_submit<M: Memory>(
         return Err(Error::State); // no ring reset or guessed resume position
     }
     let mut previous = 0;
-    for (kind, target) in [("nop", gsp_disp::NOP_PUT), ("update", gsp_disp::UPDATE_PUT)] {
+    for (kind, target) in [
+        ("nop", gsp_disp::NOP_PUT),
+        ("update", gsp_disp::UPDATE_PUT),
+        ("notifier", gsp_disp::NOTIFIER_PUT),
+    ] {
+        let mut fetched = false;
         if ctx.time_us()? >= deadline {
             return Err(Error::Timeout);
         }
@@ -850,12 +886,35 @@ fn core_submit<M: Memory>(
                 return Err(Error::Timeout);
             }
             if get == target {
-                sel4::debug_println!(
-                    "NVIDIA_DISPLAY_CORE_FETCHED kind={} put={} get={} notifier=disabled",
-                    kind,
-                    target,
-                    get
-                );
+                if !fetched {
+                    sel4::debug_println!(
+                        "NVIDIA_DISPLAY_CORE_FETCHED kind={} put={} get={} notifier={}",
+                        kind,
+                        target,
+                        get,
+                        if target == gsp_disp::NOTIFIER_PUT {
+                            "enabled"
+                        } else {
+                            "disabled"
+                        }
+                    );
+                    fetched = true;
+                }
+                if target == gsp_disp::NOTIFIER_PUT {
+                    // Volatile, no Rust references into GPU-writable notifier RAM.
+                    let status = unsafe { notifier.read32(0)? };
+                    core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
+                    if !gsp_disp::notifier_finished(status)? {
+                        ctx.sleep_until(now.saturating_add(1000).min(deadline))?;
+                        continue;
+                    }
+                    sel4::debug_println!(
+                        "NVIDIA_DISPLAY_CORE_COMPLETE kind=update status={:#x} put={} get={}",
+                        status,
+                        target,
+                        get
+                    );
+                }
                 previous = get;
                 break;
             }
@@ -1385,6 +1444,22 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                     report.monitor.height_cm,
                     report.monitor.modes.len()
                 );
+                let timing = gsp_disp::timing::Timing::preferred(&report.monitor)?;
+                let (rate, lanes) = timing.sink_link(&report.dpcd)?;
+                sel4::debug_println!(
+                    "NVIDIA_DISPLAY_PREFERRED dcb={} heads={:#x} width={} height={} clock_khz={} total={}x{} pitch={} bytes={} sink_rate={:#x} lanes={} state=preflight-only",
+                    report.dcb_index,
+                    report.heads,
+                    timing.width,
+                    timing.height,
+                    timing.pixel_clock_khz,
+                    timing.h_total,
+                    timing.v_total,
+                    timing.pitch,
+                    timing.bytes,
+                    rate,
+                    lanes
+                );
                 for (index, mode) in report.monitor.modes.iter().enumerate() {
                     sel4::debug_println!(
                         "NVIDIA_MODE index={} {}x{}{} full={} preferred={} refresh_mhz={:?} clock_khz={:?} h={}/{:?}/{:?} v={}/{:?}/{:?}",
@@ -1393,7 +1468,7 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                         mode.height,
                         if mode.interlaced { "i" } else { "p" },
                         mode.pixel_clock_khz.is_some(),
-                        index == 0 && mode.pixel_clock_khz.is_some(),
+                        mode.preferred,
                         mode.refresh_mhz,
                         mode.pixel_clock_khz,
                         mode.h_front_porch,
