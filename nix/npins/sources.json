@@ -1,5 +1,11 @@
 {
   "pins": {
+    "nvidia-open-gpu-r570144": {
+      "type": "Url",
+      "url": "https://github.com/NVIDIA/open-gpu-kernel-modules/archive/8ec351aeb96a93a4bb69ccc12a542bf8a8df2b6f.tar.gz",
+      "hash": "1w9bc439qn5mir7w6g2h468699xwmfraj7gav31jd3w9xvmg011w",
+      "unpack": true
+    },
     "nvidia-r570144-gsp": {
       "type": "Url",
       "url": "https://media.githubusercontent.com/media/ttabi/linux-firmware-nova/b5758fe4d378b8ac2476f914ac8e9b8788c3d877/nvidia/ga102/gsp/gsp.bin",

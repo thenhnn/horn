@@ -81,20 +81,44 @@ build, using the same no_std parser intended for the task. No giant synthetic
 GPU model is used. Firmware is not yet embedded in the probe ELF: that must
 accompany the real boot adapter and its explicit ELF/staging/DMA RAM budgets.
 
-## RM interface headers (research input, not a build input)
+## Generated RM interface (build input)
 
-`MAP_MEMORY_DMA`, `NV_MEMORY_VIRTUAL_ALLOCATION_PARAMS` and the memory-list
-classes are taken from NVIDIA `open-gpu-kernel-modules` tag **570.144**
-(`8ec351aeb96a93a4bb69ccc12a542bf8a8df2b6f`), kept in the ignored
-`work/open-gpu-570.144` checkout. Those interface headers are dual MIT/GPL-2.0;
-the GPL-2.0-only crate records the exact tag, and the commit id is the pin.
-Sparse checkout paths used: `src/nvidia/interface`, `src/common/inc`,
-`src/common/sdk/nvidia/inc`, `src/nvidia/generated`,
-`src/common/inc/swref`, `src/nvidia/inc/kernel/gpu/mmu`,
-`src/nvidia/inc/libraries/mmu`, `src/nvidia/src/kernel/gpu/mmu`.
-They are read while porting, never compiled into the build.
+NVIDIA `open-gpu-kernel-modules` tag **570.144**, commit
+`8ec351aeb96a93a4bb69ccc12a542bf8a8df2b6f`, is a hash-pinned npins source
+(`nvidia-open-gpu-r570144`), matching the firmware ABI epoch. `build.rs` uses the
+Cargo `bindgen` build-dependency to read the unmodified upstream headers listed
+in `wrapper.h`. Generated Rust lives only in OUT_DIR, not in the repository.
+Neither generation nor compilation depends on a work/ checkout or a network
+fetch from build.rs. Nix supplies the headers and build-host libclang via
+`hardware/gpu/nvidia/bindings.nix`; `nix-shell` supplies the same environment to
+Cargo. Run `python3 tools/rust-generate.py` inside nix-shell after changing build
+dependencies, as for other workspace crates.
 
-GPU VA on this firmware has no "map this object at that address" RPC: the
-modern `FERMI_VASPACE_A` path is driver-owned page tables, while the RM-managed
-path is the legacy context-DMA chain (`NV01_MEMORY_VIRTUAL` -> `ALLOC_CTX_DMA`
--> `MAP_MEMORY_DMA`). The port uses the latter so RM owns the page tables.
+The allowlist covers RM allocation/control envelopes, their parameter types,
+class/command constants, CE methods and NV status codes. Clang targets the
+x86_64 C ABI used by this AD106 driver, not the build host or the seL4 target
+triple. Bindgen emits compile-time C/Rust size, alignment and offset checks.
+Small C enum expressions evaluate selected NVIDIA range/function-like macros;
+no upstream structs or numeric bit positions are copied into the wrapper.
+
+`rm::codec` serializes individual fields using generated offsets and sizes into
+zero-filled buffers. It never copies a Rust struct's padding or casts an
+unaligned firmware reply to a reference. Exhaustive field destructuring catches
+header field additions. NvP64 fields are opaque address bits, never dereferenced.
+The SDK root parameters are **120 bytes** (including pOsPidInfo); the GSP root
+wire variant `rpc_alloc_root_v07_00` is **108 bytes**. The typed Root operation
+intentionally uses the latter, preserving the hardware-validated request.
+
+`rm::Client` binds class/command IDs to generated parameter types using small
+mapping macros. It owns no GPU backing and adds no capability authority. The
+native adapter retains the single-outstanding-request/event/deadline policy and
+checks the outer RPC result before interpreting the inner RM reply. The client
+checks client/parent/object/command/class/size echoes, then returns typed output
+parameters. Adding an operation means allowlisting its headers/types, providing
+a field codec, and declaring the command/type association—not adding offsets.
+
+The firmware-boot structs in src/abi.rs remain the checked-in NOVA port; this
+migration covers the RM API, not every pre-boot ABI. Driver-owned page tables
+and FERMI_VASPACE_A remain the GPU VA model. Earlier context-DMA experiments used
+unverified RPC payloads; their failures do not prove that firmware lacks the
+corresponding operations.

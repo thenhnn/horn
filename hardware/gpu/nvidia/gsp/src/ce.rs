@@ -36,29 +36,30 @@ pub fn header_noninc(method: u32) -> Result<u32> {
 }
 
 /// `AMPERE_DMA_COPY_B` method numbers.
-pub const SET_SEMAPHORE_A: u32 = 0x0240;
-pub const SET_SEMAPHORE_B: u32 = 0x0244;
-pub const SET_SEMAPHORE_PAYLOAD: u32 = 0x0248;
-pub const SET_SRC_PHYS_MODE: u32 = 0x0260;
-pub const SET_DST_PHYS_MODE: u32 = 0x0264;
-pub const LAUNCH_DMA: u32 = 0x0300;
-pub const OFFSET_IN_UPPER: u32 = 0x0400;
-pub const OFFSET_IN_LOWER: u32 = 0x0404;
-pub const OFFSET_OUT_UPPER: u32 = 0x0408;
-pub const OFFSET_OUT_LOWER: u32 = 0x040c;
-pub const PITCH_IN: u32 = 0x0410;
-pub const PITCH_OUT: u32 = 0x0414;
-pub const SET_DST_BLOCK_SIZE: u32 = 0x070c;
-pub const SET_DST_WIDTH: u32 = 0x0710;
-pub const SET_DST_HEIGHT: u32 = 0x0714;
-pub const SET_DST_DEPTH: u32 = 0x0718;
-pub const SET_SRC_BLOCK_SIZE: u32 = 0x0728;
-pub const SET_SRC_WIDTH: u32 = 0x072c;
-pub const SET_SRC_HEIGHT: u32 = 0x0730;
-pub const SET_SRC_DEPTH: u32 = 0x0734;
+pub const SET_SEMAPHORE_A: u32 = crate::raw::NVC7B5_SET_SEMAPHORE_A;
+pub const SET_SEMAPHORE_B: u32 = crate::raw::NVC7B5_SET_SEMAPHORE_B;
+pub const SET_SEMAPHORE_PAYLOAD: u32 = crate::raw::NVC7B5_SET_SEMAPHORE_PAYLOAD;
+pub const SET_SRC_PHYS_MODE: u32 = crate::raw::NVC7B5_SET_SRC_PHYS_MODE;
+pub const SET_DST_PHYS_MODE: u32 = crate::raw::NVC7B5_SET_DST_PHYS_MODE;
+pub const LAUNCH_DMA: u32 = crate::raw::NVC7B5_LAUNCH_DMA;
+pub const OFFSET_IN_UPPER: u32 = crate::raw::NVC7B5_OFFSET_IN_UPPER;
+pub const OFFSET_IN_LOWER: u32 = crate::raw::NVC7B5_OFFSET_IN_LOWER;
+pub const OFFSET_OUT_UPPER: u32 = crate::raw::NVC7B5_OFFSET_OUT_UPPER;
+pub const OFFSET_OUT_LOWER: u32 = crate::raw::NVC7B5_OFFSET_OUT_LOWER;
+pub const PITCH_IN: u32 = crate::raw::NVC7B5_PITCH_IN;
+pub const PITCH_OUT: u32 = crate::raw::NVC7B5_PITCH_OUT;
+pub const SET_DST_BLOCK_SIZE: u32 = crate::raw::NVC7B5_SET_DST_BLOCK_SIZE;
+pub const SET_DST_WIDTH: u32 = crate::raw::NVC7B5_SET_DST_WIDTH;
+pub const SET_DST_HEIGHT: u32 = crate::raw::NVC7B5_SET_DST_HEIGHT;
+pub const SET_DST_DEPTH: u32 = crate::raw::NVC7B5_SET_DST_DEPTH;
+pub const SET_SRC_BLOCK_SIZE: u32 = crate::raw::NVC7B5_SET_SRC_BLOCK_SIZE;
+pub const SET_SRC_WIDTH: u32 = crate::raw::NVC7B5_SET_SRC_WIDTH;
+pub const SET_SRC_HEIGHT: u32 = crate::raw::NVC7B5_SET_SRC_HEIGHT;
+pub const SET_SRC_DEPTH: u32 = crate::raw::NVC7B5_SET_SRC_DEPTH;
 
 /// `NVC7B5_SET_*_PHYS_MODE_TARGET_COHERENT_SYSMEM`.
-pub const PHYS_MODE_COHERENT_SYSMEM: u32 = 1;
+pub const PHYS_MODE_COHERENT_SYSMEM: u32 =
+    crate::raw::NVC7B5_SET_SRC_PHYS_MODE_TARGET_COHERENT_SYSMEM;
 
 const LAUNCH_TRANSFER_PIPELINED: u32 = 1;
 const LAUNCH_FLUSH_ENABLE: u32 = 1 << 2;
@@ -151,7 +152,10 @@ mod tests {
     #[test]
     fn method_headers_match_the_dma_format() {
         // Incrementing write of one argument at 0x0260.
-        assert_eq!(header(SET_SRC_PHYS_MODE, 1).unwrap(), (1 << 18) | (0x260 >> 2));
+        assert_eq!(
+            header(SET_SRC_PHYS_MODE, 1).unwrap(),
+            (1 << 18) | (0x260 >> 2)
+        );
         // Non-incrementing carries opcode 2 in bits 31:29.
         assert_eq!(
             header_noninc(SET_SRC_PHYS_MODE).unwrap(),
@@ -186,11 +190,11 @@ mod tests {
         assert_eq!((u64::from(upper) << 32) | u64::from(lower), copy.source);
         // The launch word is last and requests a one-word semaphore.
         let launch = words[words.len() - 1];
-        assert_eq!(launch & LAUNCH_SEMAPHORE_ONE_WORD, LAUNCH_SEMAPHORE_ONE_WORD);
         assert_eq!(
-            launch & LAUNCH_SRC_LAYOUT_PITCH,
-            LAUNCH_SRC_LAYOUT_PITCH
+            launch & LAUNCH_SEMAPHORE_ONE_WORD,
+            LAUNCH_SEMAPHORE_ONE_WORD
         );
+        assert_eq!(launch & LAUNCH_SRC_LAYOUT_PITCH, LAUNCH_SRC_LAYOUT_PITCH);
         assert_eq!(launch & LAUNCH_DST_TYPE_PHYSICAL, LAUNCH_DST_TYPE_PHYSICAL);
     }
 

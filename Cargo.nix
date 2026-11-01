@@ -1424,6 +1424,14 @@ rec {
             features = [ "alloc" ];
           }
         ];
+        buildDependencies = [
+          {
+            name = "bindgen";
+            packageId = "bindgen";
+            usesDefaultFeatures = false;
+            features = [ "runtime" ];
+          }
+        ];
         features = {
         };
         resolvedDefaultFeatures = [ "host" ];

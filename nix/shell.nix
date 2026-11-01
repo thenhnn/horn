@@ -2,7 +2,7 @@
   pkgs,
   rust,
 }:
-pkgs.mkShellNoCC {
+pkgs.mkShellNoCC ((import ../hardware/gpu/nvidia/bindings.nix {inherit pkgs;}) // {
   packages = [
     rust
     pkgs.crate2nix
@@ -12,4 +12,4 @@ pkgs.mkShellNoCC {
     pkgs.just
     (import ./fmt.nix {inherit pkgs;})
   ];
-}
+})

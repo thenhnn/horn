@@ -13,5 +13,8 @@ name = "nvidia-fwcheck"
 path = "src/bin/fwcheck.rs"
 required-features = ["host"]
 
+[build-dependencies]
+bindgen = { version = "0.72.1", default-features = false, features = ["runtime"] }
+
 [dependencies]
 piaf = { version = "0.5.0", default-features = false, features = ["alloc"] }

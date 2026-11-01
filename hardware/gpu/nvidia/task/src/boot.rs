@@ -19,7 +19,8 @@ use horn_nvidia_gsp::{
     firmware::Bundle,
     gmmu,
     queue::{Memory, Queue},
-    rm,
+    raw,
+    rm::{self, client as api},
     vbios::{Command, Fwsec},
     wire,
 };
@@ -85,23 +86,30 @@ struct Rm {
     subdevice: u32,
 }
 
-fn rm_alloc<M: Memory>(
-    ctx: &mut Ad106<Native>,
-    queue: &mut Queue<M>,
-    h_client: u32,
-    h_parent: u32,
-    h_object: u32,
-    class: u32,
-    params: &[u8],
+/// Adapt the native queue/event loop to the payload-level typed RM client.
+/// The outer RPC result is distinct from the RM status inside its body.
+fn rm_api<'a, M: Memory>(
+    ctx: &'a mut Ad106<Native>,
+    queue: &'a mut Queue<M>,
+    client: u32,
     libos: Span,
     version: u32,
     deadline: u64,
-) -> Result<()> {
-    let body = rm::encode(h_client, h_parent, h_object, class, params)?;
-    send(ctx, queue, rm::RM_ALLOC, &body, deadline)?;
-    let reply = wait(ctx, queue, rm::RM_ALLOC, libos, version, deadline)?;
-    let packet = wire::Packet::decode(&reply)?;
-    rm::check(packet.payload, h_object, class, params.len())
+) -> rm::Client<impl FnMut(u32, &[u8]) -> Result<Vec<u8>> + 'a> {
+    rm::Client::new(client, move |function, body: &[u8]| {
+        send(ctx, queue, function, body, deadline)?;
+        let reply = wait(ctx, queue, function, libos, version, deadline)?;
+        let packet = wire::Packet::decode(&reply)?;
+        packet.success().map_err(|error| {
+            sel4::debug_println!(
+                "NVIDIA_RM_RPC_FAIL function={:#x} error={:?}",
+                function,
+                error
+            );
+            error
+        })?;
+        Ok(packet.payload.to_vec())
+    })
 }
 
 fn rm_client<M: Memory>(
@@ -116,50 +124,25 @@ fn rm_client<M: Memory>(
         device: rm::HANDLE_DEVICE,
         subdevice: rm::HANDLE_SUBDEVICE,
     };
-    let fail = |step: &str, error: Error| {
-        sel4::debug_println!("NVIDIA_RM_FAILED step={} error={:?}", step, error);
-        error
-    };
-    // The root object is its own parent and its own client.
-    rm_alloc(
-        ctx,
-        queue,
+    let mut api = rm_api(ctx, queue, rm.client, libos, version, deadline);
+    api.alloc::<api::Root>(
         rm.client,
         rm.client,
-        rm.client,
-        rm::NV01_ROOT,
-        &rm::root_params(rm.client),
-        libos,
-        version,
-        deadline,
-    )
-    .map_err(|error| fail("client", error))?;
-    rm_alloc(
-        ctx,
-        queue,
-        rm.client,
+        &raw::rpc_alloc_root_v07_00 {
+            hClient: rm.client,
+            processID: u32::MAX,
+            ..Default::default()
+        },
+    )?;
+    api.alloc::<api::Device>(
         rm.client,
         rm.device,
-        rm::NV01_DEVICE_0,
-        &rm::device_params(rm.client),
-        libos,
-        version,
-        deadline,
-    )
-    .map_err(|error| fail("device", error))?;
-    rm_alloc(
-        ctx,
-        queue,
-        rm.client,
-        rm.device,
-        rm.subdevice,
-        rm::NV20_SUBDEVICE_0,
-        &rm::subdevice_params(),
-        libos,
-        version,
-        deadline,
-    )
-    .map_err(|error| fail("subdevice", error))?;
+        &raw::NV0080_ALLOC_PARAMETERS {
+            hClientShare: rm.client,
+            ..Default::default()
+        },
+    )?;
+    api.alloc::<api::Subdevice>(rm.device, rm.subdevice, &Default::default())?;
     Ok(rm)
 }
 
@@ -228,45 +211,28 @@ fn gmmu_setup<M: Memory>(
     // Only index and flags are meaningful: nouveau leaves the VA size and
     // window to RM, and a caller-chosen size/limit is rejected as an invalid
     // argument.
-    rm_alloc(
-        ctx,
-        queue,
-        rm.client,
+    let mut api = rm_api(ctx, queue, rm.client, libos, version, deadline);
+    api.alloc::<api::Vaspace>(
         rm.device,
         rm::HANDLE_VASPACE,
-        rm::FERMI_VASPACE_A,
-        &rm::vspace_params(rm::VASPACE_EXTERNALLY_OWNED, 0, 0, 0),
-        libos,
-        version,
-        deadline,
+        &raw::NV_VASPACE_ALLOCATION_PARAMETERS {
+            flags: rm::VASPACE_EXTERNALLY_OWNED,
+            ..Default::default()
+        },
     )
     .map_err(|error| {
         sel4::debug_println!("NVIDIA_GMMU_FAILED step=vspace error={:?}", error);
         error
     })?;
-
-    // numEntries is the ROOT table's entry count (2 bits for GA10x), not the
-    // 512-entry leaf size: nouveau derives it from the largest-shift level.
-    let params = rm::page_directory_params(
-        arena.iova,
-        gmmu::entries(0)? as u32,
-        rm::SET_PD_APERTURE_SYSMEM_COH,
-        rm::HANDLE_VASPACE,
-    );
-    let body = rm::encode_ctrl(
-        rm.client,
+    api.control::<api::PageDirectory>(
         rm.device,
-        rm::CTRL_DMA_SET_PAGE_DIRECTORY,
-        &params,
-    )?;
-    send(ctx, queue, rm::RM_CONTROL, &body, deadline)?;
-    let reply = wait(ctx, queue, rm::RM_CONTROL, libos, version, deadline)?;
-    let packet = wire::Packet::decode(&reply)?;
-    rm::check_ctrl(
-        packet.payload,
-        rm.device,
-        rm::CTRL_DMA_SET_PAGE_DIRECTORY,
-        params.len(),
+        &raw::NV0080_CTRL_DMA_SET_PAGE_DIRECTORY_PARAMS {
+            physAddress: arena.iova,
+            numEntries: gmmu::entries(0)? as u32,
+            flags: rm::SET_PD_APERTURE_SYSMEM_COH,
+            hVASpace: rm::HANDLE_VASPACE,
+            ..Default::default()
+        },
     )
     .map_err(|error| {
         sel4::debug_println!("NVIDIA_GMMU_FAILED step=page-directory error={:?}", error);
@@ -291,23 +257,9 @@ fn rm_engines<M: Memory>(
     version: u32,
     deadline: u64,
 ) -> Result<Vec<rm::EngineEntry>> {
-    let params = rm::engine_table_params();
-    let body = rm::encode_ctrl(
-        rm.client,
-        rm.subdevice,
-        rm::CTRL_FIFO_GET_DEVICE_INFO_TABLE,
-        &params,
-    )?;
-    send(ctx, queue, rm::RM_CONTROL, &body, deadline)?;
-    let reply = wait(ctx, queue, rm::RM_CONTROL, libos, version, deadline)?;
-    let packet = wire::Packet::decode(&reply)?;
-    rm::check_ctrl(
-        packet.payload,
-        rm.subdevice,
-        rm::CTRL_FIFO_GET_DEVICE_INFO_TABLE,
-        params.len(),
-    )?;
-    let entries = rm::engine_entries(packet.payload)?;
+    let table = rm_api(ctx, queue, rm.client, libos, version, deadline)
+        .control::<api::EngineTable>(rm.subdevice, &Default::default())?;
+    let entries = rm::engine_table_entries(&table)?;
     for entry in &entries {
         let name = core::str::from_utf8(&entry.name).unwrap_or("?");
         sel4::debug_println!(
@@ -331,28 +283,15 @@ fn rm_mthdbuf_size<M: Memory>(
     version: u32,
     deadline: u64,
 ) -> Result<u64> {
-    let body = rm::encode_ctrl(
-        rm.client,
-        rm.subdevice,
-        rm::CTRL_CE_GET_FAULT_METHOD_BUFFER_SIZE,
-        &rm::mthdbuf_params(),
-    )?;
-    send(ctx, queue, rm::RM_CONTROL, &body, deadline)?;
-    let reply = wait(ctx, queue, rm::RM_CONTROL, libos, version, deadline)?;
-    let packet = wire::Packet::decode(&reply)?;
-    rm::check_ctrl(
-        packet.payload,
-        rm.subdevice,
-        rm::CTRL_CE_GET_FAULT_METHOD_BUFFER_SIZE,
-        rm::mthdbuf_params().len(),
-    )?;
-    let size = rm::mthdbuf_size(packet.payload)? as u64;
-    sel4::debug_println!("NVIDIA_MTHDBUF_SIZE size={:#x}", size);
+    let params = rm_api(ctx, queue, rm.client, libos, version, deadline)
+        .control::<api::MethodBufferSize>(rm.subdevice, &Default::default())?;
+    let size = u64::from(params.size);
     if size == 0 {
         return Err(Error::Range);
     }
+    sel4::debug_println!("NVIDIA_MTHDBUF_SIZE size={:#x}", size);
     let page = gmmu::PAGE as u64;
-    Ok((size + page - 1) & !(page - 1))
+    Ok(size.checked_add(page - 1).ok_or(Error::Range)? & !(page - 1))
 }
 
 /// One RM-owned VRAM buffer, large enough for the channel instance, USERD and
@@ -394,16 +333,7 @@ fn rm_vram_alloc<M: Memory>(
     deadline: u64,
 ) -> Result<(u64, u64)> {
     rm_vram_alloc_in(
-        ctx,
-        queue,
-        rm.client,
-        rm.device,
-        handle,
-        size,
-        alignment,
-        libos,
-        version,
-        deadline,
+        ctx, queue, rm.client, rm.device, handle, size, alignment, libos, version, deadline,
     )
 }
 
@@ -421,33 +351,19 @@ fn rm_vram_fixed<M: Memory>(
     version: u32,
     deadline: u64,
 ) -> Result<u64> {
-    let params = rm::vram_params_fixed(client, size, offset)?;
-    let body = rm::encode(
-        client,
-        device,
-        handle,
-        rm::NV01_MEMORY_LOCAL_USER,
-        &params,
-    )?;
-    send(ctx, queue, rm::RM_ALLOC, &body, deadline)?;
-    let reply = wait(ctx, queue, rm::RM_ALLOC, libos, version, deadline)?;
-    let packet = wire::Packet::decode(&reply)?;
-    rm::check(packet.payload, handle, rm::NV01_MEMORY_LOCAL_USER, params.len())?;
-    let params = &packet.payload[32..];
-    if params.len() < 96 {
-        return Err(Error::Malformed);
-    }
-    let placed = u64::from_le_bytes(params[80..88].try_into().unwrap());
+    let params = rm::vram_request_fixed(client, size, offset)?;
+    let reply = rm_api(ctx, queue, client, libos, version, deadline)
+        .alloc::<api::Vram>(device, handle, &params)?;
     sel4::debug_println!(
         "NVIDIA_RM_VRAM_FIXED handle={:#x} asked={:#x} placed={:#x}",
         handle,
         offset,
-        placed
+        reply.offset
     );
-    if placed != offset {
+    if reply.offset != offset {
         return Err(Error::Range);
     }
-    Ok(placed)
+    Ok(reply.offset)
 }
 
 /// Same, in an explicit client and device: display memory belongs to the
@@ -465,39 +381,25 @@ fn rm_vram_alloc_in<M: Memory>(
     version: u32,
     deadline: u64,
 ) -> Result<(u64, u64)> {
-    let params = rm::vram_params(client, size, alignment)?;
-    let body = rm::encode(
-        client,
-        device,
-        handle,
-        rm::NV01_MEMORY_LOCAL_USER,
-        &params,
-    )?;
-    send(ctx, queue, rm::RM_ALLOC, &body, deadline)?;
-    let reply = wait(ctx, queue, rm::RM_ALLOC, libos, version, deadline)?;
-    let packet = wire::Packet::decode(&reply)?;
-    rm::check(packet.payload, handle, rm::NV01_MEMORY_LOCAL_USER, params.len())?;
-    let payload = packet.payload;
-    // The reply is NVOS21_PARAMETERS (32 bytes: hRoot, hObjectParent,
-    // hObjectNew, hClass, pAllocParms, paramsSize, status) followed by
-    // NV_MEMORY_ALLOCATION_PARAMS. Reading the placement from the header
-    // region gave offset 0 and the whole-framebuffer limit, which is why the
-    // channel instance pointed at reserved VRAM and the channel alloc failed.
-    let params = &payload[32..];
-    if params.len() < 96 {
-        return Err(Error::Malformed);
-    }
-    let actual = u64::from_le_bytes(params[64..72].try_into().unwrap());
-    let offset = u64::from_le_bytes(params[80..88].try_into().unwrap());
-    let limit = u64::from_le_bytes(params[88..96].try_into().unwrap());
+    let params = rm::vram_request(client, size, alignment)?;
+    let reply = rm_api(ctx, queue, client, libos, version, deadline)
+        .alloc::<api::Vram>(device, handle, &params)?;
     sel4::debug_println!(
         "NVIDIA_RM_VRAM_REPLY handle={:#x} size={:#x} offset={:#x} limit={:#x}",
         handle,
-        actual,
-        offset,
-        limit
+        reply.size,
+        reply.offset,
+        reply.limit
     );
-    Ok((offset, limit))
+    if reply.size < size
+        || reply
+            .limit
+            .checked_add(1)
+            .is_none_or(|length| length < size)
+    {
+        return Err(Error::Range);
+    }
+    Ok((reply.offset, reply.limit))
 }
 
 /// First CE channel on our own VA space. The GPFIFO and method buffer live in
@@ -523,8 +425,7 @@ fn rm_channel<M: Memory>(
         ctx.with_platform(|p| p.allocate(GPFIFO_ENTRIES as usize * 8, DeviceAccess::ReadWrite))?;
     // USERD in system memory: the driver publishes GP_PUT with a plain store,
     // so the kick path needs no video-memory aperture at all.
-    let mut userd_block =
-        ctx.with_platform(|p| p.allocate(gmmu::PAGE, DeviceAccess::ReadWrite))?;
+    let mut userd_block = ctx.with_platform(|p| p.allocate(gmmu::PAGE, DeviceAccess::ReadWrite))?;
     unsafe { userd_block.zero()? };
     // The GPFIFO is addressed by VA in the channel's vspace, so it has to be
     // mapped there before the channel can use it.
@@ -562,23 +463,34 @@ fn rm_channel<M: Memory>(
             offset += page;
         }
     }
-    let instance = rm::memory_desc(vram, INSTANCE, 2, 1);
-    let userd =
-        rm::memory_desc(userd_block.iova + USERD * rm::CHANNEL_CID as u64, USERD, 1, 0);
-    // RAMFC lives inside the instance block: nouveau passes the instance base
-    // again instead of an offset past USERD.
-    let ramfc = rm::memory_desc(vram, RAMFC, 2, 1);
-    let methods = rm::memory_desc(mthdbuf.iova, mthdbuf_bytes, 1, 0);
-    let params = rm::channel_params(rm::Channel {
-        h_vaspace: rm::HANDLE_VASPACE,
-        gp_fifo: gpfifo_va,
-        gp_fifo_entries: GPFIFO_ENTRIES,
+    let desc = |base, size, address_space, cache| raw::NV_MEMORY_DESC_PARAMS {
+        base,
+        size,
+        addressSpace: address_space,
+        cacheAttrib: cache,
+    };
+    let params = raw::NV_CHANNEL_ALLOC_PARAMS {
+        gpFifoOffset: gpfifo_va,
+        gpFifoEntries: GPFIFO_ENTRIES,
+        flags: rm::CHAN_FLAG_PRIVILEGED
+            | rm::CHAN_FLAG_USERD_PAGE_FIXED
+            | ((rm::CHANNEL_CID & raw::HORN_CHANNEL_USERD_MASK) << raw::HORN_CHANNEL_USERD_SHIFT),
+        hVASpace: rm::HANDLE_VASPACE,
+        engineType: rm::ENGINE_COPY0,
         cid: rm::CHANNEL_CID,
-        instance: &instance,
-        userd: &userd,
-        ramfc: &ramfc,
-        mthdbuf: &methods,
-    })?;
+        subDeviceId: 1,
+        internalFlags: rm::CHAN_INTERNAL_ADMIN,
+        instanceMem: desc(vram, INSTANCE, 2, 1),
+        userdMem: desc(
+            userd_block.iova + USERD * rm::CHANNEL_CID as u64,
+            USERD,
+            1,
+            0,
+        ),
+        ramfcMem: desc(vram, RAMFC, 2, 1),
+        mthdbufMem: desc(mthdbuf.iova, mthdbuf_bytes, 1, 0),
+        ..Default::default()
+    };
     // The device accepts the channel as its parent (the subdevice handle is
     // rejected with INVALID_OBJECT_PARENT); the earlier NO_MEMORY came from a
     // resource this allocation asks RM to provide.
@@ -598,82 +510,50 @@ fn rm_channel<M: Memory>(
         mthdbuf.iova,
         mthdbuf_bytes
     );
-    rm_alloc(
-        ctx,
-        queue,
-        rm.client,
-        rm.device,
-        rm::HANDLE_CHANNEL,
-        rm::AMPERE_CHANNEL_GPFIFO_A,
-        &params,
-        libos,
-        version,
-        deadline,
-    )
-    .map_err(|error| {
-        sel4::debug_println!("NVIDIA_CHANNEL_FAILED step=channel error={:?}", error);
-        error
-    })?;
-
-    rm_alloc(
-        ctx,
-        queue,
-        rm.client,
-        rm::HANDLE_CHANNEL,
-        rm::HANDLE_CE,
-        rm::AMPERE_DMA_COPY_B,
-        &rm::ce_params(rm::ENGINE_COPY0),
-        libos,
-        version,
-        deadline,
-    )
-    .map_err(|error| {
-        sel4::debug_println!("NVIDIA_CHANNEL_FAILED step=ce error={:?}", error);
-        error
-    })?;
-    // Bind the engine and allow scheduling: an allocated channel is inert until
-    // both controls have been acknowledged by RM.
-    let bind = rm::encode_ctrl(
-        rm.client,
-        rm::HANDLE_CHANNEL,
-        rm::CTRL_CHANNEL_BIND,
-        &rm::bind_params(rm::ENGINE_COPY0),
-    )?;
-    send(ctx, queue, rm::RM_CONTROL, &bind, deadline)?;
-    let reply = wait(ctx, queue, rm::RM_CONTROL, libos, version, deadline)?;
-    let packet = wire::Packet::decode(&reply)?;
-    rm::check_ctrl(
-        packet.payload,
-        rm::HANDLE_CHANNEL,
-        rm::CTRL_CHANNEL_BIND,
-        4,
-    )
-    .map_err(|error| {
-        sel4::debug_println!("NVIDIA_CHANNEL_FAILED step=bind error={:?}", error);
-        error
-    })?;
-    let schedule = rm::encode_ctrl(
-        rm.client,
-        rm::HANDLE_CHANNEL,
-        rm::CTRL_CHANNEL_GPFIFO_SCHEDULE,
-        &rm::schedule_params(true),
-    )?;
-    send(ctx, queue, rm::RM_CONTROL, &schedule, deadline)?;
-    let reply = wait(ctx, queue, rm::RM_CONTROL, libos, version, deadline)?;
-    let packet = wire::Packet::decode(&reply)?;
-    rm::check_ctrl(
-        packet.payload,
-        rm::HANDLE_CHANNEL,
-        rm::CTRL_CHANNEL_GPFIFO_SCHEDULE,
-        rm::schedule_params(true).len(),
-    )
-    .map_err(|error| {
-        sel4::debug_println!("NVIDIA_CHANNEL_FAILED step=schedule error={:?}", error);
-        error
-    })?;
+    {
+        let mut api = rm_api(ctx, queue, rm.client, libos, version, deadline);
+        api.alloc::<api::Channel>(rm.device, rm::HANDLE_CHANNEL, &params)
+            .map_err(|error| {
+                sel4::debug_println!("NVIDIA_CHANNEL_FAILED step=channel error={:?}", error);
+                error
+            })?;
+        api.alloc::<api::CopyEngine>(
+            rm::HANDLE_CHANNEL,
+            rm::HANDLE_CE,
+            &raw::NVC0B5_ALLOCATION_PARAMETERS {
+                version: raw::NVC0B5_ALLOCATION_PARAMETERS_VERSION_1,
+                engineType: rm::ENGINE_COPY0,
+            },
+        )
+        .map_err(|error| {
+            sel4::debug_println!("NVIDIA_CHANNEL_FAILED step=ce error={:?}", error);
+            error
+        })?;
+        api.control::<api::Bind>(
+            rm::HANDLE_CHANNEL,
+            &raw::NVA06F_CTRL_BIND_PARAMS {
+                engineType: rm::ENGINE_COPY0,
+            },
+        )?;
+        api.control::<api::Schedule>(
+            rm::HANDLE_CHANNEL,
+            &raw::NVA06F_CTRL_GPFIFO_SCHEDULE_PARAMS {
+                bEnable: 1,
+                bSkipSubmit: 0,
+            },
+        )?;
+    }
     sel4::debug_println!("NVIDIA_CHANNEL_BOUND engine={}", rm::ENGINE_COPY0);
-    let (source, destination, fence) =
-        ce_copy(ctx, queue, va, &mut gpfifo, &mut userd_block, libos, version, deadline)?;
+    let (source, destination, fence) = ce_copy(
+        ctx,
+        queue,
+        va,
+        &mut gpfifo,
+        &mut userd_block,
+        libos,
+        version,
+        deadline,
+    )?;
     sel4::debug_println!(
         "NVIDIA_CE_COPY_OK source={:#x} destination={:#x} fence={:#x} bytes={}",
         source,
@@ -709,216 +589,82 @@ fn rm_disp<M: Memory>(
     version: u32,
     deadline: u64,
 ) -> Result<()> {
-    // 0. A dedicated display client and device. The display state RM keeps is
-    //    per client, and a channel is validated against the client that owns
-    //    it, so reusing the compute client is not equivalent.
-    rm_alloc(
-        ctx,
-        queue,
+    let mut api = rm_api(ctx, queue, HANDLE_DISP_CLIENT, libos, version, deadline);
+    api.alloc::<api::Root>(
         HANDLE_DISP_CLIENT,
         HANDLE_DISP_CLIENT,
-        HANDLE_DISP_CLIENT,
-        rm::NV01_ROOT,
-        &rm::root_params(HANDLE_DISP_CLIENT),
-        libos,
-        version,
-        deadline,
-    )
-    .map_err(|error| {
-        sel4::debug_println!("NVIDIA_DISPLAY_RM step=client error={:?}", error);
-        error
-    })?;
-    rm_alloc(
-        ctx,
-        queue,
-        HANDLE_DISP_CLIENT,
+        &raw::rpc_alloc_root_v07_00 {
+            hClient: HANDLE_DISP_CLIENT,
+            processID: u32::MAX,
+            ..Default::default()
+        },
+    )?;
+    api.alloc::<api::Device>(
         HANDLE_DISP_CLIENT,
         HANDLE_DISP_DEVICE,
-        rm::NV01_DEVICE_0,
-        &rm::device_params(HANDLE_DISP_CLIENT),
-        libos,
-        version,
-        deadline,
-    )
-    .map_err(|error| {
-        sel4::debug_println!("NVIDIA_DISPLAY_RM step=device error={:?}", error);
-        error
-    })?;
+        &raw::NV0080_ALLOC_PARAMETERS {
+            hClientShare: HANDLE_DISP_CLIENT,
+            ..Default::default()
+        },
+    )?;
     sel4::debug_println!(
         "NVIDIA_DISPLAY_RM step=client handle={:#x} device={:#x}",
         HANDLE_DISP_CLIENT,
         HANDLE_DISP_DEVICE
     );
 
-    // 1. Instance memory: 64 KiB of VRAM, aligned to its own size.
-    let (offset, _limit) = rm_vram_alloc_in(
-        ctx,
-        queue,
-        HANDLE_DISP_CLIENT,
-        HANDLE_DISP_DEVICE,
-        HANDLE_DISP_INST,
-        DISP_INST_BYTES,
-        DISP_INST_BYTES,
-        libos,
-        version,
-        deadline,
-    )?;
-    sel4::debug_println!("NVIDIA_DISPLAY_RM step=inst offset={:#x}", offset);
-
-    // 2. Tell RM where it is. Without this the display objects cannot be
-    //    created, because their instance memory is not described to RM.
-    let params = rm::disp_inst_mem_params(offset, DISP_INST_BYTES);
-    let body = rm::encode_ctrl(
-        rm.client,
+    let instance = display_memory(&mut api, HANDLE_DISP_INST, DISP_INST_BYTES)?;
+    api.for_client(rm.client).control::<api::DisplayInstMem>(
         rm.subdevice,
-        rm::CTRL_DISPLAY_WRITE_INST_MEM,
-        &params,
+        &raw::NV2080_CTRL_INTERNAL_DISPLAY_WRITE_INST_MEM_PARAMS {
+            instMemPhysAddr: instance,
+            instMemSize: DISP_INST_BYTES,
+            instMemAddrSpace: rm::DISP_INST_ADDR_SPACE,
+            instMemCpuCacheAttr: rm::DISP_INST_CACHE_ATTR,
+        },
     )?;
-    send(ctx, queue, rm::RM_CONTROL, &body, deadline)?;
-    let reply = wait(ctx, queue, rm::RM_CONTROL, libos, version, deadline)?;
-    let packet = wire::Packet::decode(&reply)?;
-    rm::check_ctrl(
-        packet.payload,
-        rm.subdevice,
-        rm::CTRL_DISPLAY_WRITE_INST_MEM,
-        params.len(),
-    )
-    .map_err(|error| {
-        sel4::debug_println!("NVIDIA_DISPLAY_RM step=inst-mem error={:?}", error);
-        error
-    })?;
     sel4::debug_println!("NVIDIA_DISPLAY_RM step=inst-mem");
-
-    // 3. Display common object: carries the NV0073 control interface.
-    rm_alloc(
-        ctx,
-        queue,
-        HANDLE_DISP_CLIENT,
-        HANDLE_DISP_DEVICE,
-        rm::HANDLE_DISP_COMMON,
-        rm::NV04_DISPLAY_COMMON,
-        &[],
-        libos,
-        version,
-        deadline,
-    )
-    .map_err(|error| {
-        sel4::debug_println!("NVIDIA_DISPLAY_RM step=common error={:?}", error);
-        error
-    })?;
-    sel4::debug_println!("NVIDIA_DISPLAY_RM step=common handle={:#x}", rm::HANDLE_DISP_COMMON);
-
-    // 4. Which displays does this subdevice drive?
-    let params = rm::disp_supported_params();
-    let body = rm::encode_ctrl(
-        HANDLE_DISP_CLIENT,
-        rm::HANDLE_DISP_COMMON,
-        rm::CTRL_DISP_GET_SUPPORTED,
-        &params,
-    )?;
-    send(ctx, queue, rm::RM_CONTROL, &body, deadline)?;
-    let reply = wait(ctx, queue, rm::RM_CONTROL, libos, version, deadline)?;
-    let packet = wire::Packet::decode(&reply)?;
-    rm::check_ctrl(
-        packet.payload,
-        rm::HANDLE_DISP_COMMON,
-        rm::CTRL_DISP_GET_SUPPORTED,
-        params.len(),
-    )
-    .map_err(|error| {
-        sel4::debug_println!("NVIDIA_DISPLAY_RM step=supported error={:?}", error);
-        error
-    })?;
-    let mask = rm::disp_supported_mask(packet.payload)?;
-
-    // 5. Static display topology: windows, heads, channels.
-    sel4::debug_println!("NVIDIA_DISPLAY_RM step=supported mask={:#x}", mask);
-    let params = rm::disp_static_info_params();
-    let body = rm::encode_ctrl(
-        rm.client,
-        rm.subdevice,
-        rm::CTRL_DISPLAY_GET_STATIC_INFO,
-        &params,
-    )?;
-    send(ctx, queue, rm::RM_CONTROL, &body, deadline)?;
-    let reply = wait(ctx, queue, rm::RM_CONTROL, libos, version, deadline)?;
-    let packet = wire::Packet::decode(&reply)?;
-    rm::check_ctrl(
-        packet.payload,
-        rm.subdevice,
-        rm::CTRL_DISPLAY_GET_STATIC_INFO,
-        params.len(),
-    )
-    .map_err(|error| {
-        sel4::debug_println!("NVIDIA_DISPLAY_RM step=static error={:?}", error);
-        error
-    })?;
-    let info = rm::disp_static_info(packet.payload)?;
+    api.alloc::<api::DisplayCommon>(HANDLE_DISP_DEVICE, rm::HANDLE_DISP_COMMON, &())?;
+    sel4::debug_println!(
+        "NVIDIA_DISPLAY_RM step=common handle={:#x}",
+        rm::HANDLE_DISP_COMMON
+    );
+    let supported =
+        api.control::<api::DisplaySupported>(rm::HANDLE_DISP_COMMON, &Default::default())?;
+    sel4::debug_println!(
+        "NVIDIA_DISPLAY_RM step=supported mask={:#x}",
+        supported.displayMask
+    );
+    let info = api
+        .for_client(rm.client)
+        .control::<api::DisplayStaticInfo>(rm.subdevice, &Default::default())?;
     sel4::debug_println!(
         "NVIDIA_DISPLAY_RM step=static mask={:#x} windows={:#x} heads={} channels={}",
-        mask,
-        info.window_mask,
-        info.heads,
-        info.channels
+        supported.displayMask,
+        info.windowPresentMask,
+        info.numHeads,
+        info.numDispChannels
+    );
+    api.alloc::<api::Display>(HANDLE_DISP_DEVICE, rm::HANDLE_DISP_ROOT, &())?;
+    sel4::debug_println!(
+        "NVIDIA_DISPLAY_RM step=root handle={:#x}",
+        rm::HANDLE_DISP_ROOT
     );
 
-    // 6. The display root for this chip family.
-    rm_alloc(
-        ctx,
-        queue,
-        HANDLE_DISP_CLIENT,
-        HANDLE_DISP_DEVICE,
-        rm::HANDLE_DISP_ROOT,
-        rm::AD102_DISP,
-        &[],
-        libos,
-        version,
-        deadline,
-    )
-    .map_err(|error| {
-        sel4::debug_println!("NVIDIA_DISPLAY_RM step=root error={:?}", error);
-        error
-    })?;
-    sel4::debug_println!("NVIDIA_DISPLAY_RM step=root handle={:#x}", rm::HANDLE_DISP_ROOT);
-
-    // 7. Core channel: its own push buffer in VRAM, announced to RM before the
-    //    channel object exists, then the channel itself.
-    let (core_pb, _) = rm_vram_alloc_in(
-        ctx,
-        queue,
-        HANDLE_DISP_CLIENT,
-        HANDLE_DISP_DEVICE,
-        HANDLE_DISP_CORE_PB,
-        DISP_PB_BYTES,
-        DISP_PB_BYTES,
-        libos,
-        version,
-        deadline,
-    )?;
-    disp_pushbuffer(ctx, queue, rm, rm::AD102_DISP_CORE_CHANNEL_DMA, 0, core_pb, libos, version, deadline)
-        .map_err(|error| {
-            sel4::debug_println!("NVIDIA_DISPLAY_RM step=core-pb error={:?}", error);
-            error
-        })?;
+    let core_pb = display_memory(&mut api, HANDLE_DISP_CORE_PB, DISP_PB_BYTES)?;
+    display_pushbuffer(&mut api, rm, rm::AD102_DISP_CORE_CHANNEL_DMA, core_pb)?;
     let core_handle = rm::disp_chan_handle(rm::AD102_DISP_CORE_CHANNEL_DMA, 0);
-    // Two readings of `offset` are plausible and RM rejects the wrong one as an
-    // invalid offset: "zero, relative to the announced buffer" (what nouveau
-    // sends) and "the buffer's own VRAM offset". A failed allocation creates
-    // nothing, so trying both is safe and one run settles it.
-    let mut core = rm_alloc(
-        ctx,
-        queue,
-        HANDLE_DISP_CLIENT,
+    let core = api.alloc::<api::DisplayCore>(
         rm::HANDLE_DISP_ROOT,
         core_handle,
-        rm::AD102_DISP_CORE_CHANNEL_DMA,
-        &rm::disp_chan_dma_params(0, 0, 0),
-        libos,
-        version,
-        deadline,
+        &raw::NV50VAIO_CHANNELDMA_ALLOCATION_PARAMETERS {
+            channelPBSize: raw::ChannelPBSize_PB_SIZE_64KB,
+            subDeviceId: 1,
+            ..Default::default()
+        },
     );
     match core {
-        Ok(()) => sel4::debug_println!(
+        Ok(_) => sel4::debug_println!(
             "NVIDIA_DISPLAY_RM step=core handle={:#x} pushbuffer={:#x}",
             core_handle,
             core_pb
@@ -930,50 +676,20 @@ fn rm_disp<M: Memory>(
             core_pb
         ),
     }
-
-    // 8. Window channel for head 0, with its own push buffer.
-    let (window_pb, _) = rm_vram_alloc_in(
-        ctx,
-        queue,
-        HANDLE_DISP_CLIENT,
-        HANDLE_DISP_DEVICE,
-        HANDLE_DISP_WINDOW_PB,
-        DISP_PB_BYTES,
-        DISP_PB_BYTES,
-        libos,
-        version,
-        deadline,
-    )?;
-    disp_pushbuffer(
-        ctx,
-        queue,
-        rm,
-        rm::GA102_DISP_WINDOW_CHANNEL_DMA,
-        0,
-        window_pb,
-        libos,
-        version,
-        deadline,
-    )
-    .map_err(|error| {
-        sel4::debug_println!("NVIDIA_DISPLAY_RM step=window-pb error={:?}", error);
-        error
-    })?;
+    let window_pb = display_memory(&mut api, HANDLE_DISP_WINDOW_PB, DISP_PB_BYTES)?;
+    display_pushbuffer(&mut api, rm, rm::GA102_DISP_WINDOW_CHANNEL_DMA, window_pb)?;
     let window_handle = rm::disp_chan_handle(rm::GA102_DISP_WINDOW_CHANNEL_DMA, 0);
-    let window = rm_alloc(
-        ctx,
-        queue,
-        HANDLE_DISP_CLIENT,
+    let window = api.alloc::<api::DisplayWindow>(
         rm::HANDLE_DISP_ROOT,
         window_handle,
-        rm::GA102_DISP_WINDOW_CHANNEL_DMA,
-        &rm::disp_chan_dma_params(0, 0, 0),
-        libos,
-        version,
-        deadline,
+        &raw::NV50VAIO_CHANNELDMA_ALLOCATION_PARAMETERS {
+            channelPBSize: raw::ChannelPBSize_PB_SIZE_64KB,
+            subDeviceId: 1,
+            ..Default::default()
+        },
     );
     match window {
-        Ok(()) => sel4::debug_println!(
+        Ok(_) => sel4::debug_println!(
             "NVIDIA_DISPLAY_RM step=window handle={:#x} pushbuffer={:#x}",
             window_handle,
             window_pb
@@ -985,86 +701,66 @@ fn rm_disp<M: Memory>(
             window_pb
         ),
     }
-
-    // Display channel objects are parked here: RM rejects every class we ask for
-    // (core with INVALID_OFFSET, window and cursor with a status that is not an
-    // NV code at all) and neither context-DMA message exists in this firmware, so
-    // there is no client-side reference left to follow. The monitor itself is
-    // already reachable over AUX, which is what the mode set will need.
-    //
-    // 9. Cursor: a PIO channel with no push buffer at all. It exercises the same
-    //    client and root without any DMA parameters.
     let cursor_handle = rm::disp_chan_handle(rm::GA102_DISP_CURSOR, 0);
-    match rm_alloc(
-        ctx,
-        queue,
-        HANDLE_DISP_CLIENT,
-        rm::HANDLE_DISP_ROOT,
-        cursor_handle,
-        rm::GA102_DISP_CURSOR,
-        &rm::disp_chan_pio_params(0),
-        libos,
-        version,
-        deadline,
-    ) {
-        Ok(()) => sel4::debug_println!(
-            "NVIDIA_DISPLAY_RM step=cursor handle={:#x}",
-            cursor_handle
-        ),
-        Err(error) => sel4::debug_println!(
-            "NVIDIA_DISPLAY_RM step=cursor error={:?} handle={:#x}",
-            error,
-            cursor_handle
-        ),
+    match api.alloc::<api::DisplayCursor>(rm::HANDLE_DISP_ROOT, cursor_handle, &Default::default())
+    {
+        Ok(_) => sel4::debug_println!("NVIDIA_DISPLAY_RM step=cursor handle={:#x}", cursor_handle),
+        Err(error) => sel4::debug_println!("NVIDIA_DISPLAY_RM step=cursor error={:?}", error),
     }
     Ok(())
 }
 
+/// Allocation policy stays here; the ABI and reply decoding live in the client.
+fn display_memory<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
+    api: &mut rm::Client<T>,
+    handle: u32,
+    size: u64,
+) -> Result<u64> {
+    let params = rm::vram_request(HANDLE_DISP_CLIENT, size, size)?;
+    let reply = api.alloc::<api::Vram>(HANDLE_DISP_DEVICE, handle, &params)?;
+    if reply.size < size
+        || reply
+            .limit
+            .checked_add(1)
+            .is_none_or(|length| length < size)
+    {
+        return Err(Error::Range);
+    }
+    sel4::debug_println!(
+        "NVIDIA_RM_VRAM_REPLY handle={:#x} size={:#x} offset={:#x} limit={:#x}",
+        handle,
+        reply.size,
+        reply.offset,
+        reply.limit
+    );
+    Ok(reply.offset)
+}
+
 /// Announce one display channel's push buffer to RM. The channel object cannot
 /// be created before RM knows where its methods live.
-fn disp_pushbuffer<M: Memory>(
-    ctx: &mut Ad106<Native>,
-    queue: &mut Queue<M>,
+fn display_pushbuffer<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
+    api: &mut rm::Client<T>,
     rm: &Rm,
     class: u32,
-    instance: u32,
     physical: u64,
-    libos: Span,
-    version: u32,
-    deadline: u64,
 ) -> Result<()> {
-    let params = rm::disp_pushbuffer_params(&rm::DispPushbuffer {
-        address_space: rm::DISP_ADDR_FBMEM,
-        physical,
-        limit: DISP_PB_BYTES - 1,
-        cache_snoop: 0,
-        class,
-        instance,
-        valid: true,
-        // The 570 ABI names the aperture explicitly (zero means IOVA, which is
-        // not where this buffer lives) and carries a one-hot subdevice mask.
-        aperture: rm::PB_APERTURE_PHYS_NVM,
-        // The announced buffer and the channel must agree on the size class:
-        // zero means 4 KiB, and RM then rejects the 64 KiB limit as an offset
-        // outside the buffer.
-        size: rm::PB_SIZE_64KB,
-        subdevice: 1,
-    });
-    let body = rm::encode_ctrl(
-        rm.client,
-        rm.subdevice,
-        rm::CTRL_DISPLAY_CHANNEL_PUSHBUFFER,
-        &params,
-    )?;
-    send(ctx, queue, rm::RM_CONTROL, &body, deadline)?;
-    let reply = wait(ctx, queue, rm::RM_CONTROL, libos, version, deadline)?;
-    let packet = wire::Packet::decode(&reply)?;
-    rm::check_ctrl(
-        packet.payload,
-        rm.subdevice,
-        rm::CTRL_DISPLAY_CHANNEL_PUSHBUFFER,
-        params.len(),
-    )
+    api.for_client(rm.client)
+        .control::<api::DisplayPushbuffer>(
+            rm.subdevice,
+            &raw::NV2080_CTRL_INTERNAL_DISPLAY_CHANNEL_PUSHBUFFER_PARAMS {
+                addressSpace: rm::DISP_ADDR_FBMEM,
+                physicalAddr: physical,
+                limit: DISP_PB_BYTES - 1,
+                cacheSnoop: 0,
+                hclass: class,
+                channelInstance: 0,
+                valid: 1,
+                pbTargetAperture: rm::PB_APERTURE_PHYS_NVM,
+                channelPBSize: rm::PB_SIZE_64KB,
+                subDeviceId: 1,
+            },
+        )?;
+    Ok(())
 }
 
 /// One fenced 4-KiB copy through the copy engine: build the pushbuffer, publish
@@ -1092,7 +788,8 @@ fn ce_copy<M: Memory>(
     const DST: usize = CE_COPY_BYTES;
     const FENCE: usize = 2 * CE_COPY_BYTES;
     const PUSH: usize = 3 * CE_COPY_BYTES;
-    let mut block = ctx.with_platform(|p| p.allocate(4 * CE_COPY_BYTES, DeviceAccess::ReadWrite))?;
+    let mut block =
+        ctx.with_platform(|p| p.allocate(4 * CE_COPY_BYTES, DeviceAccess::ReadWrite))?;
     let pattern: Vec<u8> = (0..CE_COPY_BYTES).map(|i| (i as u8) ^ 0x5a).collect();
     unsafe {
         block.zero()?;
@@ -1114,7 +811,9 @@ fn ce_copy<M: Memory>(
         &mut words,
     )?;
     let mut bytes = Vec::new();
-    bytes.try_reserve_exact(words.len() * 4).map_err(|_| Error::Exhausted)?;
+    bytes
+        .try_reserve_exact(words.len() * 4)
+        .map_err(|_| Error::Exhausted)?;
     for word in &words {
         bytes.extend_from_slice(&word.to_le_bytes());
     }
@@ -1157,7 +856,11 @@ fn ce_copy<M: Memory>(
         p.write32(doorbell, rm::CHANNEL_CID)?;
         Ok(())
     })?;
-    sel4::debug_println!("NVIDIA_CE_DOORBELL offset={:#x} value={}", doorbell, rm::CHANNEL_CID);
+    sel4::debug_println!(
+        "NVIDIA_CE_DOORBELL offset={:#x} value={}",
+        doorbell,
+        rm::CHANNEL_CID
+    );
     // The engine writes the payload when the copy retires; a timeout here is a
     // real failure, never a "probably fine".
     loop {
@@ -1166,9 +869,7 @@ fn ce_copy<M: Memory>(
             sel4::debug_println!("NVIDIA_CE_COPY_TIMEOUT");
             return Err(Error::Timeout);
         }
-        let word = unsafe {
-            (block.pointer().as_ptr().add(FENCE) as *const u32).read_volatile()
-        };
+        let word = unsafe { (block.pointer().as_ptr().add(FENCE) as *const u32).read_volatile() };
         if word == gsp_ce::FENCE_PAYLOAD {
             break;
         }
@@ -1226,7 +927,9 @@ fn wait<M: Memory>(
                     ctx.run_sequence(packet.payload, libos, version, deadline)?;
                 }
             } else if wire::fatal_event(packet.header.function) {
-                return Err(Error::FirmwareStatus(FirmwareStatus(packet.header.function)));
+                return Err(Error::FirmwareStatus(FirmwareStatus(
+                    packet.header.function,
+                )));
             } else if wire::post_event(packet.header.function) {
                 sel4::debug_println!(
                     "NVIDIA_GSP_POST bytes={} rpc_sequence={}",
@@ -1621,8 +1324,14 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                 );
                 // Display objects first: they are independent of the channel and
                 // their handles are what a mode set will be built on.
-                match rm_disp(&mut ctx, &mut queue, &rm, inputs.libos, inputs.app_version, deadline)
-                {
+                match rm_disp(
+                    &mut ctx,
+                    &mut queue,
+                    &rm,
+                    inputs.libos,
+                    inputs.app_version,
+                    deadline,
+                ) {
                     Ok(()) => {}
                     Err(error) => {
                         sel4::debug_println!("NVIDIA_DISPLAY_RM_FAILED error={:?}", error)
@@ -1734,7 +1443,9 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                 while let Some(bytes) = queue.try_receive()? {
                     let packet = wire::Packet::decode(&bytes)?;
                     if wire::fatal_event(packet.header.function) {
-                        return Err(Error::FirmwareStatus(FirmwareStatus(packet.header.function)));
+                        return Err(Error::FirmwareStatus(FirmwareStatus(
+                            packet.header.function,
+                        )));
                     }
                 }
             } else if badge == crate::CLIENT {

@@ -135,6 +135,8 @@
       // lib.optionalAttrs (builtins.elem args.crateName ["sel4-config-data" "sel4-sys"]) {
         SEL4_PREFIX = sel4;
       }
+      // lib.optionalAttrs (args.crateName == "horn-nvidia-gsp")
+      (import ../../hardware/gpu/nvidia/bindings.nix {pkgs = build;})
       // lib.optionalAttrs (args.crateName == "sel4-sys") {
         LIBCLANG_PATH = "${build.llvmPackages.libclang.lib}/lib";
       });

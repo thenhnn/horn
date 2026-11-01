@@ -3,7 +3,7 @@
   pkgs,
   firmware ? null,
 }: let
-  mimalloc = import ../../runtime/mimalloc {inherit pkgs;};
+  mimalloc = import ../../../platform/runtime/mimalloc {inherit pkgs;};
 in
   (workspace.override {
     target = "sel4";

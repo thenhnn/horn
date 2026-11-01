@@ -359,6 +359,7 @@ version = "0.1.0"
 name = "horn-nvidia-gsp"
 version = "0.1.0"
 dependencies = [
+ "bindgen",
  "piaf",
 ]
 

@@ -81,11 +81,15 @@ Display, which is a separate boundary:
   (four heads, eight windows, 84 channels), and the `AD102_DISP` root.
 - What does **not** work yet: the display channels. `AD102_DISP_CORE_CHANNEL_DMA`
   is rejected with `NV_ERR_INVALID_OFFSET` for every offset we tried, and the
-  window and cursor classes answer a status that is not an NV code at all
-  (`0xffff`) even though the reply header echoes our handle and class. Neither
-  `MAP_MEMORY_DMA` nor `ALLOC_CTX_DMA` exists in this firmware
-  (`NV_ERR_INVALID_FUNCTION`), so the context-DMA path the kernel driver uses is
-  not available to us. No mode has been programmed.
+  window and cursor classes answer `NV_ERR_GENERIC` (`0xffff`). Earlier notes
+  incorrectly called this an invalid/unfilled status; open-gpu's
+  `nvstatuscodes.h` explicitly defines it. `MAP_MEMORY_DMA` and `ALLOC_CTX_DMA`
+  experiments returned `NV_ERR_INVALID_FUNCTION`, but sent an unverified payload
+  (an RM-alloc envelope around NVOS46 parameters). This does not establish that
+  either RPC or context DMA is unavailable. No mode has been programmed.
+- The RM API is now generated from pinned 570.144 headers and uses typed
+  allocation/control requests. Outer RPC result and inner RM status are checked
+  separately. This is a software refactor, not new hardware success evidence.
 
 Two things this record does **not** establish:
 
