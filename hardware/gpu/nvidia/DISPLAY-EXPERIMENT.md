@@ -76,10 +76,48 @@ or insufficient RGB8 sink bandwidth reject the target; no 720p fallback.
 clock, pitch and required buffer size. This does **not** program a mode or prove
 source-side DP support. Typed RM connector/SOR/DP control mappings are prepared.
 
-Still pending: core/window bounds and ownership, surface/LUT/scanout backing,
-source caps/watermark checks, SOR acquisition, DP link training, head methods
-and coordinated modeset UPDATE. **This change does not reach visible scanout.**
-CE/GMMU experiments remain parked and are not prerequisites for this path.
+## Current next stage — ownership and surface assembly (hardware-untested)
+
+The new change adds corec57d usage bounds and corec37d static ownership:
+window pairs 0/1 → head 0, 2/3 → head 1, etc., restricted by RM's present
+window/head topology. A fourth core prefix requires FINISHED in a fresh
+notifier slot at byte 16. With eight windows it ends at PUT=89.
+
+A bounded RM allocation holds the preferred-size ARGB8888 pattern (bars,
+checkerboard, red border). All VRAM, including pitch/allocation padding, is
+initialized and read back through banked BAR0 PRAMIN; firmware events are
+serviced between rows. No CE, BAR1, fixed VRAM placement or GPU VA is used.
+Expect SCANOUT_BEGIN/PROGRESS/READY; the CPU upload may take several seconds.
+
+The first operator run of this stage allocated a 16-MiB surface, then the local
+metadata guard rejected it before upload. Format/attr were not logged, so that
+run cannot identify the rejected field. The corrected policy now explicitly
+requests and verifies contiguous VIDMEM, PITCH layout and no compression.
+Allocation `format` is a PTE kind, not ARGB or a pitch/block-linear selector:
+TU102 RM can choose uncompressed GENERIC_MEMORY (6) even for pitch-layout
+IMAGE memory. Only published PITCH/GENERIC_MEMORY kinds are accepted; layout
+and physicality are checked independently. Detailed reply/rejection logs now
+include kind, attr, attr2 and requested attributes. No unknown/tiled/compressed
+kind is allowed through, and no failed allocation is retried.
+
+Both channels are allocated before RAMHT publication. Window 0's bounded
+VRAM descriptor is bound under channel user ID 1; core notifier uses ID 0.
+After ownership completion the window publishes NOP then surface assembly.
+The C67E recipe follows wndwc67e_image_set (no legacy MEMORY_LAYOUT bit),
+identity CSC and opaque composition. Upstream image.handle is an array:
+the trailing PUSH_MTHD argument 1 is the element count, not another handle.
+
+New target markers:
+- NVIDIA_DISPLAY_CORE_COMPLETE kind=ownership, notifier_offset=16.
+- NVIDIA_DISPLAY_SCANOUT_READY: CPU upload/readback only, not active scanout.
+- NVIDIA_DISPLAY_WINDOW_ALLOC_OK and WINDOW_FETCHED kind=assembly.
+- NVIDIA_DISPLAY_PIPELINE_PREPARED ... dp=untrained modeset=not-submitted.
+
+There is deliberately **no window UPDATE** yet: no interlock is left waiting
+for an unimplemented DP/head commit. Fetching assembly is not validation of
+an active image. Still pending: source caps/watermarks, SOR acquisition, DP
+training, head timings/viewport/LUT policy and coordinated modeset UPDATE.
+CE/GMMU experiments remain parked. **No visible image is expected yet.**
 
 ## Operator run
 

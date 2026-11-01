@@ -112,8 +112,10 @@ The operator confirmed core allocation with the 120-byte root parameters,
 display subdevice and 4-KiB ring; these are now unconditional. A subsequent
 operator run confirmed NOP/UPDATE consumption through coherent sysmem (GET=PUT).
 The operator also confirmed the local RAMHT notifier prefix: FINISHED status
-0x80000000 at GET=PUT=22 establishes UPDATE completion. Exact preferred-DTD timing is preflighted, not programmed;
-there is still no modeset or scanout.
+0x80000000 at GET=PUT=22 establishes UPDATE completion. The next stage initializes window usage bounds/static ownership, fills a
+preferred-size VRAM diagnostic surface through PRAMIN, and fetches window 0
+assembly without UPDATE. It is hardware-untested: no DP/head modeset or active
+scanout is enabled. See DISPLAY-EXPERIMENT.md for markers.
 
 `run-vfio.sh` rebuilds the kernel and root task, checks that the GPU and its
 audio sibling are already bound to `vfio-pci`, and launches QEMU with the GPU

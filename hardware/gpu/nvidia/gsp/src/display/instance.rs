@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! Local display RAMHT, following nouveau r535_dmac_bind, nvkm_ramht_hash
 //! and gv100_dmaobj_bind. These are not speculative GSP context-DMA RPCs.
-use crate::{Error, Result, falcon::Platform, raw};
+#[cfg(test)]
+use crate::raw;
+use crate::{Error, Result, falcon::Platform};
 
 pub const RAMHT_BYTES: u32 = 0x2000; // ga102_disp.ramht_size, inherited by AD102
 pub const DESCRIPTOR: u32 = RAMHT_BYTES;
 pub const INSTANCE_BYTES: u64 = 0x10000;
-const PRAMIN: u32 = 0x700000; // Nova PRAMIN (BAR0, not BAR1)
+#[cfg(test)]
+const PRAMIN: u32 = 0x700000;
 
 pub fn hash(handle: u32, channel: u32) -> Result<u32> {
     if channel >= 16 {
@@ -44,9 +47,100 @@ pub fn coherent_descriptor(iova: u64, bytes: usize) -> Result<[u32; 6]> {
     ])
 }
 
-/// Initialize only the allocated instance's RAMHT and first descriptor, before
-/// publishing the first command. Caller owns this fresh aligned 64-KiB allocation.
-/// Every write is read back; failure is fail-stop, never a retry or BAR1 fallback.
+/// VRAM analogue of the proven coherent descriptor, from gv100_dmaobj_new.
+pub fn vram_descriptor(offset: u64, bytes: usize) -> Result<[u32; 6]> {
+    if offset & 4095 != 0
+        || bytes == 0
+        || bytes & 4095 != 0
+        || offset
+            .checked_add(bytes as u64)
+            .is_none_or(|end| end > 1 << 40)
+    {
+        return Err(Error::Range);
+    }
+    let start = offset >> 8;
+    let limit = (offset + bytes as u64 - 1) >> 8;
+    Ok([
+        0x45,
+        start as u32,
+        (start >> 32) as u32,
+        limit as u32,
+        (limit >> 32) as u32,
+        0,
+    ])
+}
+#[derive(Clone, Copy)]
+pub struct Binding {
+    pub channel: u32,
+    pub handle: u32,
+    descriptor: [u32; 6],
+}
+impl Binding {
+    pub fn coherent(channel: u32, handle: u32, iova: u64, bytes: usize) -> Result<Self> {
+        Ok(Self {
+            channel,
+            handle,
+            descriptor: coherent_descriptor(iova, bytes)?,
+        })
+    }
+    pub fn vram(channel: u32, handle: u32, offset: u64, bytes: usize) -> Result<Self> {
+        Ok(Self {
+            channel,
+            handle,
+            descriptor: vram_descriptor(offset, bytes)?,
+        })
+    }
+}
+
+/// Build all entries before touching VRAM. Bounded linear probing mirrors
+/// nvkm_ramht_insert. Repeated handles on different channels are intentional.
+pub fn table(client: u32, bindings: &[Binding]) -> Result<alloc::vec::Vec<u32>> {
+    if bindings.is_empty() || bindings.len() > 32 {
+        return Err(Error::Range);
+    }
+    let mut words = alloc::vec::Vec::new();
+    words
+        .try_reserve_exact(RAMHT_BYTES as usize / 4 + bindings.len() * 8)
+        .map_err(|_| Error::Exhausted)?;
+    words.resize(RAMHT_BYTES as usize / 4 + bindings.len() * 8, 0);
+    for (i, b) in bindings.iter().enumerate() {
+        if b.handle == 0
+            || b.channel >= 16
+            || !matches!(b.descriptor[0], 0x45 | 0x46)
+            || bindings[..i]
+                .iter()
+                .any(|old| old.handle == b.handle && old.channel == b.channel)
+        {
+            return Err(Error::Range);
+        }
+        let descriptor = DESCRIPTOR + i as u32 * 32; // 16-byte GPU object alignment
+        words[descriptor as usize / 4..descriptor as usize / 4 + 6].copy_from_slice(&b.descriptor);
+        let mut slot = hash(b.handle, b.channel)? as usize;
+        while words[slot * 2] != 0 {
+            slot = (slot + 1) % (RAMHT_BYTES as usize / 8);
+        }
+        words[slot * 2] = b.handle;
+        words[slot * 2 + 1] = (b.channel << 25) | (descriptor << 9) | (client & 0x3fff);
+    }
+    Ok(words)
+}
+
+/// Caller owns this fresh aligned 64-KiB instance; no table lookup may be in
+/// flight. Never call this on a live table to add or recycle bindings.
+pub fn install<P: Platform>(
+    p: &mut P,
+    base: u64,
+    client: u32,
+    bindings: &[Binding],
+    deadline: u64,
+) -> Result<()> {
+    if base & (INSTANCE_BYTES - 1) != 0 {
+        return Err(Error::Range);
+    }
+    let words = table(client, bindings)?;
+    super::pramin::Region::new(base, INSTANCE_BYTES)?.write(p, 0, &words, deadline)
+}
+
 pub fn install_notifier<P: Platform>(
     p: &mut P,
     base: u64,
@@ -56,55 +150,17 @@ pub fn install_notifier<P: Platform>(
     bytes: usize,
     deadline: u64,
 ) -> Result<()> {
-    if base & (INSTANCE_BYTES - 1) != 0
-        || base.checked_add(INSTANCE_BYTES).is_none_or(|v| v > 1 << 40)
-        || handle == 0
-    {
-        return Err(Error::Range);
-    }
-    let descriptor = coherent_descriptor(iova, bytes)?;
-    let previous = p.read32(raw::HORN_PRAMIN_WINDOW)?;
-    if previous & !(raw::HORN_PRAMIN_BASE_MASK | raw::HORN_PRAMIN_TARGET_MASK) != 0 {
-        return Err(Error::State);
-    }
-    let window = u32::try_from(base >> 16).map_err(|_| Error::Range)?;
-    if window & !raw::HORN_PRAMIN_BASE_MASK != 0 {
-        return Err(Error::Range);
-    }
-    p.write32(
-        raw::HORN_PRAMIN_WINDOW,
-        window << raw::HORN_PRAMIN_BASE_SHIFT,
-    )?;
-    if p.read32(raw::HORN_PRAMIN_WINDOW)? != window << raw::HORN_PRAMIN_BASE_SHIFT {
-        return Err(Error::State);
-    }
-    let mut write = |offset, value| -> Result<()> {
-        if p.now_us()? >= deadline {
-            return Err(Error::Timeout);
-        }
-        p.write32(PRAMIN + offset, value)?;
-        if p.read32(PRAMIN + offset)? != value {
-            return Err(Error::State);
-        }
-        Ok(())
-    };
-    // No channel can look up this table yet. No access outside our allocation.
-    for offset in (0..RAMHT_BYTES).step_by(4) {
-        write(offset, 0)?;
-    }
-    for (i, value) in descriptor.into_iter().enumerate() {
-        write(DESCRIPTOR + i as u32 * 4, value)?;
-    }
-    let slot = hash(handle, 0)? * 8; // core channel user ID is zero
-    write(slot, handle)?;
-    write(slot + 4, (DESCRIPTOR << 9) | (client & 0x3fff))?;
-    // Posted-write drain, then restore the aperture selector only after success.
-    p.read32(PRAMIN + slot + 4)?;
-    p.write32(raw::HORN_PRAMIN_WINDOW, previous)?;
-    if p.read32(raw::HORN_PRAMIN_WINDOW)? != previous {
-        return Err(Error::State);
-    }
-    Ok(())
+    install(
+        p,
+        base,
+        client,
+        &[Binding {
+            channel: 0,
+            handle,
+            descriptor: coherent_descriptor(iova, bytes)?,
+        }],
+        deadline,
+    )
 }
 
 #[cfg(test)]
@@ -164,7 +220,7 @@ mod tests {
             p.writes
                 .iter()
                 .all(|&(offset, _)| offset == raw::HORN_PRAMIN_WINDOW
-                    || (PRAMIN..PRAMIN + DESCRIPTOR + 24).contains(&offset))
+                    || (PRAMIN..PRAMIN + DESCRIPTOR + 32).contains(&offset))
         );
     }
     #[test]
@@ -190,7 +246,7 @@ mod tests {
             install_notifier(&mut p, 0x1ee5c0000, 1, 0x1000, 0x3dc3000, 4096, 1),
             Err(Error::Timeout)
         ));
-        assert_eq!(p.writes.len(), 1); // selector only; no descriptor, reset or retry
+        assert_eq!(p.writes.len(), 0); // expired before MMIO; no reset or retry
     }
     #[test]
     fn invalid_descriptor_or_unowned_geometry_does_not_touch_mmio() {
@@ -198,6 +254,38 @@ mod tests {
         assert!(install_notifier(&mut p, 1, 1, 0x1000, 0x1000, 4096, 10000).is_err());
         assert!(install_notifier(&mut p, 0x10000, 1, 0x1000, 1, 4096, 10000).is_err());
         assert!(p.writes.is_empty());
+    }
+    #[test]
+    fn collisions_probe_and_channel_bindings_use_distinct_contexts() {
+        let d = coherent_descriptor(0x1000, 4096).unwrap();
+        let entries = [
+            Binding {
+                channel: 0,
+                handle: 0x1000,
+                descriptor: d,
+            },
+            Binding {
+                channel: 0,
+                handle: 0x400000,
+                descriptor: d,
+            },
+            Binding {
+                channel: 1,
+                handle: 0x1000,
+                descriptor: vram_descriptor(0x1ee600000, 0x10000).unwrap(),
+            },
+        ];
+        let words = table(0xc2d00007, &entries).unwrap();
+        assert_eq!(words[8], 0x1000);
+        assert_eq!(words[10], 0x400000);
+        assert_eq!(words[11], (0x2020 << 9) | 7);
+        assert_eq!(words[68 * 2 + 1], (1 << 25) | (0x2040 << 9) | 7);
+        assert_eq!(
+            &words[0x2040 / 4..0x2040 / 4 + 6],
+            &[0x45, 0x1ee6000, 0, 0x1ee60ff, 0, 0]
+        );
+        assert!(table(1, &[entries[0], entries[0]]).is_err());
+        assert!(vram_descriptor((1 << 40) - 4096, 8192).is_err());
     }
     #[test]
     fn descriptor_uses_coherent_iova_not_cpu_or_gpu_virtual_address() {

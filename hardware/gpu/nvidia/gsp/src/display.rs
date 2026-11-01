@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! AD102 core DMA command probe, following nouveau's corec37d_update(ntfy=false).
 //! The initial prefixes establish consumption; the third requests completion.
+pub mod commands;
 pub mod instance;
+pub mod pramin;
+pub mod surface;
 pub mod timing;
 use crate::{Error, Result, raw};
 

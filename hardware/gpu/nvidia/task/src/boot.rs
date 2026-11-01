@@ -24,6 +24,7 @@ use horn_nvidia_gsp::{
     wire,
 };
 use horn_nvidia_gsp::{ce as gsp_ce, display as gsp_disp};
+mod scanout;
 mod images {
     include!(concat!(env!("OUT_DIR"), "/images.rs"));
 }
@@ -595,7 +596,13 @@ fn rm_disp<M: Memory>(
     libos: Span,
     version: u32,
     deadline: u64,
+    report: &crate::display::Report,
 ) -> Result<()> {
+    let timing = gsp_disp::timing::Timing::preferred(&report.monitor)?;
+    timing.sink_link(&report.dpcd)?;
+    if report.heads & 1 == 0 {
+        return Err(Error::Unsupported);
+    }
     let mut notifier = ctx.with_platform(|p| p.allocate(4096, DeviceAccess::ReadWrite))?;
     unsafe {
         notifier.zero()?;
@@ -606,13 +613,6 @@ fn rm_disp<M: Memory>(
     // including after a timeout; the session retains this DMA allocation.
     unsafe {
         core_pb.zero()?;
-        for (index, word) in gsp_disp::probe_words()?
-            .iter()
-            .chain(gsp_disp::notifier_words(DISP_NOTIFIER_HANDLE)?.iter())
-            .enumerate()
-        {
-            core_pb.write32(index * 4, *word)?;
-        }
     }
     let instance = {
         let mut api = rm_api(ctx, queue, HANDLE_DISP_CLIENT, libos, version, deadline);
@@ -642,9 +642,14 @@ fn rm_disp<M: Memory>(
             "NVIDIA_DISPLAY_RM step=subdevice handle={:#x}",
             HANDLE_DISP_SUBDEVICE
         );
-        display_memory(&mut api, HANDLE_DISP_INST, DISP_INST_BYTES)?
+        display_memory(
+            &mut api,
+            HANDLE_DISP_INST,
+            &rm::vram_request(HANDLE_DISP_CLIENT, DISP_INST_BYTES, DISP_INST_BYTES)?,
+        )?
+        .offset
     };
-    {
+    let program = {
         let mut api = rm_api(ctx, queue, HANDLE_DISP_CLIENT, libos, version, deadline);
         api.for_client(rm.client).control::<api::DisplayInstMem>(
             rm.subdevice,
@@ -677,13 +682,20 @@ fn rm_disp<M: Memory>(
             info.numHeads,
             info.numDispChannels
         );
+        let topology = gsp_disp::commands::Topology::new(info.windowPresentMask, info.numHeads)?;
+        let program = gsp_disp::commands::Core::new(topology, DISP_NOTIFIER_HANDLE)?;
+        unsafe {
+            for (i, &word) in program.push.words().iter().enumerate() {
+                core_pb.write32(i * 4, word)?;
+            }
+        }
         api.alloc::<api::Display>(HANDLE_DISP_DEVICE, rm::HANDLE_DISP_ROOT, &())?;
         sel4::debug_println!(
             "NVIDIA_DISPLAY_RM step=root handle={:#x}",
             rm::HANDLE_DISP_ROOT
         );
 
-        display_pushbuffer(&mut api, rm, core_pb.iova)?;
+        display_pushbuffer(&mut api, rm, core_pb.iova, rm::AD102_DISP_CORE_CHANNEL_DMA)?;
         let core_handle = rm::disp_chan_handle(rm::AD102_DISP_CORE_CHANNEL_DMA, 0);
         sel4::debug_println!(
             "NVIDIA_DISPLAY_CORE_INPUT client={:#x} parent={:#x} handle={:#x} pb={:#x} bytes={} size_class={} get_put=0 subdevices=1 target=coherent-sysmem",
@@ -714,17 +726,21 @@ fn rm_disp<M: Memory>(
             reply.channelPBSize,
             reply.subDeviceId
         );
-    } // End the RPC client's exclusive transport borrow before direct submission.
-    ctx.with_platform(|p| {
-        gsp_disp::instance::install_notifier(
-            p,
-            instance,
-            HANDLE_DISP_CLIENT,
+        program
+    }; // End the RPC client's exclusive transport borrow before direct submission.
+    let surface = scanout::prepare(ctx, queue, libos, version, deadline, &timing)?;
+    let window = scanout::window(ctx, queue, rm, libos, version, deadline, &timing)?;
+    let bindings = [
+        gsp_disp::instance::Binding::coherent(
+            0,
             DISP_NOTIFIER_HANDLE,
             notifier.iova,
             notifier.bytes,
-            deadline,
-        )
+        )?,
+        gsp_disp::instance::Binding::vram(1, scanout::IMAGE_HANDLE, surface.base, surface.bytes)?,
+    ];
+    ctx.with_platform(|p| {
+        gsp_disp::instance::install(p, instance, HANDLE_DISP_CLIENT, &bindings, deadline)
     })?;
     sel4::debug_println!(
         "NVIDIA_DISPLAY_RAMHT_OK instance={:#x} notifier={:#x} bytes={} handle={:#x}",
@@ -733,17 +749,18 @@ fn rm_disp<M: Memory>(
         notifier.bytes,
         DISP_NOTIFIER_HANDLE
     );
-    core_submit(ctx, queue, libos, version, deadline, &notifier)
+    core_submit(ctx, queue, libos, version, deadline, &notifier, &program)?;
+    scanout::submit_window(ctx, queue, libos, version, deadline, &window)
 }
 
 /// Allocation policy stays here; the ABI and reply decoding live in the client.
 fn display_memory<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
     api: &mut rm::Client<T>,
     handle: u32,
-    size: u64,
-) -> Result<u64> {
-    let params = rm::vram_request(HANDLE_DISP_CLIENT, size, size)?;
-    let reply = api.alloc::<api::Vram>(HANDLE_DISP_DEVICE, handle, &params)?;
+    params: &raw::NV_MEMORY_ALLOCATION_PARAMS,
+) -> Result<raw::NV_MEMORY_ALLOCATION_PARAMS> {
+    let size = params.size;
+    let reply = api.alloc::<api::Vram>(HANDLE_DISP_DEVICE, handle, params)?;
     if reply.size < size
         || reply
             .limit
@@ -753,13 +770,17 @@ fn display_memory<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
         return Err(Error::Range);
     }
     sel4::debug_println!(
-        "NVIDIA_RM_VRAM_REPLY handle={:#x} size={:#x} offset={:#x} limit={:#x}",
+        "NVIDIA_RM_VRAM_REPLY handle={:#x} size={:#x} offset={:#x} limit={:#x} attr={:#x} attr2={:#x} kind={:#x} requested_attr={:#x}",
         handle,
         reply.size,
         reply.offset,
-        reply.limit
+        reply.limit,
+        reply.attr,
+        reply.attr2,
+        reply.format,
+        params.attr
     );
-    Ok(reply.offset)
+    Ok(reply)
 }
 
 /// Announce one display channel's push buffer to RM. The channel object cannot
@@ -768,6 +789,7 @@ fn display_pushbuffer<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
     api: &mut rm::Client<T>,
     rm: &Rm,
     iova: u64,
+    class: u32,
 ) -> Result<()> {
     api.for_client(rm.client)
         .control::<api::DisplayPushbuffer>(
@@ -777,7 +799,7 @@ fn display_pushbuffer<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
                 physicalAddr: iova,
                 limit: DISP_PB_BYTES - 1,
                 cacheSnoop: 1,
-                hclass: rm::AD102_DISP_CORE_CHANNEL_DMA,
+                hclass: class,
                 channelInstance: 0,
                 valid: 1,
                 // Same PHYS_PCI_COHERENT selector used by nouveau r570.
@@ -789,8 +811,36 @@ fn display_pushbuffer<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
     Ok(())
 }
 
-/// Publish three preloaded prefixes without rewriting or recycling the live ring.
-/// The third requires the GPU-written notifier as well as GET advancement.
+fn display_event<M: Memory>(
+    ctx: &mut Ad106<Native>,
+    queue: &mut Queue<M>,
+    libos: Span,
+    version: u32,
+    deadline: u64,
+) -> Result<()> {
+    ctx.with_platform(Native::service_pending_gsp_event)?;
+    // Service firmware events while polling, as in the RPC wait path.
+    // No synchronous RPC is outstanding during direct submission.
+    if let Some(bytes) = queue.try_receive()? {
+        let packet = wire::Packet::decode(&bytes)?;
+        if packet.header.function == wire::CPU_SEQUENCE {
+            unsafe {
+                ctx.run_sequence(packet.payload, libos, version, deadline)?;
+            }
+        } else if wire::fatal_event(packet.header.function) {
+            sel4::debug_println!("NVIDIA_DISPLAY_FATAL event={:#x}", packet.header.function);
+            return Err(Error::FirmwareStatus(FirmwareStatus(
+                packet.header.function,
+            )));
+        } else if packet.header.function < 4096 {
+            return Err(Error::Malformed);
+        }
+    }
+    Ok(())
+}
+
+/// Four immutable prefixes: fetch probes, then notifier UPDATE and ownership.
+/// Both completion stages use distinct, initialized notifier slots.
 fn core_submit<M: Memory>(
     ctx: &mut Ad106<Native>,
     queue: &mut Queue<M>,
@@ -798,6 +848,7 @@ fn core_submit<M: Memory>(
     version: u32,
     boot_deadline: u64,
     notifier: &DmaBlock,
+    program: &gsp_disp::commands::Core,
 ) -> Result<()> {
     let deadline = ctx
         .time_us()?
@@ -819,11 +870,23 @@ fn core_submit<M: Memory>(
     if put != 0 || get != 0 {
         return Err(Error::State); // no ring reset or guessed resume position
     }
+    sel4::debug_println!(
+        "NVIDIA_DISPLAY_OWNERSHIP_INPUT windows={:#x} heads={} put={} notifier_offset={}",
+        program.topology.windows,
+        program.topology.heads,
+        program.push.put(),
+        gsp_disp::commands::OWNER_NOTIFIER
+    );
     let mut previous = 0;
-    for (kind, target) in [
-        ("nop", gsp_disp::NOP_PUT),
-        ("update", gsp_disp::UPDATE_PUT),
-        ("notifier", gsp_disp::NOTIFIER_PUT),
+    for (kind, target, slot) in [
+        ("nop", gsp_disp::NOP_PUT, None),
+        ("update", gsp_disp::UPDATE_PUT, None),
+        ("notifier", gsp_disp::NOTIFIER_PUT, Some(0)),
+        (
+            "ownership",
+            program.push.put(),
+            Some(gsp_disp::commands::OWNER_NOTIFIER),
+        ),
     ] {
         let mut fetched = false;
         if ctx.time_us()? >= deadline {
@@ -841,27 +904,7 @@ fn core_submit<M: Memory>(
             value
         );
         loop {
-            ctx.with_platform(Native::service_pending_gsp_event)?;
-            // Service firmware events while polling, as in the RPC wait path.
-            // No synchronous RPC is outstanding during direct submission.
-            if let Some(bytes) = queue.try_receive()? {
-                let packet = wire::Packet::decode(&bytes)?;
-                if packet.header.function == wire::CPU_SEQUENCE {
-                    unsafe {
-                        ctx.run_sequence(packet.payload, libos, version, deadline)?;
-                    }
-                } else if wire::fatal_event(packet.header.function) {
-                    sel4::debug_println!(
-                        "NVIDIA_DISPLAY_CORE_FATAL event={:#x}",
-                        packet.header.function
-                    );
-                    return Err(Error::FirmwareStatus(FirmwareStatus(
-                        packet.header.function,
-                    )));
-                } else if packet.header.function < 4096 {
-                    return Err(Error::Malformed);
-                }
-            }
+            display_event(ctx, queue, libos, version, deadline)?;
             let (put, get_raw) = ctx.with_platform(read)?;
             let get = gsp_disp::get_dwords(get_raw);
             let now = ctx.time_us()?;
@@ -892,7 +935,7 @@ fn core_submit<M: Memory>(
                         kind,
                         target,
                         get,
-                        if target == gsp_disp::NOTIFIER_PUT {
+                        if slot.is_some() {
                             "enabled"
                         } else {
                             "disabled"
@@ -900,19 +943,21 @@ fn core_submit<M: Memory>(
                     );
                     fetched = true;
                 }
-                if target == gsp_disp::NOTIFIER_PUT {
+                if let Some(offset) = slot {
                     // Volatile, no Rust references into GPU-writable notifier RAM.
-                    let status = unsafe { notifier.read32(0)? };
+                    let status = unsafe { notifier.read32(offset)? };
                     core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
                     if !gsp_disp::notifier_finished(status)? {
                         ctx.sleep_until(now.saturating_add(1000).min(deadline))?;
                         continue;
                     }
                     sel4::debug_println!(
-                        "NVIDIA_DISPLAY_CORE_COMPLETE kind=update status={:#x} put={} get={}",
+                        "NVIDIA_DISPLAY_CORE_COMPLETE kind={} status={:#x} put={} get={} notifier_offset={}",
+                        if kind == "notifier" { "update" } else { kind },
                         status,
                         target,
-                        get
+                        get,
+                        offset
                     );
                 }
                 previous = get;
@@ -1427,7 +1472,7 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
         );
         // Display first: it depends on nothing RM provides, and it is what the
         // operator can see, so it must not sit behind a channel timeout.
-        match ctx.with_platform(|p| crate::display::probe(p, &prom)) {
+        let display = match ctx.with_platform(|p| crate::display::probe(p, &prom)) {
             Ok(report) => {
                 sel4::debug_println!(
                     "NVIDIA_DISPLAY connector={} kind=dp aux={} pad={} dpcd={:02x?}",
@@ -1479,9 +1524,13 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                         mode.v_back_porch
                     );
                 }
+                Some(report)
             }
-            Err(error) => sel4::debug_println!("NVIDIA_DISPLAY_FAILED error={:?}", error),
-        }
+            Err(error) => {
+                sel4::debug_println!("NVIDIA_DISPLAY_FAILED error={:?}", error);
+                None
+            }
+        };
         horn_runtime::notify_ready(DEVICE_DRIVER_CAPS_READY_SLOT);
         // First RM client above the firmware: root -> device -> subdevice.
         // A failure here is reported but must not tear down a healthy GSP.
@@ -1499,8 +1548,8 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                     rm.device,
                     rm.subdevice
                 );
-                // Display objects first: they are independent of the channel and
-                // their handles are what a mode set will be built on.
+                // No monitor: leave the display untouched rather than synthesize a mode.
+                let report = display.as_ref().ok_or(Error::Unavailable)?;
                 rm_disp(
                     &mut ctx,
                     &mut queue,
@@ -1508,6 +1557,7 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                     inputs.libos,
                     inputs.app_version,
                     deadline,
+                    report,
                 )
                 .map_err(|error| {
                     sel4::debug_println!("NVIDIA_DISPLAY_RM_FAILED error={:?}", error);

@@ -175,3 +175,57 @@ and 11. Status 0x80000000 is the published C77D notifier FINISHED value.
 This confirms the local RAMHT binding, coherent GPU notifier write and UPDATE
 completion path, not merely command consumption. It does not establish
 window setup, modeset, DP link training or visible scanout.
+
+
+## Operator follow-up — surface allocated, software guard stopped before upload
+
+The next-stage run again reached GSP READY and core allocation. Exact preferred
+base-DTD geometry is now 2560x1440, 497750 kHz, totals 2720x1525, 119997 mHz,
+porches H=48/32/80 and V=3/5/77. This supersedes the older vertical-total
+reconstruction (and its 89-line back porch).
+
+```
+NVIDIA_DISPLAY_CORE_ALLOC_OK handle=0xc77d0000 get_put=0x0 size_class=0 subdevices=0x1
+NVIDIA_RM_VRAM_REPLY handle=0x420000 size=0x1000000 offset=0x1ee600000 limit=0xffffff
+NVIDIA_DISPLAY_RM_FAILED error=Unsupported
+```
+
+RM accepted the surface request and rounded 14745600 bytes to 16 MiB.
+Size/alignment/limit fit the software policy; format/attribute validation
+rejected before SCANOUT_BEGIN, PRAMIN upload, window allocation or new PUTs.
+The log omitted format/attr, so it does not identify which metadata check
+rejected. The epoch fail-stopped with DMA retained; no ownership/window or
+scanout success is established by this run.
+
+Source-derived follow-up: allocation `format` is a PTE kind; TU102 RM can
+choose uncompressed GENERIC_MEMORY (6) for pitch-layout IMAGE memory. The
+software guard no longer equates kind zero with linearity. Scanout requests
+now explicitly require contiguous VIDMEM/PITCH/COMPR_NONE, verify those fields
+and allow only the published uncompressed pitch/generic kinds, with full
+size/relative-limit/alignment/address checks before upload. Instance allocation
+policy is unchanged. Reply/rejection logs now expose kind and attributes.
+This is not proof that kind 6 was returned by the failed hardware run.
+
+The follow-up native Nix kernel/root-task build succeeded; log:
+`work/nvidia-surface-policy-build.log`. Tests and VM were not run. Ownership
+completion, surface upload/readback and window assembly still require a new
+operator-authorized run; DP/head modeset remains unimplemented.
+
+
+## Authorized VFIO run — ownership and surface preparation confirmed
+
+Log: `work/nvidia-vfio-20261102-034416/serial.log`. Invoked through the
+operator-authorized `doas hardware/gpu/nvidia/run-vfio.sh`; QEMU was ultimately
+terminated by host signal 15 (btop), not graceful STOP/unload.
+
+- Surface reply: size 0x1000000, offset 0x1ee600000, limit 0xffffff,
+  attr 0x11800000, attr2 0x100005, kind 6; requested attr 0x10000000.
+- SCANOUT_READY: entire 16 MiB uploaded/read back; no active scanout.
+- Ownership: FINISHED 0x80000000, GET=PUT=89, fresh notifier byte offset 16.
+- Window 0 allocated; NOP GET=PUT=4; assembly GET=PUT=48.
+- PIPELINE_PREPARED: head 0/window 0, image handle 0x2000,
+  dp=untrained, modeset=not-submitted. No visible-image claim.
+
+Kind 6 is now actually observed for pitch-layout memory. CPU PRAMIN per-DWORD
+write/readback is intentionally slow (~5.3 seconds for 1408 active rows);
+it is diagnostic upload, not scanout throughput.

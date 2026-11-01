@@ -150,4 +150,33 @@ sync interpretation but reads exact base-DTD vertical blanking: piaf's
 rounded refresh rate must not be used to reconstruct totals. Unknown totals,
 sync polarity, borders, interlace or insufficient bandwidth reject the
 preferred target instead of choosing a different mode. Source-cap/watermark
-checks, window setup, scanout and DP training remain pending.
+checks, active scanout and DP training remain pending.
+
+## VRAM surface policy correction (570.144)
+
+The operator's first surface run allocated 16 MiB, then stopped at the local
+metadata guard before PRAMIN upload. The omitted attr/format fields prevent
+attributing that specific rejection to a single field; see ../HARDWARE.md.
+
+Source basis in the pinned open-gpu tree:
+- `src/common/inc/swref/published/turing/tu102/dev_mmu.h`: PTE kinds PITCH (0)
+  and GENERIC_MEMORY (6), evaluated through Cargo bindgen enum expressions.
+- `src/nvidia/src/kernel/gpu/mem_mgr/arch/turing/mem_mgr_tu102.c`,
+  `memmgrChooseKind_TU102`: uncompressed IMAGE can get GENERIC_MEMORY.
+- The adjacent `mem_mgr_tu102_base.c`, `memmgrIsSurfaceBlockLinear_TU102`:
+  surface layout is determined by NVOS32_ATTR_FORMAT, not the PTE kind.
+- `src/nvidia/src/kernel/gpu/disp/inst_mem/arch/v03/disp_inst_mem_0300.c`,
+  `instmemCommitContextDma_v03_00`: display DMA descriptor KIND follows surface
+  layout. A pitch descriptor remains appropriate with allocation kind 6 when
+  the allocation is explicitly pitch-layout and uncompressed.
+- `src/nvidia/src/kernel/mem_mgr/video_mem.c`: contiguous allocation behavior
+  follows NVOS32_ATTR_PHYSICALITY. A single base/limit must not describe an
+  allocation permitted to be physically noncontiguous.
+
+`surface::request` explicitly requests contiguous VIDMEM/PITCH/COMPR_NONE;
+`surface::validate_allocation` checks these independently from a closed set of
+uncompressed kinds, plus size/relative limit/alignment/40-bit physical bounds.
+Instance-memory requests are unchanged. New reply/rejection diagnostics show
+kind/attr/attr2, and validation still precedes any upload or publication.
+The new window usage-bounds/ownership/surface-assembly path is hardware-untested;
+no window UPDATE or DP/head modeset is issued.
