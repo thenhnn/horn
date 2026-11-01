@@ -139,6 +139,12 @@ fields!(rpc_gsp_rm_control_v03_00 {
     flags,
     params
 });
+fields!(NV0000_ALLOC_PARAMETERS {
+    hClient,
+    processID,
+    processName,
+    pOsPidInfo
+});
 fields!(rpc_alloc_root_v07_00 {
     hClient,
     processID,

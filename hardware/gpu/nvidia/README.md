@@ -1,6 +1,8 @@
 # Native NVIDIA / AD106 bring-up
 
-**Not a working GPU driver. No firmware has been uploaded or GPU passed through.**
+**Experimental native driver, not a working desktop GPU driver.**
+GSP boot has been verified on the physical board; see [HARDWARE.md](HARDWARE.md)
+for current evidence rather than the older bring-up notes below.
 Linux bring-up is parked; this is a separate native Horn driver effort.
 The first hardware milestone is **GSP boot + a validated GetGspStaticInfo reply**,
 not rendering, CUDA, display, or Mesa compatibility.
@@ -104,6 +106,10 @@ trace runs `NVIDIA_GSP_BOOT_BEGIN` → `HANDOFF_BEGIN` → `RISCV_ACTIVE` →
 That is firmware bring-up only: MSI/GIN delivery, STOP/unload, repeat boots and
 everything above the GSP (RM clients, GPU memory, channels) are still unproven.
 A build or a parser success never substitutes for these markers.
+
+The opt-in [display core experiment](DISPLAY-EXPERIMENT.md) compares our
+channel setup with nouveau r570. `display-core.nix` selects its 4-KiB core-only
+probe; it has been built but has not yet run on the GPU.
 
 `run-vfio.sh` rebuilds the kernel and root task, checks that the GPU and its
 audio sibling are already bound to `vfio-pci`, and launches QEMU with the GPU

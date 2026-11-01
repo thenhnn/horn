@@ -1,5 +1,10 @@
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(gsp_boot)");
+    println!("cargo:rustc-check-cfg=cfg(display_core_only)");
+    println!("cargo:rerun-if-env-changed=NVIDIA_DISPLAY_CORE_ONLY");
+    if std::env::var("NVIDIA_DISPLAY_CORE_ONLY").as_deref() == Ok("1") {
+        println!("cargo:rustc-cfg=display_core_only");
+    }
     println!("cargo:rerun-if-env-changed=NVIDIA_FIRMWARE_DIR");
     if let Ok(directory) = std::env::var("NVIDIA_FIRMWARE_DIR") {
         let mut generated = String::new();

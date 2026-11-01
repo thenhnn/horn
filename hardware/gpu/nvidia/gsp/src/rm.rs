@@ -202,11 +202,11 @@ pub fn disp_pushbuffer_params(
     )
 }
 
-/// `PBTARGETAPERTURE`: which aperture the push buffer lives in. Zero is `IOVA`,
-/// which is why leaving it unset made RM reject the offset.
+/// `PBTARGETAPERTURE`: zero is `IOVA`; nouveau r570 explicitly uses
+/// `PHYS_NVM` for VRAM. This selection alone has not fixed channel allocation.
 pub const PB_APERTURE_PHYS_NVM: u32 = 1;
-/// `ChannelPBSize`: 0 means a 4 KiB buffer, so a 64 KiB buffer must say so or
-/// RM sees an announced size that does not match the channel.
+/// `ChannelPBSize`: the earlier 64-KiB experiment's explicit ring size.
+/// Nouveau r570 instead leaves this field zero (4 KiB).
 pub const PB_SIZE_64KB: u32 = raw::ChannelPBSize_PB_SIZE_64KB;
 
 /// `GA102_DISP_CURSOR`: a PIO channel, allocated without a push buffer.

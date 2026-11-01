@@ -28,6 +28,17 @@ fn generated_layout_and_padding_are_used() {
     );
     assert_eq!(size_of::<raw::NV0000_ALLOC_PARAMETERS>(), 120);
     assert_eq!(<Root as Alloc>::Params::SIZE, 108);
+    assert_eq!(<Root570 as Alloc>::Params::SIZE, 120);
+    let root = raw::NV0000_ALLOC_PARAMETERS {
+        hClient: 7,
+        processID: u32::MAX,
+        ..Default::default()
+    };
+    let bytes = root.bytes().unwrap();
+    assert!(bytes[108..].iter().all(|byte| *byte == 0));
+    let decoded = raw::NV0000_ALLOC_PARAMETERS::read(&bytes).unwrap();
+    assert_eq!(decoded.hClient, 7);
+    assert!(decoded.pOsPidInfo.is_null());
 }
 
 #[test]

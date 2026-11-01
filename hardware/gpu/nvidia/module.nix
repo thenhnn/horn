@@ -12,6 +12,7 @@
       then config.nvidia.firmware
       else null;
     pkgs = pkgs.pkgsBuildBuild;
+    displayCoreOnly = config.nvidia.display-core-only;
   };
   elf = pkgs.pkgsBuildBuild.runCommand "nvidia-probe-runtime.elf" {
     nativeBuildInputs = [pkgs.pkgsBuildBuild.llvmPackages.llvm];
@@ -21,6 +22,11 @@ in {
   options.nvidia.boot = lib.mkOption {
     type = lib.types.bool;
     default = true;
+  };
+  options.nvidia.display-core-only = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Probe only the nouveau r570 core-channel recipe, without window/cursor or compute bring-up.";
   };
   options.nvidia.firmware = lib.mkOption {
     type = lib.types.package;

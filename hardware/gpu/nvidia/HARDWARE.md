@@ -118,3 +118,24 @@ Raw serial logs (gitignored, local to this checkout):
 
 Reproduce: `hardware/gpu/nvidia/run-vfio.sh` with the GPU already bound to
 `vfio-pci` (`hardware/gpu/nvidia/host-gpu.sh status`).
+
+
+## Operator follow-up — nouveau r570 core recipe accepted
+
+The operator supplied a physical-board serial trace for `display-core.nix`
+(570.144). Both root allocations used 120-byte SDK parameters. The dedicated
+display subdevice was created, and the core ring was announced as 4 KiB:
+
+```
+NVIDIA_DISPLAY_RM step=subdevice handle=0x5d2d0000
+NVIDIA_RM_VRAM_REPLY handle=0x420000 size=0x10000 offset=0x1ee5d0000 limit=0xffff
+NVIDIA_DISPLAY_CORE_INPUT client=0xc2d00000 parent=0xc7700000 handle=0xc77d0000 pb=0x1ee5d0000 bytes=4096 size_class=0 get_put=0 subdevices=1
+NVIDIA_DISPLAY_CORE_ALLOC_OK handle=0xc77d0000 get_put=0x0 size_class=0 subdevices=0x1
+NVIDIA_DISPLAY_EXPERIMENT_DONE compute=skipped
+```
+
+This establishes successful core allocation, not command submission or a
+modeset. RM rounded the backing allocation to 64 KiB while accepting a 4-KiB
+ring. The run changed root parameters, the display subdevice and ring size
+together; it does not identify which change resolved INVALID_OFFSET.
+No window/cursor or compute requests were attempted in this run.

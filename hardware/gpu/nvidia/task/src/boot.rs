@@ -102,14 +102,53 @@ fn rm_api<'a, M: Memory>(
         let packet = wire::Packet::decode(&reply)?;
         packet.success().map_err(|error| {
             sel4::debug_println!(
-                "NVIDIA_RM_RPC_FAIL function={:#x} error={:?}",
+                "NVIDIA_RM_RPC_FAIL function={:#x} status={:#x} private={:#x} error={:?}",
                 function,
+                packet.header.status,
+                packet.header.private_status,
                 error
             );
             error
         })?;
         Ok(packet.payload.to_vec())
     })
+}
+
+fn rm_root<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
+    api: &mut rm::Client<T>,
+    client: u32,
+) -> Result<()> {
+    sel4::debug_println!(
+        "NVIDIA_RM_ROOT_INPUT client={:#x} params_bytes={}",
+        client,
+        if cfg!(display_core_only) {
+            core::mem::size_of::<raw::NV0000_ALLOC_PARAMETERS>()
+        } else {
+            core::mem::size_of::<raw::rpc_alloc_root_v07_00>()
+        }
+    );
+    if cfg!(display_core_only) {
+        api.alloc::<api::Root570>(
+            client,
+            client,
+            &raw::NV0000_ALLOC_PARAMETERS {
+                hClient: client,
+                processID: u32::MAX,
+                ..Default::default()
+            },
+        )?;
+    } else {
+        api.alloc::<api::Root>(
+            client,
+            client,
+            &raw::rpc_alloc_root_v07_00 {
+                hClient: client,
+                processID: u32::MAX,
+                ..Default::default()
+            },
+        )?;
+    }
+    Ok(())
 }
 
 fn rm_client<M: Memory>(
@@ -125,15 +164,7 @@ fn rm_client<M: Memory>(
         subdevice: rm::HANDLE_SUBDEVICE,
     };
     let mut api = rm_api(ctx, queue, rm.client, libos, version, deadline);
-    api.alloc::<api::Root>(
-        rm.client,
-        rm.client,
-        &raw::rpc_alloc_root_v07_00 {
-            hClient: rm.client,
-            processID: u32::MAX,
-            ..Default::default()
-        },
-    )?;
+    rm_root(&mut api, rm.client)?;
     api.alloc::<api::Device>(
         rm.client,
         rm.device,
@@ -570,15 +601,22 @@ fn rm_channel<M: Memory>(
 /// the display state is per client, and channels are validated against it.
 const HANDLE_DISP_CLIENT: u32 = 0xc2d0_0000;
 const HANDLE_DISP_DEVICE: u32 = 0xde2d_0000;
+const HANDLE_DISP_SUBDEVICE: u32 = 0x5d2d_0000;
 const HANDLE_DISP_INST: u32 = 0x0041_0000;
 const HANDLE_DISP_CORE_PB: u32 = 0x0042_0000;
 const HANDLE_DISP_WINDOW_PB: u32 = 0x0043_0000;
-/// One display channel push buffer: large enough for a mode set with room to
-/// spare, and aligned to its own size.
-const DISP_PB_BYTES: u64 = 0x1_0000;
-/// Display buffers are placed low on purpose: the engine addresses them with
-/// 32-bit values, and RM's default heap hands out offsets above 4 GiB.
-const DISP_BASE: u64 = 0x0100_0000;
+/// The opt-in reference probe uses nouveau's 4-KiB pushbuffer and default ring
+/// size. Keep the earlier 64-KiB recipe available as a baseline.
+const DISP_PB_BYTES: u64 = if cfg!(display_core_only) {
+    0x1000
+} else {
+    0x1_0000
+};
+const DISP_PB_SIZE: u32 = if cfg!(display_core_only) {
+    raw::ChannelPBSize_PB_SIZE_4KB
+} else {
+    raw::ChannelPBSize_PB_SIZE_64KB
+};
 const DISP_INST_BYTES: u64 = 0x1_0000;
 
 fn rm_disp<M: Memory>(
@@ -589,16 +627,11 @@ fn rm_disp<M: Memory>(
     version: u32,
     deadline: u64,
 ) -> Result<()> {
+    if cfg!(display_core_only) {
+        sel4::debug_println!("NVIDIA_DISPLAY_EXPERIMENT recipe=nouveau-r570-core");
+    }
     let mut api = rm_api(ctx, queue, HANDLE_DISP_CLIENT, libos, version, deadline);
-    api.alloc::<api::Root>(
-        HANDLE_DISP_CLIENT,
-        HANDLE_DISP_CLIENT,
-        &raw::rpc_alloc_root_v07_00 {
-            hClient: HANDLE_DISP_CLIENT,
-            processID: u32::MAX,
-            ..Default::default()
-        },
-    )?;
+    rm_root(&mut api, HANDLE_DISP_CLIENT)?;
     api.alloc::<api::Device>(
         HANDLE_DISP_CLIENT,
         HANDLE_DISP_DEVICE,
@@ -613,6 +646,19 @@ fn rm_disp<M: Memory>(
         HANDLE_DISP_DEVICE
     );
 
+    if cfg!(display_core_only) {
+        // nvkm_gsp_client_device_ctor creates this even though the display
+        // controls below deliberately use the internal client's subdevice.
+        api.alloc::<api::Subdevice>(
+            HANDLE_DISP_DEVICE,
+            HANDLE_DISP_SUBDEVICE,
+            &Default::default(),
+        )?;
+        sel4::debug_println!(
+            "NVIDIA_DISPLAY_RM step=subdevice handle={:#x}",
+            HANDLE_DISP_SUBDEVICE
+        );
+    }
     let instance = display_memory(&mut api, HANDLE_DISP_INST, DISP_INST_BYTES)?;
     api.for_client(rm.client).control::<api::DisplayInstMem>(
         rm.subdevice,
@@ -654,15 +700,39 @@ fn rm_disp<M: Memory>(
     let core_pb = display_memory(&mut api, HANDLE_DISP_CORE_PB, DISP_PB_BYTES)?;
     display_pushbuffer(&mut api, rm, rm::AD102_DISP_CORE_CHANNEL_DMA, core_pb)?;
     let core_handle = rm::disp_chan_handle(rm::AD102_DISP_CORE_CHANNEL_DMA, 0);
+    sel4::debug_println!(
+        "NVIDIA_DISPLAY_CORE_INPUT client={:#x} parent={:#x} handle={:#x} pb={:#x} bytes={} size_class={} get_put=0 subdevices=1",
+        HANDLE_DISP_CLIENT,
+        rm::HANDLE_DISP_ROOT,
+        core_handle,
+        core_pb,
+        DISP_PB_BYTES,
+        DISP_PB_SIZE
+    );
     let core = api.alloc::<api::DisplayCore>(
         rm::HANDLE_DISP_ROOT,
         core_handle,
         &raw::NV50VAIO_CHANNELDMA_ALLOCATION_PARAMETERS {
-            channelPBSize: raw::ChannelPBSize_PB_SIZE_64KB,
+            channelPBSize: DISP_PB_SIZE,
             subDeviceId: 1,
             ..Default::default()
         },
     );
+    if cfg!(display_core_only) {
+        let reply = core.map_err(|error| {
+            sel4::debug_println!("NVIDIA_DISPLAY_RM step=core error={:?}", error);
+            error
+        })?;
+        sel4::debug_println!(
+            "NVIDIA_DISPLAY_CORE_ALLOC_OK handle={:#x} get_put={:#x} size_class={} subdevices={:#x}",
+            core_handle,
+            reply.offset,
+            reply.channelPBSize,
+            reply.subDeviceId
+        );
+        // Allocation only: no methods submitted, no modeset/scanout claim.
+        return Ok(());
+    }
     match core {
         Ok(_) => sel4::debug_println!(
             "NVIDIA_DISPLAY_RM step=core handle={:#x} pushbuffer={:#x}",
@@ -756,7 +826,7 @@ fn display_pushbuffer<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
                 channelInstance: 0,
                 valid: 1,
                 pbTargetAperture: rm::PB_APERTURE_PHYS_NVM,
-                channelPBSize: rm::PB_SIZE_64KB,
+                channelPBSize: DISP_PB_SIZE,
                 subDeviceId: 1,
             },
         )?;
@@ -1337,64 +1407,70 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                         sel4::debug_println!("NVIDIA_DISPLAY_RM_FAILED error={:?}", error)
                     }
                 }
-                let mut va = match gmmu_setup(
-                    &mut ctx,
-                    &mut queue,
-                    &rm,
-                    inputs.libos,
-                    inputs.app_version,
-                    deadline,
-                ) {
-                    Ok(va) => {
-                        sel4::debug_println!(
-                            "NVIDIA_GMMU_READY va={:#x} root={:#x} vspace={:#x}",
-                            va.base,
-                            va.root,
-                            rm::HANDLE_VASPACE
-                        );
-                        Some(va)
-                    }
-                    Err(error) => {
-                        sel4::debug_println!("NVIDIA_GMMU_FAILED error={:?}", error);
-                        None
-                    }
-                };
-                match rm_vram(
-                    &mut ctx,
-                    &mut queue,
-                    &rm,
-                    inputs.libos,
-                    inputs.app_version,
-                    deadline,
-                ) {
-                    Ok((offset, limit)) => {
-                        sel4::debug_println!(
-                            "NVIDIA_RM_VRAM_OK size={} offset={:#x} limit={:#x}",
-                            VRAM_BYTES,
-                            offset,
-                            limit
-                        );
-                        match rm_channel(
-                            &mut ctx,
-                            &mut queue,
-                            &rm,
-                            va.as_mut(),
-                            offset,
-                            inputs.libos,
-                            inputs.app_version,
-                            deadline,
-                        ) {
-                            Ok((cid, gpfifo)) => sel4::debug_println!(
-                                "NVIDIA_CHANNEL_OK cid={} gpfifo={:#x}",
-                                cid,
-                                gpfifo
-                            ),
-                            Err(error) => {
-                                sel4::debug_println!("NVIDIA_CHANNEL_FAILED error={:?}", error)
+                if !cfg!(display_core_only) {
+                    let mut va = match gmmu_setup(
+                        &mut ctx,
+                        &mut queue,
+                        &rm,
+                        inputs.libos,
+                        inputs.app_version,
+                        deadline,
+                    ) {
+                        Ok(va) => {
+                            sel4::debug_println!(
+                                "NVIDIA_GMMU_READY va={:#x} root={:#x} vspace={:#x}",
+                                va.base,
+                                va.root,
+                                rm::HANDLE_VASPACE
+                            );
+                            Some(va)
+                        }
+                        Err(error) => {
+                            sel4::debug_println!("NVIDIA_GMMU_FAILED error={:?}", error);
+                            None
+                        }
+                    };
+                    match rm_vram(
+                        &mut ctx,
+                        &mut queue,
+                        &rm,
+                        inputs.libos,
+                        inputs.app_version,
+                        deadline,
+                    ) {
+                        Ok((offset, limit)) => {
+                            sel4::debug_println!(
+                                "NVIDIA_RM_VRAM_OK size={} offset={:#x} limit={:#x}",
+                                VRAM_BYTES,
+                                offset,
+                                limit
+                            );
+                            match rm_channel(
+                                &mut ctx,
+                                &mut queue,
+                                &rm,
+                                va.as_mut(),
+                                offset,
+                                inputs.libos,
+                                inputs.app_version,
+                                deadline,
+                            ) {
+                                Ok((cid, gpfifo)) => sel4::debug_println!(
+                                    "NVIDIA_CHANNEL_OK cid={} gpfifo={:#x}",
+                                    cid,
+                                    gpfifo
+                                ),
+                                Err(error) => {
+                                    sel4::debug_println!("NVIDIA_CHANNEL_FAILED error={:?}", error)
+                                }
                             }
                         }
+                        Err(error) => {
+                            sel4::debug_println!("NVIDIA_RM_VRAM_FAILED error={:?}", error)
+                        }
                     }
-                    Err(error) => sel4::debug_println!("NVIDIA_RM_VRAM_FAILED error={:?}", error),
+                } else {
+                    sel4::debug_println!("NVIDIA_DISPLAY_EXPERIMENT_DONE compute=skipped");
                 }
             }
             Err(error) => sel4::debug_println!("NVIDIA_RM_FAILED error={:?}", error),
