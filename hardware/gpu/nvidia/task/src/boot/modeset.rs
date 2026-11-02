@@ -333,6 +333,73 @@ pub(super) fn luts<M: Memory>(
     })
 }
 
+/// Passive head-0 formatter/raster diagnostics. Register selectors and fields:
+/// NVIDIA/open-gpu-doc@9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+/// manuals/ampere/ga102/dev_display_withoffset.ref.txt (also used by nouveau's
+/// gv100/ga102 display path). AD106 interpretation remains diagnostic, not an
+/// assertion that the sink receives these values. No read-clear registers;
+/// in particular RG_UNDERFLOW and SF_DP_IRQ are cleared by writes, never here.
+/// Do not use GET_RG_UNDERFLOW_PROP: that RM query clears underflow history.
+fn stream_snapshot(ctx: &mut Ad106<Native>, deadline: u64, stage: &str) -> Result<()> {
+    if ctx.time_us()? >= deadline {
+        return Err(Error::Timeout);
+    }
+    let clock = ctx.time_us()?;
+    let registers = [
+        ("rg-underflow", 0x61630c),
+        ("rg-underflow-pixel", 0x616310),
+        ("rg-status", 0x616314),
+        ("rg-loadv", 0x616320),
+        ("postcomp-loadv", 0x61611c),
+        ("sf-test", 0x61650c),
+        ("sf-linkctl", 0x616540),
+        ("sf-mn-config", 0x61654c),
+        ("sf-dp-irq", 0x616664),
+        ("supervisor-head", 0x6107ac),
+        ("core-status", 0x610630),
+        ("window0-status", 0x610664),
+    ];
+    let mut values = [0u32; 12];
+    ctx.with_platform(|p| {
+        for (value, &(_, addr)) in values.iter_mut().zip(&registers) {
+            *value = p.read32(addr)?;
+        }
+        Ok(())
+    })?;
+    for ((name, addr), value) in registers.into_iter().zip(values) {
+        sel4::debug_println!(
+            "NVIDIA_DISPLAY_STREAM stage={} clock_us={} field={} addr={:#x} value={:#x}",
+            stage,
+            clock,
+            name,
+            addr,
+            value
+        );
+    }
+    // SF_DP_MN contains N and M adjustment controls, NOT measured Mvid.
+    // MSA*_DEBUG_MAUD/NAUD are audio and deliberately not sampled as video M/N.
+    sel4::debug_println!(
+        "NVIDIA_DISPLAY_STREAM_DECODE stage={} uflow={} loadv_uflow={} uflow_frames={} rg_stalled={} rg_opmode={} sf_opmode={} sf_owner={:#x} sf_enable={} tu={} sync={} enhanced={} lanes_mask={:#x} n_config={} m_delta={} m_mod={} video_msa_observed=false",
+        stage,
+        (values[0] >> 4) & 1,
+        (values[0] >> 5) & 1,
+        (values[0] >> 16) & 0xff,
+        (values[2] >> 3) & 1,
+        (values[2] >> 14) & 3,
+        (values[5] >> 8) & 3,
+        (values[5] >> 10) & 0xf,
+        values[6] & 1,
+        (values[6] >> 2) & 0x7f,
+        (values[6] >> 10) & 1,
+        (values[6] >> 14) & 1,
+        (values[6] >> 16) & 0xff,
+        values[7] & 0xffffff,
+        (values[7] >> 24) & 0xf,
+        (values[7] >> 30) & 3
+    );
+    Ok(())
+}
+
 /// Read-only method shadows, following nouveau gv100_disp_{core,wndw}_mthd.
 /// These are latched method values, not proof that the fetch/color path works.
 /// Never write shadows, clear errors, re-submit UPDATE or reuse a notifier here.
@@ -340,6 +407,10 @@ fn snapshot(ctx: &mut Ad106<Native>, deadline: u64, plan: &Link) -> Result<()> {
     let head = [
         ("display-id", raw::HORN_HEAD_DISPLAY_ID),
         ("raster", raw::HORN_HEAD_RASTER_SIZE),
+        ("sync-end", raw::HORN_HEAD_RASTER_SYNC_END),
+        ("blank-end", raw::HORN_HEAD_RASTER_BLANK_END),
+        ("blank-start", raw::HORN_HEAD_RASTER_BLANK_START),
+        ("control", raw::HORN_HEAD_CONTROL),
         ("clock", raw::HORN_HEAD_PIXEL_CLOCK_FREQUENCY),
         ("view-point", raw::HORN_HEAD_VIEWPORT_POINT_IN),
         ("view-in", raw::HORN_HEAD_VIEWPORT_SIZE_IN),
@@ -489,6 +560,7 @@ pub(super) fn commit<M: Memory>(
         }
         Ok(())
     })?;
+    stream_snapshot(ctx, deadline, "before-update")?;
     core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
     ctx.with_platform(|p| {
         for &(base, _, target) in &targets {
@@ -541,6 +613,7 @@ pub(super) fn commit<M: Memory>(
                 ctx.time_us()?,
                 ctx.time_us()?.saturating_sub(submit_us)
             );
+            stream_snapshot(ctx, deadline, "after-commit")?;
             snapshot(ctx, deadline, plan)?;
             // Controlled diagnostic: restore the same 500 ms delay and AUX read
             // as the first visible-image run. No new UPDATE, training or retry.
@@ -554,6 +627,7 @@ pub(super) fn commit<M: Memory>(
                 wake
             );
             ctx.sleep_until(wake)?;
+            stream_snapshot(ctx, deadline, "before-aux")?;
             let registers = ctx.with_platform(|p| {
                 Ok([
                     p.read32(gsp_disp::CORE_USER + gsp_disp::PUT)?,

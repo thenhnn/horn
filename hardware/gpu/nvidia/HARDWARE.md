@@ -337,3 +337,32 @@ no status read/retry followed. No intervening GSP event was logged in this
 RPC wait. Fail-stop retained DMA backing; supervisor CPU stopped, cleanup
 pending. Native build passed, no unit tests run. QEMU invocation ended
 aborted/Killed, not graceful STOP/unload.
+
+### Passive formatter/raster/underflow snapshots
+
+`work/nvidia-vfio-20261102-043956/serial.log`: one 60 s invocation, exit 124;
+operator confirms a black screen again. Native build passed; no tests.
+Added only passive register reads and method-shadow reads, no modeset change.
+Register-map reference: NVIDIA/open-gpu-doc commit
+`9fdf5c4062007929d9f4e6cbad9c9771fe61b880`,
+`manuals/ampere/ga102/dev_display_withoffset.ref.txt`. Interpretation on AD106
+is diagnostic; it is not an independent measurement of sink-valid video.
+
+Before UPDATE, RG/SF opmodes were sleep and both loadv counters were zero.
+After commit and 500 ms later: RG_STATUS=0x58008000 (awake, not stalled),
+SF_TEST=0x48600 (awake, head-0 owner), RG and postcomp loadv counters advanced
+in step from 2 to 0x4d. RG_UNDERFLOW remained 1: reporting enabled, neither
+pixel nor loadv underflow sticky bit set, zero underflowed frames.
+SF_DP_IRQ stayed zero. No error flags were cleared by this diagnostic.
+SF_DP_LINKCTL=0x000f4101: enabled, TU64, asynchronous, enhanced framing,
+four-lane mask. SF_DP_MN=0x8000: N=32768, no M delta/modification. This is
+configuration, **not measured Mvid/Nvid or on-wire MSA**. Published
+MSA_DEBUG_MAUD/NAUD registers are audio, not video, and were not used.
+Raster sync/blank assembly and armed values matched. Supervisor head word
+was 0x11100 after commit; it is not treated as actual output blank status.
+
+The retained AUX read again received a matching GSP response with outer
+status/private status 0 and inner RM NV_ERR_GENERIC; fail-stop retained backing
+and supervisor stopped the CPU. No retry, extra UPDATE, reset or orderly unload.
+Internal progress and absence of sampled underflow do not prove visible pixels
+or exclude later faults after the diagnostic stops the driver.
