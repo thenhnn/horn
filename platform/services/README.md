@@ -27,6 +27,11 @@ The common task ports are `vm`, `address_space`, `lifecycle`, `reply`, and `read
 For ABI1, other ports belong to the program's capset. Unknown/duplicate bindings
 and static configuration dependency cycles are rejected during catalog generation.
 
+ABI2 services can set `logging = "/services/log"`; the compiler adds a dependency
+and private `horn.log` grant. Runtime installs the synchronous logger before main,
+with a dedicated transport disjoint from application and heap receive slots. The
+logger itself keeps `logging = null` to avoid recursion/dependency cycles.
+
 ABI2 automatic services instead omit `bootstrap`/`capset`. The compiler assigns
 private slots to the common ports followed by bytewise-sorted deployment ports;
 no slot constants are generated for the application. Common ports appear in its

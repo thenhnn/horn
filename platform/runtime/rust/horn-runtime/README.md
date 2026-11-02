@@ -44,7 +44,16 @@ Runtime names: `horn.vm`, `horn.address-space`, `horn.lifecycle`,
 `horn.reply`, `horn.ready`. `notify_ready()` and `wait(name)` hide notification
 selectors. Notification badges coalesce; callers recheck their condition.
 
-The complete deployment build passes, but this ABI2 path is not boot-validated.
+The ABI2 shell path reached timer, shell, DHCP and HTTP readiness in a bounded
+QEMU run after correcting the root-selector-zero check. Unit tests remain unrun.
+
+With a deployment `logging` grant, the runtime installs `horn-log` after heap/IPC
+setup and before main. It reserves two private slots from the application range
+for a dedicated logging transport; `ctx.transport()` receives the remainder.
+Normal logging is one blocking RPC with reply after colored output completes.
+Use `logging::emergency` instead in bootstrap/panic/allocator/pager critical paths.
+See `platform/core/log/README.md` for bounds, errors and the current debug-port
+backend; logging integration is build-checked separately from that earlier boot.
 
 ## Legacy ABI1 tasks
 

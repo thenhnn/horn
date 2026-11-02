@@ -1,6 +1,7 @@
 {
   "root": "../..",
   "schemas": {
+    "horn_log": "platform/core/log/idl/horn_log.py",
     "horn_vm": "platform/core/vm/idl/horn_vm.py",
     "horn_process": "platform/core/procd/idl/horn_process.py",
     "horn_supervisor": "platform/core/supervisor/idl/horn_supervisor.py",

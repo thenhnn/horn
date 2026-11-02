@@ -8,6 +8,7 @@ test = false
 doctest = false
 
 [dependencies]
+horn-log = { path = "../../../core/log", features = ["client"] }
 libhorn = { path = "../../../libhorn" }
 horn-ipc = { path = "../horn-ipc", features = ["sel4"] }
 horn-mimalloc = { path = "../horn-mimalloc" }

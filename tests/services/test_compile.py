@@ -56,6 +56,30 @@ def definitions(tmp_path):
     return {"boot": boot, "timer": timer}
 
 
+def test_logger_dependency_is_injected_without_mutating_input(tmp_path):
+    services = definitions(tmp_path)
+    logger = {**services["timer"], "requires": {}}
+    logger["exports"] = [
+        {"path": "/services/log", "object": "server", "badge": 16, "rights": 14, "supervisorOnly": True}
+    ]
+    services["logd"] = logger
+    services["timer"]["logging"] = "/services/log"
+    result = compiler.compile_services(services)
+    assert 'ContextBinding{name:"horn.log",slot:6}' in result
+    assert 'path:"/services/log",first:false,slot:6' in result
+    assert "_log" not in services["timer"]["requires"]
+
+
+def test_logger_cannot_depend_on_itself(tmp_path):
+    services = definitions(tmp_path)
+    services["timer"]["logging"] = "/services/log"
+    services["timer"]["exports"] = [
+        {"path": "/services/log", "object": "server", "badge": 16, "rights": 14, "supervisorOnly": True}
+    ]
+    with pytest.raises(AssertionError, match="dependency cycle"):
+        compiler.compile_services(services)
+
+
 def test_abi2_assigns_private_slots_and_sorted_runtime_names(tmp_path):
     result = compiler.compile_services(definitions(tmp_path))
     assert 'context:&[],name:"boot"' in result

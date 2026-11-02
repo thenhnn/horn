@@ -13,6 +13,7 @@ mod context;
 pub use context::{Context, Inbox, Received};
 
 pub use horn_ipc::TaskSlots;
+pub use horn_log as logging;
 pub use horn_mimalloc as allocator;
 pub use horn_mimalloc::Error;
 
@@ -185,6 +186,10 @@ pub mod __private {
             let heap = context.heap_bootstrap().expect("ABI2 heap context");
             unsafe {
                 super::install_heap(heap).expect("runtime VM heap");
+            }
+            let mut context = context;
+            unsafe {
+                context.install_logging().expect("runtime logger");
             }
             main(context)
         }) {

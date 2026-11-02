@@ -319,6 +319,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "horn-log"
+version = "0.1.0"
+dependencies = [
+ "horn-idl-build",
+ "horn-ipc",
+ "log",
+ "owo-colors",
+ "sel4",
+]
+
+[[package]]
+name = "horn-logd"
+version = "0.1.0"
+dependencies = [
+ "horn-ipc",
+ "horn-log",
+ "horn-runtime",
+]
+
+[[package]]
 name = "horn-mimalloc"
 version = "0.1.0"
 dependencies = [
@@ -403,6 +423,7 @@ name = "horn-runtime"
 version = "0.1.0"
 dependencies = [
  "horn-ipc",
+ "horn-log",
  "horn-mimalloc",
  "horn-vm",
  "libhorn",
@@ -452,6 +473,7 @@ name = "horn-supervisor-task"
 version = "0.1.0"
 dependencies = [
  "horn-ipc",
+ "horn-log",
  "horn-registry",
  "horn-runtime",
  "horn-supervisor",

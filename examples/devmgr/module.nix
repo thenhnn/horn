@@ -301,7 +301,29 @@ in {
           }
         ];
       };
+      logd = {
+        elf = runtimeElf childWorkspace.members.horn-logd "logd";
+        abi = 2;
+        ram = 4 * 1024 * 1024;
+        objects.service = {
+          kind = "Endpoint";
+          bindings.service = {
+            badge = null;
+            rights = 15;
+          };
+        };
+        exports = [
+          {
+            path = "/services/log";
+            supervisorOnly = true;
+            object = "service";
+            badge = 16;
+            rights = 14;
+          }
+        ];
+      };
       timerd = {
+        logging = "/services/log";
         elf = runtimeElf childWorkspace.members.horn-timerd "timerd";
         abi = 2;
         ram = 8 * 1024 * 1024;

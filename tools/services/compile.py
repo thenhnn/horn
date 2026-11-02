@@ -29,6 +29,19 @@ def valid_path(value):
 
 
 def compile_services(definitions):
+    definitions = {
+        name: {**service, "requires": dict(service["requires"])}
+        for name, service in definitions.items()
+    }
+    for name, service in definitions.items():
+        if service.get("logging") is not None:
+            assert service.get("abi", 1) == 2, f"{name}: logging context needs ABI2"
+            assert "_log" not in service["requires"], f"{name}: reserved logging port"
+            valid_path(service["logging"])
+            service["requires"]["_log"] = {
+                "path": service["logging"],
+                "select": "exact",
+            }
     assert len(definitions) <= 8
     assert sum(s["activation"] == "boot" for s in definitions.values()) == 1
     exports = [("/services/procd", None)]
@@ -46,6 +59,12 @@ def compile_services(definitions):
             assert 0 < export["badge"] < 2**64 and 0 < export["rights"] <= 15
             exports.append((export["path"], name))
     assert len({p for p, _ in exports}) == len(exports), "duplicate exports"
+    for name, service in definitions.items():
+        if service.get("logging") is not None:
+            assert any(
+                export["path"] == service["logging"] and export.get("supervisorOnly", False)
+                for provider in definitions.values() for export in provider["exports"]
+            ), f"{name}: logging factory must be supervisor-only"
     graph = {name: set() for name in definitions}
     for name, service in definitions.items():
         for requirement in service["requires"].values():
@@ -142,7 +161,7 @@ def compile_services(definitions):
             assert obj["kind"] in ("Endpoint", "Notification")
             assert not obj["bindNotification"] or obj["kind"] == "Notification"
             published = ",".join(
-                f"Export{{path:{quote(r['path'])},badge:{r['badge']},rights:{r['rights']}}}"
+                f"Export{{supervisor_only:{str(r.get('supervisorOnly', False)).lower()},path:{quote(r['path'])},badge:{r['badge']},rights:{r['rights']}}}"
                 for r in service["exports"]
                 if r["object"] == object_name
             )
@@ -167,6 +186,8 @@ def compile_services(definitions):
                 "reply": "horn.reply",
                 "ready": "horn.ready",
             }
+            if service.get("logging") is not None:
+                runtime_names["_log"] = "horn.log"
             context = (
                 "&["
                 + ",".join(

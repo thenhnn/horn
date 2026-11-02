@@ -6,6 +6,7 @@ pub struct ObjectSlot {
     pub rights: u8,
 }
 pub struct Export {
+    pub supervisor_only: bool,
     pub path: &'static str,
     pub badge: u64,
     pub rights: u8,
@@ -96,10 +97,8 @@ impl Manager {
                     export.badge,
                     Rights(export.rights),
                 );
-                self.namespace
-                    .tree
-                    .declare(export.path, owner, endpoint)
-                    .expect("configured export");
+                let node = self.namespace.tree.declare(export.path, owner, endpoint).expect("configured export");
+                if export.supervisor_only { self.namespace.hide(node); }
             }
             self.io.space.delete(capability.as_ref()).unwrap();
         }
@@ -197,6 +196,17 @@ impl Manager {
                 let entry = self.namespace.tree.node(node);
                 self.jobs[i].dependencies.push(entry.owner);
                 let endpoint = *self.namespace.tree.value(node).unwrap();
+                let logging = definition.context.iter().any(|b| b.name == "horn.log" && b.slot == required.slot);
+                let endpoint = if logging {
+                    assert!(self.namespace.is_hidden(node), "logging factory must be supervisor-only");
+                    let mut name = List::default();
+                    name.len = definition.name.len() as _;
+                    name.data[..definition.name.len()].copy_from_slice(definition.name.as_bytes());
+                    let sink = horn_log::protocol::LogFactoryClient::new(
+                        &mut self.io, Cap::from_ref(endpoint.as_ref()),
+                    ).create_sink(name).unwrap();
+                    Cap::<Endpoint>::from_ref(sink.as_ref())
+                } else { endpoint };
                 BOOT.install(
                     &mut self.io,
                     process,
@@ -205,6 +215,7 @@ impl Manager {
                     None,
                     Rights(Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0),
                 );
+                if logging { self.io.space.delete(endpoint.as_ref()).unwrap(); }
             }
             for grant in definition.namespaces {
                 let node = self

@@ -1,0 +1,13 @@
+[package]
+name = "horn-logd"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "logd"
+path = "src/main.rs"
+
+[dependencies]
+horn-ipc = { path = "../../../runtime/rust/horn-ipc", features = ["sel4"] }
+horn-log = { path = ".." }
+horn-runtime = { path = "../../../runtime/rust/horn-runtime" }

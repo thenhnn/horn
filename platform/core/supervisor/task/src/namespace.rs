@@ -14,6 +14,7 @@ struct Grant {
 pub struct Namespace {
     pub tree: Registry<Cap<Endpoint>>,
     grants: Vec<Option<Grant>>,
+    hidden: Vec<usize>,
 }
 impl Namespace {
     pub fn new(io: &mut Io) -> Self {
@@ -33,8 +34,11 @@ impl Namespace {
         Self {
             tree,
             grants: Vec::new(),
+            hidden: Vec::new(),
         }
     }
+    pub fn hide(&mut self, node: usize) { self.hidden.push(node); }
+    pub fn is_hidden(&self, node: usize) -> bool { self.hidden.contains(&node) }
     pub fn recognizes(&self, badge: u64) -> bool {
         badge >= DIRECTORY_BADGE && (badge - DIRECTORY_BADGE) < self.grants.len() as u64
     }
@@ -87,6 +91,7 @@ impl Namespace {
         let path = core::str::from_utf8(&path.data[..path.len as usize])
             .map_err(|_| r::RegistryError::Invalid)?;
         let node = self.tree.resolve(grant.scope, path)?;
+        if self.is_hidden(node) { return Err(r::RegistryError::NotFound); }
         let entry = self.tree.node(node);
         if !entry.available {
             return Err(r::RegistryError::Unavailable);
@@ -149,7 +154,9 @@ impl DirectoryCaller<'_> {
             .scope;
         let path = core::str::from_utf8(&path.data[..path.len as usize])
             .map_err(|_| r::RegistryError::Invalid)?;
-        self.manager.namespace.tree.resolve(scope, path)
+        let node = self.manager.namespace.tree.resolve(scope, path)?;
+        if self.manager.namespace.is_hidden(node) { return Err(r::RegistryError::NotFound); }
+        Ok(node)
     }
 }
 fn text<const N: usize>(s: &str) -> List<u8, N> {
@@ -166,7 +173,8 @@ impl r::RegistryDirectory for DirectoryCaller<'_> {
             .unwrap()
             .scope;
         let tree = &self.manager.namespace.tree;
-        let mut remaining = tree.entries(scope, after, recursive);
+        let mut remaining = tree.entries(scope, after, recursive)
+            .filter(|(id, _)| !self.manager.namespace.is_hidden(*id));
         let mut entries = List::default();
         let mut last = 0;
         for (id, node) in remaining.by_ref().take(4) {

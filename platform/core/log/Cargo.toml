@@ -1,0 +1,16 @@
+[package]
+name = "horn-log"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+client = ["horn-ipc/sel4", "dep:sel4"]
+
+[dependencies]
+horn-ipc = { path = "../../runtime/rust/horn-ipc" }
+log = { version = "=0.4.34", default-features = false }
+owo-colors = { version = "=4.4.0", default-features = false }
+sel4 = { path = "../../../vendor/rust-sel4/src/crates/sel4", optional = true }
+
+[build-dependencies]
+horn-idl-build.workspace = true

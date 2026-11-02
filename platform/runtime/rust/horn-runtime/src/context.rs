@@ -32,6 +32,21 @@ impl Context {
             inbox_available: true,
         })
     }
+    pub(crate) unsafe fn install_logging(&mut self) -> Result<(), Error> {
+        let Some(_) = self.record.lookup("horn.log") else {
+            return Ok(());
+        };
+        let sink = self.cap::<horn_log::protocol::LogSinkTag>("horn.log")?;
+        let range = self.application.as_mut().ok_or(Error::Invalid)?;
+        let end = range.start.checked_add(2).ok_or(Error::Invalid)?;
+        if end.checked_add(2).is_none_or(|n| n > range.end) {
+            return Err(Error::Invalid);
+        }
+        let logging = range.start..end;
+        range.start = end;
+        let io = crate::transport(self.root, logging)?;
+        unsafe { horn_log::install(io, sink).map_err(|_| Error::Invalid) }
+    }
     pub fn cap<T: CapType>(&self, name: &str) -> Result<Cap<T>, Error> {
         let slot = self.record.lookup(name).ok_or(Error::Invalid)?;
         Ok(bootstrap_cap(self.root, slot as u32))

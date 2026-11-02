@@ -178,9 +178,13 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         span_cycles: t1 - t0,
         span_us: end - start,
     };
-    sel4::debug_println!(
-        "TIMERD_READY calibration=immutable fast_tsc={} alarm=one-shot",
-        page.flags != 0
+    horn_runtime::logging::info!(
+        "ready; {}",
+        if page.flags != 0 {
+            "local TSC enabled (fast path)"
+        } else {
+            "hardware clock (via IPC)"
+        }
     );
     let mut inbox = ctx.inbox("service").unwrap();
     let mut service = Service {

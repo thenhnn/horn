@@ -48,6 +48,11 @@
   definition = types.submodule {
     options = {
       elf = mkOption {type = types.path;};
+      logging = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "ABI2 synchronous logger service path; null for bootstrap and the logger itself.";
+      };
       abi = mkOption {
         type = types.enum [1 2];
         default = 1;

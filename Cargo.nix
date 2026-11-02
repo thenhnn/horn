@@ -143,6 +143,26 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-log" = rec {
+      packageId = "horn-log";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-log";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "horn-logd" = rec {
+      packageId = "horn-logd";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-logd";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-mimalloc" = rec {
       packageId = "horn-mimalloc";
       build = internal.buildRustCrateWithFeatures {
@@ -1301,6 +1321,73 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "sel4" ];
       };
+      "horn-log" = rec {
+        crateName = "horn-log";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/core/log; };
+        libName = "horn_log";
+        dependencies = [
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+          }
+          {
+            name = "log";
+            packageId = "log";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "owo-colors";
+            packageId = "owo-colors";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+            optional = true;
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "horn-idl-build";
+            packageId = "horn-idl-build";
+          }
+        ];
+        features = {
+          "client" = [ "horn-ipc/sel4" "dep:sel4" ];
+        };
+        resolvedDefaultFeatures = [ "client" ];
+      };
+      "horn-logd" = rec {
+        crateName = "horn-logd";
+        version = "0.1.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "logd";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/core/log/task; };
+        dependencies = [
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "horn-log";
+            packageId = "horn-log";
+          }
+          {
+            name = "horn-runtime";
+            packageId = "horn-runtime";
+          }
+        ];
+
+      };
       "horn-mimalloc" = rec {
         crateName = "horn-mimalloc";
         version = "0.1.0";
@@ -1575,6 +1662,11 @@ rec {
             features = [ "sel4" ];
           }
           {
+            name = "horn-log";
+            packageId = "horn-log";
+            features = [ "client" ];
+          }
+          {
             name = "horn-mimalloc";
             packageId = "horn-mimalloc";
           }
@@ -1754,6 +1846,10 @@ rec {
             name = "horn-ipc";
             packageId = "horn-ipc";
             features = [ "sel4" ];
+          }
+          {
+            name = "horn-log";
+            packageId = "horn-log";
           }
           {
             name = "horn-registry";
