@@ -2,7 +2,7 @@
 //! Bounded one-shot SF CRC. Fresh owned VRAM/context, prebuilt detach, no flip,
 //! ring rewrite, context reuse or implicit free (even when DONE is observed).
 use super::*;
-use gsp_disp::{crc as layout, pramin::Region};
+use gsp_disp::crc as layout;
 
 pub(crate) fn prepare<M: Memory>(
     ctx: &mut Ad106<Native>,
@@ -19,7 +19,7 @@ pub(crate) fn prepare<M: Memory>(
         &params,
     )?;
     gsp_disp::surface::validate_memory(params.size, &reply)?;
-    let region = Region::new(reply.offset, reply.size)?;
+    let region = ctx.with_platform(|p| p.map_vram(reply.offset, reply.size, deadline))?;
     let mut zero = Vec::new();
     zero.try_reserve_exact(0x10000 / 4)
         .map_err(|_| Error::Exhausted)?;
@@ -33,7 +33,7 @@ pub(crate) fn prepare<M: Memory>(
         if p.display_crc.is_some() {
             return Err(Error::State);
         }
-        p.display_crc = Some(Region::new(reply.offset, layout::BYTES as u64)?);
+        p.display_crc = Some(region);
         Ok(())
     })?;
     sel4::debug_println!(

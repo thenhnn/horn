@@ -519,7 +519,7 @@ pub(super) fn luts<M: Memory>(
         &params,
     )?;
     gsp_disp::surface::validate_memory(params.size, &reply)?;
-    let region = gsp_disp::pramin::Region::new(reply.offset, reply.size)?;
+    let region = ctx.with_platform(|p| p.map_vram(reply.offset, reply.size, deadline))?;
     let mut words = head::identity_luts()?;
     words
         .try_reserve_exact(0x10000 / 4 - words.len())
@@ -533,7 +533,7 @@ pub(super) fn luts<M: Memory>(
         display_event(ctx, queue, libos, version, deadline)?;
     }
     sel4::debug_println!(
-        "NVIDIA_DISPLAY_LUT_READY vram={:#x} bytes={} ilut=fp16 olut=u0.16 entries=1024 readback=verified",
+        "NVIDIA_DISPLAY_LUT_READY vram={:#x} bytes={} ilut=fp16 olut=u0.16 entries=1024 path=bar1-uc readback=batch-tail-only",
         reply.offset,
         reply.size
     );

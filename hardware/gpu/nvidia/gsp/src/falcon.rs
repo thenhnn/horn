@@ -235,6 +235,13 @@ impl Handoff<'_, '_> {
         Ok(())
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FlushPageDiagnostic {
+    pub requested_iova: u64,
+    pub before: [Option<u32>; 2],
+    pub observed: [Option<u32>; 2],
+}
+
 /// One serialized, assigned AD106 controller. Software quarantine covers both
 /// engines; constructing another Rust object is NOT permission to retry/reset.
 /// The platform must retain hardware-accessible resources on failure/drop.
@@ -248,6 +255,7 @@ pub struct Ad106<P> {
     boot0: u32,
     ready: bool,
     flush: Option<u64>,
+    flush_diagnostic: Option<FlushPageDiagnostic>,
     phase: [Phase; 2],
     /// GA102 RESET_READY may fail to assert. Only that 150-us timeout is soft,
     /// exactly as upstream; memory scrub/core-select/load timeouts are fatal.
@@ -267,6 +275,7 @@ impl<P: Platform> Ad106<P> {
             boot0: 0,
             ready: false,
             flush: None,
+            flush_diagnostic: None,
             phase: [Phase::Unknown; 2],
             reset_ready_observed: false,
         }
@@ -426,6 +435,8 @@ impl<P: Platform> Ad106<P> {
     /// this session. Retain it through ALL reset/shutdown paths and uncertain
     /// failures; it is not safe to release it just because a Falcon halted.
     /// PCI bus mastering/IRQ/IOMMU setup belongs to devmgr/the native adapter.
+    /// Pinned Nova selects Ada -> GA102 -> GA100: HI at0x100c40, then
+    /// LO at0x100c10. Keep that sequence and strict readback; no retry.
     pub unsafe fn register_flush_page(&mut self, iova: u64, outer: u64) -> Result<()> {
         if !self.ready || self.flush.is_some() {
             return Err(Error::State);
@@ -439,17 +450,39 @@ impl<P: Platform> Ad106<P> {
         self.execute(|s| {
             s.stage = Stage::FlushPage;
             s.limit(outer, 1_000)?;
+            s.flush_diagnostic = Some(FlushPageDiagnostic {
+                requested_iova: iova,
+                before: [None; 2],
+                observed: [None; 2],
+            });
+            for (i, register) in [0x100c10, 0x100c40].into_iter().enumerate() {
+                let value = s.read(register)?;
+                if let Some(d) = &mut s.flush_diagnostic {
+                    d.before[i] = Some(value);
+                }
+            }
             s.platform.dma_write_barrier();
             s.write(0x100c40, (iova >> 40) as u32)?;
             s.write(0x100c10, (iova >> 8) as u32)?;
-            let actual =
-                ((s.read(0x100c40)? as u64 & 0xff_ffff) << 40) | ((s.read(0x100c10)? as u64) << 8);
+            let low = s.read(0x100c10)?;
+            if let Some(d) = &mut s.flush_diagnostic {
+                d.observed[0] = Some(low);
+            }
+            let high = s.read(0x100c40)?;
+            if let Some(d) = &mut s.flush_diagnostic {
+                d.observed[1] = Some(high);
+            }
+            let actual = (u64::from(high & 0xff_ffff) << 40) | (u64::from(low) << 8);
             if actual != iova {
                 return Err(Error::State);
             }
             s.flush = Some(iova);
             Ok(())
         })
+    }
+    /// Captured during the single registration attempt; no extra hardware I/O.
+    pub fn flush_page_diagnostic(&self) -> Option<FlushPageDiagnostic> {
+        self.flush_diagnostic
     }
     pub fn signature_fuse(&mut self, engine_mask: u16, ucode: u8) -> Result<u32> {
         if !self.ready || !(1..=16).contains(&ucode) {

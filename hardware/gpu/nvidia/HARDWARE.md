@@ -3,6 +3,114 @@
 Facts observed on the physical board. Nothing here is inferred from builds,
 unit tests or parsers.
 
+## Current code versus evidence
+
+The operator subsequently confirmed that the in-place PRAMIN color animation
+was visible, but reported slow writes. Its run directory/timing has not been
+correlated here; no bandwidth number is claimed.
+
+The next change switches all driver-owned CPU VRAM access (image, live patch,
+LUT, CRC and display/CE instance initialization) to BAR1 UC and adds a bounded
+64-KiB CE RAM→VRAM→RAM preflight before the first display PUT. It has **not**
+yet passed on the board. Existing visible-image, CRC and animation evidence
+belongs to the earlier PRAMIN path, not BAR1/CE. See [BAR1-CE.md](BAR1-CE.md)
+for the implementation, markers and remaining validation boundary.
+
+### 2026-11-02 16:52:19 — first BAR1 attempt stopped before CE
+
+Operator-provided output matches `work/nvidia-vfio-20261102-165219/serial.log`.
+GSP initialization and RM allocation succeeded. BAR1 config: PCI index1,
+aperture8589934592, shared root`0x1f382d000`, WPR limit`0x1f3d00000`.
+Surface allocation at`0x1ee600000`, size`0x1000000`, was followed by
+`Error::State` in the backend (last recorded clock3892371us). No BAR1_MAP,
+CE roundtrip or first display PUT was reached.
+
+The original markers do **not** distinguish PRAMIN root-read/selector failure,
+an occupied root entry, or invalidate-status failure; nor do they establish
+whether a root write had started. Occupied PD3[0] is a hypothesis, not an
+observation. Backing was retained and supervisor reported CPU stop/cleanup
+pending, not graceful GPU unload. No speed or pixel result from this run.
+Phase, root-entry value and publication-start diagnostics were added afterward;
+no overwrite permission, retry, fallback or assistant hardware run was added.
+
+### Next operator attempt — occupied root confirmed
+
+The supplied follow-up log records`NVIDIA_BAR1_ROOT_ENTRY` at`0x1f382d000`:
+PD3[0]=`0x1f382c02`, an ordinary VRAM PDE to`0x1f382c000`. Failure was explicitly
+`phase=require-unused-root`, `root_publication_started=false`, last RPC clock
+3820619us. Thus this attempt made no shared-entry publication and never reached
+CE or display PUT. This resolves the previous ambiguity for this attempt only.
+
+The code was corrected to preserve existing PDEs and seek a revalidated zero
+entry at a lower level within BAR1, never replacing an occupied ancestor.
+Only ordinary VRAM table pointers are followed; foreign system memory, WPR,
+cycles and client-allocation overlaps are rejected. No free PD1 segment or a
+changed path is terminal. The new walk is build-checked; its first operator result is recorded below.
+
+### 2026-11-02 17:00:42 — adopted hierarchy, first BAR1 data check failed
+
+`work/nvidia-vfio-20261102-170042/serial.log` matches the next operator excerpt.
+Existing PD3 points to`0x1f382c000`; its PD2[0] points to`0x1f382b000`.
+PD1[15] was zero. Published fresh slot at table offset`0x78`, value`0x3dc70c`,
+BAR1 VA`0x1e0000000`; image16MiB mapped there. CE instance allocation was
+returned at`0x1ee5d0000`, size64KiB; its first16KiB were mapped at BAR1
+VA`0x1e1000000`. Both mappings reported publication/invalidation success.
+
+The next operation, BAR1 zero initialization of those16KiB, returned Checksum
+from its batch-tail readback, before compute VMM/channel creation or CE submit.
+The old marker lacks expected/actual data, so the reason is unresolved. A
+BAR1_MAP marker proves software publication/acknowledgement, **not usable data
+translation**. No image, CE completion or performance was demonstrated.
+Added failing-word VA/offset/expected/actual and CPU-side PDE/PTE diagnostics;
+the latter are not evidence of GPU table fetch. No further GPU read, rewrite,
+retry, cache-mode change or alternative data path is introduced on mismatch.
+
+### 2026-11-02 17:54:05 — same data failure after operator reboot
+
+Operator reports a host reboot before this run; the excerpt matches
+`work/nvidia-vfio-20261102-175405/serial.log`. GSP/FlushPage succeeded this time.
+BAR1 zero write again failed: expected0, actual`0xbad0fb0d`, VRAM
+`0x1ee5d0000`, offset`0x3ffc`, BAR1 VA`0x1e1003ffc`. CPU table observations:
+PD0 index8, small PDE`0x3dd00c`, leaf IOVA`0x3dd0000`, PTE index3,
+PTE`0x1ee5d309`. No CE channel/submission or display PUT was reached.
+
+This reproduces the BAR1 defect after a reported reboot; attributing it solely
+to a dirty previous GPU epoch is unsupported. The separate earlier FlushPage
+failure remains unresolved. No authoritative meaning for`0xbad0fb0d` was found
+in the pinned SDK; do not label it a specific MMU fault code.
+
+Source review found a missing prerequisite: CPU BAR aperture length does not
+prove the active BAR1 binding, page-table format/root, or GPU VA limit. Added a
+read-only SDK-derived BAR1_BLOCK/instance-context check before any BAR1 table or
+data publication, and cap VA allocation by both PCI size and the active instance
+ADR_LIMIT. Reject physical/uninspectable/mismatched binding; do not reprogram it.
+This is a correctness guard and diagnostic, **not yet a demonstrated fix** for
+the observed checksum. The new guard is build-checked, not hardware-validated.
+
+### Subsequent operator excerpt — FlushPage recurs before BAR1
+
+Another operator excerpt stops at`0x100c10` readback0, clock2241263us,
+with all staging allocations successful. No BAR1 binding check or CE code ran.
+The prior firmware allocation is63541248 bytes, below Native's per-allocation
+64MiB maximum; the excerpt does not establish DMA-budget exhaustion. Raising
+that limit is not a fix for an ignored MMIO address-register write.
+
+Audited the complete pinned Nova HAL dispatch: Ada selects GA102, which delegates
+flush-page registration to GA100. **Both`0x100c40` (HI) and`0x100c10` (LO)
+are intentional, HI before LO**. A preliminary suggestion to use TU102's low-only
+40-bit path was wrong and is not retained. Compared known-good animation commit
+`b93431ea` to BAR1 diagnostics commit`59f961d9`: falcon.rs has no diff;
+boot.rs changes do not change the staging/handoff sequence before FlushPage.
+This does not exclude timing, layout, or effects from previous GPU epochs.
+
+Retain both register writes, 47-bit grant policy, strict full-address readback,
+and fail-stop on mismatch. Added captured requested IOVA and raw low/high pairs
+before/after the single attempt. Failure logging emits
+`NVIDIA_FLUSH_PAGE_DIAGNOSTIC` from captured values only (no GPU access after
+quarantine, no retry). Added source tests for write order, high bits, address
+policy and ignored writes; tests remain unexecuted by operator request.
+Build/format checks pass. **No FlushPage fix is established or hardware-tested.**
+
 ## 2026-10-30 — GSP cold boot and validated GetGspStaticInfo
 
 Board: Palit RTX 4060 Ti, AD106, `10de:2803 / 1569:f306`, 8187 MiB usable FB.

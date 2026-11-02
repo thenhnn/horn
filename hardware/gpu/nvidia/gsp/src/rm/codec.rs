@@ -224,6 +224,7 @@ fields!(NV0073_CTRL_SPECIFIC_GET_EDID_V2_PARAMS {
     flags,
     edidBuffer
 });
+fields!(NVC36F_CTRL_CMD_GPFIFO_GET_WORK_SUBMIT_TOKEN_PARAMS { workSubmitToken });
 fields!(NV0073_CTRL_DP_AUXCH_CTRL_PARAMS {
     subDeviceInstance,
     displayId,

@@ -112,10 +112,14 @@ The operator confirmed core allocation with the 120-byte root parameters,
 display subdevice and 4-KiB ring; these are now unconditional. A subsequent
 operator run confirmed NOP/UPDATE consumption through coherent sysmem (GET=PUT).
 The operator also confirmed the local RAMHT notifier prefix: FINISHED status
-0x80000000 at GET=PUT=22 establishes UPDATE completion. The next stage initializes window usage bounds/static ownership, fills a
-preferred-size VRAM diagnostic surface through PRAMIN, and fetches window 0
-assembly without UPDATE. It is hardware-untested: no DP/head modeset or active
-scanout is enabled. See DISPLAY-EXPERIMENT.md for markers.
+0x80000000 at GET=PUT=22 establishes UPDATE completion. Later runs established
+operator-confirmed preferred-mode scanout and in-place PRAMIN animation; see
+[HARDWARE.md](HARDWARE.md). Current code replaces CPU VRAM access with BAR1 UC
+(image, animation, LUT, CRC and instance memory), retaining PRAMIN only for the
+BAR1 root bootstrap. A mandatory one-shot CE RAM→VRAM→RAM transaction must
+complete its GPU fence and data checks before the first display PUT. This new
+path is built but **hardware-unvalidated**, with no PRAMIN fallback. See
+[BAR1-CE.md](BAR1-CE.md) for markers, ownership and limitations.
 
 `run-vfio.sh` rebuilds the kernel and root task, checks that the GPU and its
 audio sibling are already bound to `vfio-pci`, and launches QEMU with the GPU

@@ -8,11 +8,14 @@ struct Recorder {
     registers: BTreeMap<u32, u32>,
     writes: Vec<(u32, u32, u64)>,
     protected_reads: usize,
+    reads: Vec<u32>,
     early_alarm: bool,
     quarantines: usize,
+    ignore_flush_writes: bool,
 }
 impl Platform for Recorder {
     fn read32(&mut self, offset: u32) -> Result<u32> {
+        self.reads.push(offset);
         if offset == 0x118234 {
             self.protected_reads += 1;
         }
@@ -26,7 +29,9 @@ impl Platform for Recorder {
         })
     }
     fn write32(&mut self, offset: u32, value: u32) -> Result<()> {
-        self.registers.insert(offset, value);
+        if !self.ignore_flush_writes || ![0x100c10, 0x100c40].contains(&offset) {
+            self.registers.insert(offset, value);
+        }
         self.writes.push((offset, value, self.time));
         Ok(())
     }
@@ -51,6 +56,70 @@ fn controller() -> Ad106<Recorder> {
     controller.probe(100_000).unwrap();
     controller
 }
+#[test]
+fn ada_flush_registration_matches_the_ga102_ga100_hal() {
+    let mut c = controller();
+    unsafe {
+        c.register_flush_page(0x3dc3000, 100_000).unwrap();
+    }
+    assert_eq!(c.platform.registers[&0x100c10], 0x3dc30);
+    let flush_writes: Vec<_> = c.platform.writes.iter().map(|w| (w.0, w.1)).collect();
+    assert_eq!(flush_writes, vec![(0x100c40, 0), (0x100c10, 0x3dc30)]);
+    assert_eq!(
+        c.flush_page_diagnostic(),
+        Some(FlushPageDiagnostic {
+            requested_iova: 0x3dc3000,
+            before: [Some(0), Some(0)],
+            observed: [Some(0x3dc30), Some(0)],
+        })
+    );
+}
+#[test]
+fn ada_flush_high_address_bits_are_programmed_and_verified() {
+    let mut c = controller();
+    unsafe {
+        c.register_flush_page((1 << 40) + 0x1000, 100_000).unwrap();
+    }
+    assert_eq!(c.platform.registers[&0x100c10], 0x10);
+    assert_eq!(c.platform.registers[&0x100c40], 1);
+    assert_eq!(
+        c.flush_page_diagnostic().unwrap().observed,
+        [Some(0x10), Some(1)]
+    );
+}
+#[test]
+fn ignored_flush_write_is_diagnosed_without_retry_or_acceptance() {
+    let mut c = controller();
+    c.platform.ignore_flush_writes = true;
+    assert_eq!(
+        unsafe { c.register_flush_page(0x3dc3000, 100_000) },
+        Err(Error::State)
+    );
+    assert_eq!(c.flush, None);
+    assert_eq!(c.platform.writes.len(), 2);
+    assert_eq!(c.platform.quarantines, 1);
+    assert_eq!(
+        c.flush_page_diagnostic(),
+        Some(FlushPageDiagnostic {
+            requested_iova: 0x3dc3000,
+            before: [Some(0), Some(0)],
+            observed: [Some(0), Some(0)],
+        })
+    );
+}
+
+#[test]
+fn flush_address_policy_is_checked_before_register_io() {
+    let mut c = controller();
+    c.platform.reads.clear();
+    assert_eq!(
+        unsafe { c.register_flush_page(1 << 47, 100_000) },
+        Err(Error::Range)
+    );
+    assert!(c.platform.reads.is_empty());
+    assert!(c.platform.writes.is_empty());
+}
+
 #[test]
 fn reset_needs_flush_page_and_holds_pulse_after_assertion() {
     let mut controller = controller();

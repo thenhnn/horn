@@ -15,6 +15,13 @@
 #include <class/cl917c.h>
 #include <swref/published/disp/v03_00/dev_disp.h>
 #include <swref/published/maxwell/gm107/dev_bus.h>
+/* GP100 publishes the VER2 common format; TU102 supplies current kind/tag
+ * definitions. Explicitly replace the three differing legacy definitions. */
+#include <swref/published/pascal/gp100/dev_mmu.h>
+#include <swref/published/pascal/gp100/dev_ram.h>
+#undef NV_MMU_PTE_COMPTAGLINE
+#undef NV_MMU_VER2_PTE_COMPTAGLINE
+#undef NV_MMU_PTE_KIND_INVALID
 #include <swref/published/turing/tu102/dev_mmu.h>
 #include <class/clc0b5.h>
 #include <class/clc0b5sw.h>
@@ -39,12 +46,45 @@
 #include <ctrl/ctrl2080/ctrl2080ce.h>
 #include <ctrl/ctrl2080/ctrl2080event.h>
 #include <ctrl/ctrla06f/ctrla06fgpfifo.h>
+#include <ctrl/ctrlc36f.h>
 #define RPC_STRUCTURES
 #include <g_rpc-structures.h>
 
 /* Evaluate NVIDIA's function-like/range macros with clang, not handwritten
  * Rust shifts. This adds no ABI declarations or copied field definitions. */
 enum {
+    HORN_BAR1_BLOCK = NV_PBUS_BAR1_BLOCK,
+    HORN_BAR1_VIRTUAL = ((NvU32)NV_PBUS_BAR1_BLOCK_MODE_VIRTUAL) << DRF_SHIFT(NV_PBUS_BAR1_BLOCK_MODE),
+    HORN_BAR1_TARGET_SHIFT = DRF_SHIFT(NV_PBUS_BAR1_BLOCK_TARGET),
+    HORN_BAR1_TARGET_MASK = DRF_MASK(NV_PBUS_BAR1_BLOCK_TARGET),
+    HORN_BAR1_PTR_MASK = DRF_MASK(NV_PBUS_BAR1_BLOCK_PTR),
+    HORN_BAR1_PTR_SHIFT = NV_PBUS_BAR1_BLOCK_PTR_SHIFT,
+    HORN_BAR1_CONTEXT_OFFSET = (DRF_BASE(NV_RAMIN_PAGE_DIR_BASE_LO) / 32) * 4,
+    HORN_BAR1_NEW_FORMAT = 1U << DRF_SHIFT(NV_RAMIN_USE_NEW_PT_FORMAT),
+    HORN_GMMU_VALID = 1ULL << DRF_SHIFT(NV_MMU_VER2_PTE_VALID),
+    HORN_GMMU_VOL = 1ULL << DRF_SHIFT(NV_MMU_VER2_PTE_VOL),
+    HORN_GMMU_READ_ONLY = 1ULL << DRF_SHIFT(NV_MMU_VER2_PTE_READ_ONLY),
+    HORN_GMMU_SYS_COH = 2ULL << DRF_SHIFT(NV_MMU_VER2_PTE_APERTURE),
+    HORN_GMMU_PDE_VID = 1ULL << DRF_SHIFT(NV_MMU_VER2_PDE_APERTURE),
+    HORN_GMMU_PDE_BYTES = NV_MMU_VER2_PDE__SIZE,
+    HORN_GMMU_DUAL_BYTES = NV_MMU_VER2_DUAL_PDE__SIZE,
+    HORN_CE_SET_OBJECT = NVC56F_SET_OBJECT,
+    HORN_CE_INCR = DRF_DEF(C56F, _DMA_INCR, _OPCODE, _VALUE),
+    HORN_CE_NONINCR = DRF_DEF(C56F, _DMA_NONINCR, _OPCODE, _VALUE),
+    HORN_CE_COUNT_SHIFT = DRF_SHIFT(NVC56F_DMA_INCR_COUNT),
+    HORN_CE_COUNT_MASK = DRF_MASK(NVC56F_DMA_INCR_COUNT),
+    HORN_CE_LAUNCH = DRF_DEF(C7B5, _LAUNCH_DMA, _DATA_TRANSFER_TYPE, _NON_PIPELINED) |
+                     DRF_DEF(C7B5, _LAUNCH_DMA, _FLUSH_ENABLE, _TRUE) |
+                     DRF_DEF(C7B5, _LAUNCH_DMA, _SRC_MEMORY_LAYOUT, _PITCH) |
+                     DRF_DEF(C7B5, _LAUNCH_DMA, _DST_MEMORY_LAYOUT, _PITCH) |
+                     DRF_DEF(C7B5, _LAUNCH_DMA, _SRC_TYPE, _PHYSICAL) |
+                     DRF_DEF(C7B5, _LAUNCH_DMA, _DST_TYPE, _PHYSICAL),
+    HORN_CE_SEMAPHORE = DRF_DEF(C7B5, _LAUNCH_DMA, _SEMAPHORE_TYPE, _RELEASE_ONE_WORD_SEMAPHORE),
+    HORN_CE_GP_PUT = __builtin_offsetof(Nvc56fControl, GPPut),
+    HORN_CE_GP_GET = __builtin_offsetof(Nvc56fControl, GPGet),
+    HORN_CE_GP_LENGTH_SHIFT = DRF_SHIFT(NVC56F_GP_ENTRY1_LENGTH),
+    HORN_CE_GP_LENGTH_MASK = DRF_MASK(NVC56F_GP_ENTRY1_LENGTH),
+    HORN_CE_GP_GET_HI_MASK = DRF_MASK(NVC56F_GP_ENTRY1_GET_HI),
     HORN_CRC_CONTEXT = NVC77D_HEAD_SET_CONTEXT_DMA_CRC(0),
     HORN_CRC_CONTROL = NVC77D_HEAD_SET_CRC_CONTROL(0),
     HORN_CRC_SF = DRF_DEF(C77D, _HEAD_SET_CRC_CONTROL, _CONTROLLING_CHANNEL, _CORE) |

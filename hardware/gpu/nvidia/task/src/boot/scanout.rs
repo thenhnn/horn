@@ -6,7 +6,8 @@ use super::{
     Queue, Result, Rm, Span, Vec, api, display_event, display_memory, display_pushbuffer, gsp_disp,
     raw, rm, rm_api,
 };
-use gsp_disp::{commands, pramin::Region, surface, timing::Timing};
+use crate::native::VramRegion;
+use gsp_disp::{commands, surface, timing::Timing};
 use horn_nvidia_gsp::falcon::Platform;
 
 mod live;
@@ -26,6 +27,7 @@ pub(super) fn prepare<M: Memory>(
     version: u32,
     deadline: u64,
     timing: &Timing,
+    rm: &Rm,
 ) -> Result<Surface> {
     let params = surface::request(HANDLE_DISP_CLIENT, timing)?;
     let reply = display_memory(
@@ -40,9 +42,10 @@ pub(super) fn prepare<M: Memory>(
         error
     })?;
     let bytes = usize::try_from(reply.size).map_err(|_| Error::Range)?;
-    let region = Region::new(reply.offset, reply.size)?;
+    let region = ctx.with_platform(|p| p.map_vram(reply.offset, reply.size, deadline))?;
     // Validate descriptor geometry before the first write; no allocation release on failure.
     gsp_disp::instance::vram_descriptor(reply.offset, bytes)?;
+    super::copy::roundtrip(ctx, queue, rm, region, libos, version, deadline)?;
     let mut line = Vec::new();
     line.try_reserve_exact(timing.pitch as usize / 4)
         .map_err(|_| Error::Exhausted)?;
@@ -85,7 +88,7 @@ pub(super) fn prepare<M: Memory>(
         display_event(ctx, queue, libos, version, deadline)?;
     }
     sel4::debug_println!(
-        "NVIDIA_DISPLAY_SCANOUT_READY vram={:#x} bytes={} pattern=bars-checker-border readback=verified scanout=not-enabled",
+        "NVIDIA_DISPLAY_SCANOUT_READY vram={:#x} bytes={} pattern=bars-checker-border path=bar1-uc readback=batch-tail-only scanout=not-enabled",
         reply.offset,
         bytes
     );

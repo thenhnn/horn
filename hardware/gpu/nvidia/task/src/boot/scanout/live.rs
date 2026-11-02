@@ -16,7 +16,7 @@ const COLORS: [(u32, &str); 4] = [
 ];
 
 pub(in crate::boot) struct Live {
-    region: Region,
+    region: VramRegion,
     timing: Timing,
     x: usize,
     y: usize,
@@ -49,10 +49,10 @@ pub(in crate::boot) fn start(
     if end > timing.bytes {
         return Err(Error::Range);
     }
-    let region = Region::new(
-        surface.base,
-        u64::try_from(surface.bytes).map_err(|_| Error::Range)?,
-    )?;
+    let region = VramRegion {
+        base: surface.base,
+        bytes: surface.bytes as u64,
+    };
     let mut line = Vec::new();
     line.try_reserve_exact(WIDTH)
         .map_err(|_| Error::Exhausted)?;
@@ -106,7 +106,7 @@ impl Live {
         let deadline = start.checked_add(2_000_000).ok_or(Error::Range)?;
         let (color, name) = COLORS[(self.changes % COLORS.len() as u64) as usize];
         sel4::debug_println!(
-            "NVIDIA_DISPLAY_LIVE_PATCH_BEGIN clock_us={} change={} x={} y={} width={} height={} fill={} border=white path=cpu-pramin new_update=false vsync=false tearing_allowed=true",
+            "NVIDIA_DISPLAY_LIVE_PATCH_BEGIN clock_us={} change={} x={} y={} width={} height={} fill={} border=white path=bar1-uc new_update=false vsync=false tearing_allowed=true",
             start,
             self.changes,
             self.x,
@@ -130,8 +130,8 @@ impl Live {
                 .and_then(|v| v.checked_add(self.x * 4))
                 .ok_or(Error::Range)?;
             // Scanout only reads this retained image; no CE/render writer is
-            // submitted. Each word is read back, draining CPU writes. This is
-            // not a display-cache visibility guarantee or a visible-pixel proof.
+            // submitted. Ordered BAR1 stores drain once per batch, not per pixel.
+            // This is not a display-cache visibility or visible-pixel proof.
             ctx.with_platform(|p| self.region.write(p, offset as u64, &self.line, deadline))?;
         }
         display_event(ctx, queue, libos, version, deadline)?;
@@ -141,7 +141,7 @@ impl Live {
             return Err(Error::Timeout);
         }
         sel4::debug_println!(
-            "NVIDIA_DISPLAY_LIVE_PATCH_DONE clock_us={} change={} fill={} elapsed_us={} bytes={} readback=verified new_update=false visible=operator-unconfirmed backing=retained",
+            "NVIDIA_DISPLAY_LIVE_PATCH_DONE clock_us={} change={} fill={} elapsed_us={} bytes={} readback=batch-tail-only new_update=false visible=operator-unconfirmed backing=retained",
             now,
             self.changes,
             name,

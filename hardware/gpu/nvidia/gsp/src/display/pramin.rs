@@ -12,7 +12,10 @@ pub struct Region {
 }
 impl Region {
     /// Addresses are selectors, not authority. The caller must own this entire
-    /// allocation in the currently assigned GPU epoch. CPU writes additionally
+    /// allocation in the currently assigned GPU epoch, or have explicit RM
+    /// delegation for a shared BAR1 page-table entry (bootstrap only). Read-only
+    /// BAR1 binding diagnostics may inspect its register-selected VRAM instance.
+    /// CPU writes additionally
     /// require excluding concurrent GPU writes; live reads are provisional.
     pub fn new(base: u64, bytes: u64) -> Result<Self> {
         if base & 3 != 0

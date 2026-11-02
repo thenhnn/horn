@@ -2,7 +2,9 @@
 //! Accounted Horn resources for the AD106 boot core. No Linux DMA wrappers,
 //! physical-RAM mapping, Drop cleanup or guessed clock/interrupt vectors.
 use crate::{target, time::Time};
+mod bar1;
 use alloc::{rc::Rc, vec::Vec};
+pub(crate) use bar1::VramRegion;
 use core::cell::Cell;
 use core::{
     ptr::NonNull,
@@ -112,7 +114,10 @@ pub struct Native {
     events_enabled: bool,
     pub(crate) display_wake: crate::display::wake::Watch,
     pub(crate) display_link: Option<horn_nvidia_gsp::display::dp::Link>,
-    pub(crate) display_crc: Option<horn_nvidia_gsp::display::pramin::Region>,
+    pub(crate) display_crc: Option<VramRegion>,
+    bar1: bar1::Bar1,
+    pub(crate) ce_started: bool,
+    pub(crate) ce_backing: Option<crate::boot::copy::Retained>,
     poisoned: Rc<Cell<bool>>,
 }
 impl Native {
@@ -139,6 +144,9 @@ impl Native {
             display_wake: Default::default(),
             display_link: None,
             display_crc: None,
+            bar1: Default::default(),
+            ce_started: false,
+            ce_backing: None,
             poisoned: Rc::new(Cell::new(false)),
         }
     }
@@ -183,19 +191,6 @@ impl Native {
         };
         self.windows.push((base, window));
         Ok(pointer)
-    }
-    /// Map a window of the VRAM aperture (BAR1). The USERD and the channel
-    /// instance live in video memory, which the CPU reaches only this way.
-    pub fn vram_window(&mut self, offset: u64, length: usize) -> Result<MmioWindow> {
-        self.healthy()?;
-        if length == 0 || length > 65536 || length & 4095 != 0 || offset & 4095 != 0 {
-            return Err(Error::Range);
-        }
-        Ok(self.session.mmio_window(1, offset, length))
-    }
-    /// Release a VRAM window: revokes the CPU alias and the lease.
-    pub fn close_vram_window(&mut self, window: MmioWindow) {
-        self.session.close_window(window);
     }
     pub fn prom(&mut self) -> Result<Vec<u8>> {
         self.healthy()?;
