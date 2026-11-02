@@ -598,7 +598,7 @@ fn rm_disp<M: Memory>(
     version: u32,
     deadline: u64,
     report: &crate::display::Report,
-) -> Result<()> {
+) -> Result<scanout::Live> {
     let timing = gsp_disp::timing::Timing::preferred(&report.monitor)?;
     timing.sink_link(&report.dpcd)?;
     if report.heads & 1 == 0 {
@@ -782,7 +782,10 @@ fn rm_disp<M: Memory>(
     scanout::submit_window(ctx, queue, libos, version, deadline, &window)?;
     modeset::commit(
         ctx, queue, libos, version, deadline, &notifier, &program, &window, &plan,
-    )
+    )?;
+    // commit returns only after the one-shot CRC has detached and reached DONE.
+    // Deliberately modify the live image afterward, not the CRC reference image.
+    scanout::start_live(ctx, timing, &surface)
 }
 
 /// Allocation policy stays here; the ABI and reply decoding live in the client.
@@ -1604,6 +1607,7 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
         horn_runtime::notify_ready(DEVICE_DRIVER_CAPS_READY_SLOT);
         // First RM client above the firmware: root -> device -> subdevice.
         // A failure here is reported but must not tear down a healthy GSP.
+        let mut live = None;
         match rm_client(
             &mut ctx,
             &mut queue,
@@ -1620,19 +1624,21 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                 );
                 // No monitor: leave the display untouched rather than synthesize a mode.
                 let report = display.as_ref().ok_or(Error::Unavailable)?;
-                rm_disp(
-                    &mut ctx,
-                    &mut queue,
-                    &rm,
-                    inputs.libos,
-                    inputs.app_version,
-                    deadline,
-                    report,
-                )
-                .map_err(|error| {
-                    sel4::debug_println!("NVIDIA_DISPLAY_RM_FAILED error={:?}", error);
-                    error
-                })?;
+                live = Some(
+                    rm_disp(
+                        &mut ctx,
+                        &mut queue,
+                        &rm,
+                        inputs.libos,
+                        inputs.app_version,
+                        deadline,
+                        report,
+                    )
+                    .map_err(|error| {
+                        sel4::debug_println!("NVIDIA_DISPLAY_RM_FAILED error={:?}", error);
+                        error
+                    })?,
+                );
                 sel4::debug_println!(
                     "NVIDIA_DISPLAY_SERVICE_ENTER clock_us={} backing=retained",
                     ctx.time_us()?
@@ -1647,9 +1653,17 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
         let receive = sel4::cap::CNode::from_bits(DEVICE_DRIVER_CAPS_SELF_SLOT as _)
             .absolute_cptr(sel4::CPtr::from_bits(crate::SLOTS.public_receive() as _));
         loop {
+            if let Some(animation) = live.as_mut() {
+                animation.tick(&mut ctx, &mut queue, inputs.libos, inputs.app_version)?;
+                // Re-arm after any RPC/probe sleeps, which share this alarm.
+                // Bound notification wakes recv; STOP/IRQ/client service remains
+                // on the existing endpoint, rather than an endless boot loop.
+                ctx.with_platform(|p| p.arm_display_tick(animation.next()))?;
+            }
             sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&receive));
             let (message, badge) = endpoint.recv(reply_cap);
             if badge & horn_supervisor::STOP != 0 {
+                ctx.with_platform(Native::cancel_display_tick)?;
                 let stop_deadline = ctx.time_us()?.checked_add(800_000).ok_or(Error::Range)?;
                 ctx.with_platform(Native::disable_gsp_events)?;
                 let mut shutdown = [0u8; 8]; // PowerStateLevel0, bInPMTransition=false.

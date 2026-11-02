@@ -44,7 +44,11 @@ No copied C notifier structures or handwritten ABI offsets are introduced.
 6. Observe post-commit at 0/500/3000 ms, including live CRC samples and deferred
    connection/link probes. Then detach the CRC context using a separately
    prebuilt core-only UPDATE and a fresh notifier slot. No second modeset.
-7. Normal service continues to decode events and perform bounded deferred
+7. Build-only live-write animation: after successful CRC detach/DONE, schedule
+   the first color change 2 s later in normal service. Repaint the same image's
+   center through PRAMIN about once per second, with no extra UPDATE or count cap.
+   No hardware result for this addition yet.
+8. Normal service continues to decode events and perform bounded deferred
    probes. No automatic training, recovery, IRQ-vector acknowledgement or
    power write is introduced by those probes.
 
@@ -147,6 +151,39 @@ expected hardware CRC of the pattern is not yet computed; values at different
 taps need not match because their data representation may differ. SF capture
 does not measure the electrical DP link or sink acceptance. No SOR capture or
 source switching is mixed into this epoch.
+
+## Periodic live framebuffer writes (build-only)
+
+`task/src/boot/scanout/live.rs` is initialized only after successful CRC detach/DONE.
+The first repaint is due 2 s later, then approximately every second: opaque
+magenta→cyan→yellow→green, repeating without a frame-count or animation-duration
+limit. Centered512×256 rectangle (x1024,y592 for2560×1440), white4-pixel border.
+No flip, extra UPDATE or repeated CRC capture.
+
+This runs as finite ticks in normal service, not an endless boot loop. The existing
+accounted clock alarm wakes the bound notification/endpoint recv. Service re-arms
+it after any shared-alarm RPC/probe sleeps. STOP/IRQ/client handling remains in
+place; STOP cancels the animation alarm before existing shutdown handling. This
+does not establish that GPU STOP/unload is safe. A per-session flag prevents
+starting a second animation instance; any partial-write failure is terminal.
+
+Only the retained owned linear image is written, row-by-row through PRAMIN, with
+readback of every word. No CE/render writer, allocation free, ring/notifier reuse
+or reset. Each individual repaint has a2 s failure deadline, independent of the
+boot deadline; the animation itself has no fixed end. Each row drains events and
+checks the exact trained revision. Relevant activity/loss or any error fails stop,
+retaining backing. No vblank synchronization: tearing is allowed. Delayed ticks
+do not replay missed frames in a catch-up burst. QEMU's60s/+3s limit is unchanged.
+
+Readback proves stored bytes, not display-cache visibility or visible change.
+The operator must confirm the rectangle's changing colors. The earlier CRC is
+for the original image, not the animated framebuffer. Markers: LIVE_ANIMATION_READY
+and LIVE_PATCH_BEGIN/DONE with change index/color, timing and `new_update=false`.
+Native build passed (`work/nvidia-live-patch-build.log`); unit tests intentionally
+skipped. The operator subsequently confirmed that the repeating live writes
+work and are visibly slow. CPU PRAMIN's per-word write/readback path remains a
+diagnostic backend, not a performant upload interface; no throughput figure
+or exact run-log association was supplied with this confirmation.
 
 ## Reading the next log
 

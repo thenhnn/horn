@@ -318,6 +318,13 @@ impl Native {
         }
         Ok(())
     }
+    pub(crate) fn arm_display_tick(&mut self, deadline: u64) -> Result<()> {
+        self.healthy()?;
+        self.time.arm(&mut self.session, deadline)
+    }
+    pub(crate) fn cancel_display_tick(&mut self) -> Result<()> {
+        self.time.cancel(&mut self.session)
+    }
     pub fn service_gsp_event(&mut self) -> Result<horn_nvidia_gsp::gin::Report> {
         self.healthy()?;
         if !self.events_enabled {

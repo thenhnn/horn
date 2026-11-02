@@ -39,13 +39,17 @@ impl Time {
             .cancel()
             .map_err(|_| Error::Backend)
     }
+    /// Arm without waiting; the bound wake notification also wakes endpoint recv.
+    pub fn arm(&mut self, session: &mut DeviceSession, deadline: u64) -> Result<()> {
+        AlarmInterfaceClient::new(session.transport(), Cap::from_ref(self.alarm.as_ref()))
+            .arm(deadline, &target(DEVICE_DRIVER_CAPS_ALARM_SIGNAL_SLOT))
+            .map_err(|_| Error::Backend)
+    }
     pub fn sleep_until(&mut self, session: &mut DeviceSession, deadline: u64) -> Result<()> {
         if self.now(session)? >= deadline {
             return Ok(());
         }
-        AlarmInterfaceClient::new(session.transport(), Cap::from_ref(self.alarm.as_ref()))
-            .arm(deadline, &target(DEVICE_DRIVER_CAPS_ALARM_SIGNAL_SLOT))
-            .map_err(|_| Error::Backend)?;
+        self.arm(session, deadline)?;
         loop {
             if self.now(session)? >= deadline {
                 return self.cancel(session);

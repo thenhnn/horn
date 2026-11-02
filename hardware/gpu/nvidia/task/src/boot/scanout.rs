@@ -9,6 +9,9 @@ use super::{
 use gsp_disp::{commands, pramin::Region, surface, timing::Timing};
 use horn_nvidia_gsp::falcon::Platform;
 
+mod live;
+pub(super) use live::{Live, start as start_live};
+
 const ALLOCATION_HANDLE: u32 = 0x0042_0000;
 pub(super) const IMAGE_HANDLE: u32 = 0x2000;
 pub(super) struct Surface {

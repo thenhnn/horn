@@ -15,6 +15,7 @@ pub(crate) struct Watch {
     pub link_invalid: bool,
     pub publication_started: bool,
     pub recovery_used: bool,
+    pub live_patch_started: bool,
     last_unplug_revision: u32,
     last_replug_revision: u32,
     unplug_events: u32,
