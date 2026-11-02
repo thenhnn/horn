@@ -8,6 +8,11 @@ pub(crate) struct Watch {
     id: u32,
     pub connected: Option<bool>,
     pub last_activity_us: u64,
+    pub revision: u32,
+    pub probe_pending: bool,
+    pub probes: u8,
+    pub trained_revision: Option<u32>,
+    pub link_invalid: bool,
 }
 impl Watch {
     /// One selection per device session, never reset after a failed attempt.
@@ -24,21 +29,27 @@ impl Watch {
             return Err(Error::Malformed);
         }
         if (plug | unplug) & self.id != 0 {
+            self.revision = self.revision.checked_add(1).ok_or(Error::Range)?;
             self.connected = Some(plug & self.id != 0);
+            self.probe_pending = self.connected == Some(true);
             self.last_activity_us = now;
         }
         Ok(())
     }
-    pub fn irq(&mut self, id: u32, now: u64) {
+    pub fn irq(&mut self, id: u32, now: u64) -> Result<()> {
         if id & self.id != 0 {
+            self.revision = self.revision.checked_add(1).ok_or(Error::Range)?;
+            self.probe_pending = self.connected == Some(true);
             self.last_activity_us = now;
         }
+        Ok(())
     }
     pub fn sample(&mut self, id: u32, connected: bool, now: u64) -> Result<()> {
         if self.id == 0 || id != self.id {
             return Err(Error::State);
         }
         if self.connected != Some(connected) {
+            self.revision = self.revision.checked_add(1).ok_or(Error::Range)?;
             self.connected = Some(connected);
             self.last_activity_us = now;
         }

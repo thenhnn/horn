@@ -51,9 +51,9 @@ The image, LUTs, preferred mode and UPDATE recipe are unchanged in this combined
 experiment. New subscriptions/RPCs/logging alter timing; results cannot isolate
 which addition matters if the image happens to appear.
 
-## Deliberate limits
+## Deliberate limits of the original combined run
 
-CRC is not included: `dispnv50/crcc57d.c::crcc57d_set_src` needs a context-DMA CRC
+CRC was not included: `dispnv50/crcc57d.c::crcc57d_set_src` needs a context-DMA CRC
 buffer and head CRC methods, not a passive read. It needs a separate accounted,
 immutable-context implementation. SF_DP_MN is configuration, not measured video
 Mvid/MSA; MSA_DEBUG_MAUD/NAUD are audio. No source-backed video-MSA readback was
@@ -92,3 +92,16 @@ An unplug/replug after commit would show this gate was insufficient; that does
 not authorize retraining the active uncertain epoch. Timing, image and LUT
 recipe remain unchanged. Unit tests remain skipped; build/run evidence belongs
 in HARDWARE.md.
+
+## Prepared four-part follow-up (not hardware-run)
+
+See `DISPLAY-DIAGNOSTIC.md` for the current prepared sequence and interpretation.
+Training/SST now precedes every UPDATE, followed by a bounded 3 s no-UPDATE
+observation. Head mode/output is staged before the ownership UPDATE, with
+cursor/OLUT still deferred until after ownership. This corrects the ordering
+difference in the comparison table above; it is not yet a hardware-proven fix.
+Deferred replug/IRQ probes validate fresh connection/link state without recovery.
+One immutable SF CRC context is enabled before ownership and detached after
+post-commit observation by a prebuilt capture-control UPDATE with a fresh slot.
+No source switching, second modeset, retraining, DMA/notifier reuse or reset.
+Native build and selected formatting/diff checks passed; unit tests skipped.

@@ -4,8 +4,24 @@
 use super::*;
 use gsp_disp::{dp::Link, head, timing::Timing};
 use horn_nvidia_gsp::rm::codec::Wire;
+mod crc;
+mod link_probe;
 mod sink;
+pub(super) use crc::prepare as prepare_crc;
+pub(super) use link_probe::{after_training, pending as diagnose_pending};
 pub(super) use sink::settle;
+
+/// Revalidate the exact trained observation before every activation prefix.
+/// Quiet replug alone can never rehabilitate the old training snapshot.
+pub(super) fn activation_ready(ctx: &mut Ad106<Native>) -> Result<()> {
+    let plan = ctx.with_platform(|p| {
+        if p.display_wake.trained_revision.is_none() {
+            return Err(Error::State);
+        }
+        p.display_link.ok_or(Error::State)
+    })?;
+    sink::ensure_settled(ctx, &plan)
+}
 
 const HOTPLUG_EVENT: u32 = 0x007e0000;
 const DP_IRQ_EVENT: u32 = 0x007e0001;
@@ -110,10 +126,7 @@ pub(super) fn notification(
         );
     } else {
         let event = raw::Nv2080DpIrqNotification::read(data)?;
-        ctx.with_platform(|p| {
-            p.display_wake.irq(event.displayId, clock);
-            Ok(())
-        })?;
+        ctx.with_platform(|p| p.display_wake.irq(event.displayId, clock))?;
         sel4::debug_println!(
             "NVIDIA_DISPLAY_DP_IRQ phase={} clock_us={} display_id={:#x} recovery=none",
             phase,
@@ -403,12 +416,18 @@ pub(super) fn train<M: Memory>(
     // here: that would invalidate the very precondition this variant tests.
     display_event(ctx, queue, libos, version, deadline)?;
     sink::ensure_settled(ctx, plan)?;
+    let revision = ctx.with_platform(|p| {
+        p.display_link = Some(*plan);
+        Ok(p.display_wake.revision)
+    })?;
     sel4::debug_println!(
-        "NVIDIA_DISPLAY_DP_TRAIN_BEGIN id={:#x} sor={} rate={:#x} lanes={}",
+        "NVIDIA_DISPLAY_DP_TRAIN_BEGIN id={:#x} sor={} rate={:#x} lanes={} clock_us={} revision={}",
         plan.display_id,
         plan.sor,
         plan.rate,
-        plan.lanes
+        plan.lanes,
+        ctx.time_us()?,
+        revision
     );
     {
         let mut api = rm_api(ctx, queue, HANDLE_DISP_CLIENT, libos, version, deadline);
@@ -464,6 +483,21 @@ pub(super) fn train<M: Memory>(
     {
         return Err(Error::State);
     }
+    display_event(ctx, queue, libos, version, deadline)?;
+    if ctx.with_platform(|p| Ok(p.display_wake.revision))? != revision {
+        sel4::debug_println!(
+            "NVIDIA_DISPLAY_TRAIN_INVALIDATED clock_us={} updates_submitted=false",
+            ctx.time_us()?
+        );
+        return Err(Error::State);
+    }
+    ctx.with_platform(|p| {
+        if p.display_wake.trained_revision.is_some() {
+            return Err(Error::State);
+        }
+        p.display_wake.trained_revision = Some(revision);
+        Ok(())
+    })?;
     sel4::debug_println!(
         "NVIDIA_DISPLAY_DP_TRAINED id={:#x} sor={} rate={:#x} lanes={} tu=64 watermark={}",
         plan.display_id,
@@ -721,10 +755,10 @@ pub(super) fn commit<M: Memory>(
             window.assembly_put,
             window.program.put(),
         ),
-        (gsp_disp::CORE_USER, core.ownership_put, core.push.put()),
+        (gsp_disp::CORE_USER, core.ownership_put, core.modeset_put),
     ];
     display_event(ctx, queue, libos, version, deadline)?;
-    sink::ensure_settled(ctx, plan)?;
+    activation_ready(ctx)?;
     let submit_us = ctx.time_us()?;
     sel4::debug_println!(
         "NVIDIA_DISPLAY_COMMIT_BEGIN clock_us={} deadline_us={}",
@@ -753,7 +787,7 @@ pub(super) fn commit<M: Memory>(
     })?;
     sel4::debug_println!(
         "NVIDIA_DISPLAY_MODESET_SUBMIT head=0 window=0 core_put={} window_put={} core_slot={} window_slot={}",
-        core.push.put(),
+        core.modeset_put,
         window.program.put(),
         head::MODE_NOTIFIER,
         head::WINDOW_NOTIFIER
@@ -799,8 +833,9 @@ pub(super) fn commit<M: Memory>(
             stream_snapshot(ctx, deadline, "after-commit")?;
             snapshot(ctx, deadline, plan)?;
             // Separate observation deadline; do not extend the 2s commit timeout.
-            // No post-commit AUX: its reproduced RM error used to stop event
-            // service before the monitor had time to finish acquiring the mode.
+            // No unconditional fixed-time post-commit AUX. Deferred probes
+            // only follow a connected, quiet HPD/IRQ notification; errors still
+            // stop the session rather than retrying or masking RM GENERIC.
             let origin = ctx.time_us()?;
             let observe_deadline = origin
                 .checked_add(5_000_000)
@@ -821,7 +856,11 @@ pub(super) fn commit<M: Memory>(
                     if now >= wake {
                         break;
                     }
-                    ctx.sleep_until(now.saturating_add(10_000).min(wake))?;
+                    diagnose_pending(ctx, queue, libos, version, observe_deadline)?;
+                    let now = ctx.time_us()?;
+                    if now < wake {
+                        ctx.sleep_until(now.saturating_add(10_000).min(wake))?;
+                    }
                 }
                 stream_snapshot(ctx, observe_deadline, stage)?;
                 let registers = ctx.with_platform(|p| {
@@ -842,6 +881,7 @@ pub(super) fn commit<M: Memory>(
                     unsafe { notifier.read32(head::MODE_NOTIFIER)? },
                     unsafe { notifier.read32(head::WINDOW_NOTIFIER)? }
                 );
+                crc::snapshot(ctx, observe_deadline, stage, false)?;
                 active(
                     &mut rm_api(
                         ctx,
@@ -856,6 +896,8 @@ pub(super) fn commit<M: Memory>(
                     Some(plan.display_id),
                 )?;
             }
+            crc::finish(ctx, queue, libos, version, boot_deadline, notifier, core)?;
+            diagnose_pending(ctx, queue, libos, version, boot_deadline)?;
             return Ok(());
         }
         let now = ctx.time_us()?;

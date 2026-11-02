@@ -2,6 +2,7 @@
 //! AD102 core DMA command probe, following nouveau's corec37d_update(ntfy=false).
 //! The initial prefixes establish consumption; the third requests completion.
 pub mod commands;
+pub mod crc;
 pub mod dp;
 pub mod head;
 pub mod instance;

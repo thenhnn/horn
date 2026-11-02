@@ -111,6 +111,8 @@ pub struct Native {
     irq_prepared: bool,
     events_enabled: bool,
     pub(crate) display_wake: crate::display::wake::Watch,
+    pub(crate) display_link: Option<horn_nvidia_gsp::display::dp::Link>,
+    pub(crate) display_crc: Option<horn_nvidia_gsp::display::pramin::Region>,
     poisoned: Rc<Cell<bool>>,
 }
 impl Native {
@@ -135,6 +137,8 @@ impl Native {
             irq_prepared: false,
             events_enabled: false,
             display_wake: Default::default(),
+            display_link: None,
+            display_crc: None,
             poisoned: Rc::new(Cell::new(false)),
         }
     }

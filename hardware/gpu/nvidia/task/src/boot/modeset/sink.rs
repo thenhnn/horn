@@ -7,7 +7,7 @@ const MIN_WAKE_US: u64 = 3_000_000;
 const BUDGET_US: u64 = 8_000_000;
 const SAMPLE_US: u64 = 200_000;
 
-fn connected<M: Memory>(
+pub(super) fn connected<M: Memory>(
     ctx: &mut Ad106<Native>,
     queue: &mut Queue<M>,
     libos: Span,
@@ -48,12 +48,20 @@ fn connected<M: Memory>(
 pub(super) fn ensure_settled(ctx: &mut Ad106<Native>, plan: &Link) -> Result<()> {
     let now = ctx.time_us()?;
     let watch = ctx.with_platform(|p| Ok(p.display_wake))?;
-    if !watch.settled(plan.display_id, now, QUIET_US)? {
+    if !watch.settled(plan.display_id, now, QUIET_US)?
+        || watch.link_invalid
+        || watch
+            .trained_revision
+            .is_some_and(|revision| revision != watch.revision)
+    {
         sel4::debug_println!(
-            "NVIDIA_DISPLAY_WAKE_INVALIDATED clock_us={} connected={:?} quiet_us={} no_retry=true",
+            "NVIDIA_DISPLAY_WAKE_INVALIDATED clock_us={} connected={:?} quiet_us={} revision={} trained_revision={:?} link_invalid={} no_retry=true",
             now,
             watch.connected,
-            watch.quiet_us(now)?
+            watch.quiet_us(now)?,
+            watch.revision,
+            watch.trained_revision,
+            watch.link_invalid
         );
         return Err(Error::State);
     }

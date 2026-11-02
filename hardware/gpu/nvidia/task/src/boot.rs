@@ -687,8 +687,8 @@ fn rm_disp<M: Memory>(
         let topology = gsp_disp::commands::Topology::new(info.windowPresentMask, info.numHeads)?;
         modeset::active(&mut api, "before-route", topology.heads, None)?;
         let plan = modeset::route(&mut api, supported.displayMask, report, &timing)?;
-        let mut program = gsp_disp::commands::Core::new(topology, DISP_NOTIFIER_HANDLE)?;
-        gsp_disp::head::append(&mut program, &timing, &plan)?;
+        let program =
+            gsp_disp::commands::Core::for_modeset(topology, DISP_NOTIFIER_HANDLE, &timing, &plan)?;
         unsafe {
             for (i, &word) in program.push.words().iter().enumerate() {
                 core_pb.write32(i * 4, word)?;
@@ -736,6 +736,7 @@ fn rm_disp<M: Memory>(
     let surface = scanout::prepare(ctx, queue, libos, version, deadline, &timing)?;
     let luts = modeset::luts(ctx, queue, libos, version, deadline)?;
     let window = scanout::window(ctx, queue, rm, libos, version, deadline, &timing)?;
+    let crc = modeset::prepare_crc(ctx, queue, libos, version, deadline)?;
     let bindings = [
         gsp_disp::instance::Binding::coherent(
             0,
@@ -756,6 +757,7 @@ fn rm_disp<M: Memory>(
             luts.base + gsp_disp::head::LUT_BYTES as u64,
             gsp_disp::head::LUT_BYTES,
         )?,
+        gsp_disp::instance::Binding::vram(0, gsp_disp::crc::HANDLE, crc.base, crc.bytes)?,
         gsp_disp::instance::Binding::coherent(
             1,
             DISP_NOTIFIER_HANDLE,
@@ -775,9 +777,10 @@ fn rm_disp<M: Memory>(
     );
     modeset::baseline(ctx, deadline, &plan)?;
     modeset::settle(ctx, queue, libos, version, deadline, &plan)?;
+    modeset::train(ctx, queue, libos, version, deadline, report, &plan)?;
+    modeset::after_training(ctx, queue, libos, version, deadline, &plan)?;
     core_submit(ctx, queue, libos, version, deadline, &notifier, &program)?;
     scanout::submit_window(ctx, queue, libos, version, deadline, &window)?;
-    modeset::train(ctx, queue, libos, version, deadline, report, &plan)?;
     modeset::commit(
         ctx, queue, libos, version, deadline, &notifier, &program, &window, &plan,
     )
@@ -937,16 +940,22 @@ fn core_submit<M: Memory>(
         if ctx.time_us()? >= deadline {
             return Err(Error::Timeout);
         }
+        // An HPD/IRQ during an earlier probe prefix must stop this trained
+        // snapshot before ownership can activate the head. Drain then recheck;
+        // a quiet replug is not permission to reuse the old training result.
+        display_event(ctx, queue, libos, version, deadline)?;
+        modeset::activation_ready(ctx)?;
         // x86 coherent DMA writes precede the MMIO PUT doorbell. Do not use
         // BAR1 or a GPU VA for this sysmem ring; RM was given its scoped IOVA.
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
         let value = gsp_disp::put_word(target)?;
         ctx.with_platform(|p| p.write32(gsp_disp::CORE_USER + gsp_disp::PUT, value))?;
         sel4::debug_println!(
-            "NVIDIA_DISPLAY_CORE_SUBMIT kind={} put={} put_raw={:#x}",
+            "NVIDIA_DISPLAY_CORE_SUBMIT kind={} put={} put_raw={:#x} clock_us={}",
             kind,
             target,
-            value
+            value,
+            ctx.time_us()?
         );
         loop {
             display_event(ctx, queue, libos, version, deadline)?;
@@ -1689,6 +1698,14 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                         )));
                     }
                 }
+                let probe_deadline = ctx.time_us()?.checked_add(3_000_000).ok_or(Error::Range)?;
+                modeset::diagnose_pending(
+                    &mut ctx,
+                    &mut queue,
+                    inputs.libos,
+                    inputs.app_version,
+                    probe_deadline,
+                )?;
             } else if badge == crate::CLIENT {
                 ctx.with_platform(|native| {
                     let request = {

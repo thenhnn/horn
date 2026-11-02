@@ -85,6 +85,12 @@ root=$(nix-build "$repo_root/nix" -A root-task.package "${nix_args[@]}")
 
 [[ -f $kernel/bin/kernel-multiboot.elf ]] || die "kernel image missing in $kernel"
 [[ -f $root/bin/task.elf ]] || die "root task image missing in $root"
+# Resolve the observer's interpreter before launch, not from doas's reduced PATH.
+# Fail before starting QEMU if this required diagnostic dependency is missing.
+python_package=$(nix-build "$repo_root/nix" -A nixpkgs.pkgs.pkgsBuildBuild.python3 "${nix_args[@]}")
+observer_python=$python_package/bin/python3
+[[ -x $observer_python ]] || die "diagnostic Python missing in $python_package"
+[[ -f $repo_root/hardware/gpu/nvidia/diagnose-qemu.py ]] || die "QEMU observer missing"
 note "kernel: $kernel"
 note "root:   $root"
 
@@ -149,11 +155,21 @@ if [[ $EUID -ne 0 ]]; then
     note "elevating QEMU with: ${launcher[*]}"
 fi
 
+# Read-only observer inherits this script's already-authorized UID. It may
+# inspect QMP and /proc kernel stacks, never attach/stop/reset the guest/GPU.
+# Its own 50s budget is independent of the unchanged QEMU timeout below.
+"$observer_python" -I "$repo_root/hardware/gpu/nvidia/diagnose-qemu.py" "$run_dir" >"$run_dir/qemu-diagnostic.log" 2>&1 &
+observer_pid=$!
+note "read-only QEMU diagnostics: $run_dir/qemu-diagnostic.log"
+
 set -o pipefail
 note "QEMU time limit: 60s (+3s kill grace); timeout is not graceful STOP/unload"
 set +e
 "${launcher[@]}" timeout --signal=TERM --kill-after=3s 60s "${command[@]}" 2>&1 | tee "$run_dir/serial.log"
 status=${PIPESTATUS[0]}
+if [[ -n $observer_pid ]]; then
+    wait "$observer_pid" || note "QEMU observer exited with an error (see diagnostic log)"
+fi
 set -e
 if [[ $status == 124 ]]; then
     note "QEMU reached the 60s limit; no driver STOP/unload was performed"

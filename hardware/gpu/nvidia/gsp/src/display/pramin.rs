@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! Bounded CPU writes to an owned RM VRAM allocation through Nova's BAR0 PRAMIN.
+//! Bounded CPU access to an owned RM VRAM allocation through Nova's BAR0 PRAMIN.
 //! No BAR1, GPU virtual address, reset, retry, or implicit cleanup.
 use crate::{Error, Result, falcon::Platform, raw};
 const PRAMIN: u32 = 0x700000;
@@ -12,7 +12,8 @@ pub struct Region {
 }
 impl Region {
     /// Addresses are selectors, not authority. The caller must own this entire
-    /// allocation in the currently assigned GPU epoch, and exclude GPU writes.
+    /// allocation in the currently assigned GPU epoch. CPU writes additionally
+    /// require excluding concurrent GPU writes; live reads are provisional.
     pub fn new(base: u64, bytes: u64) -> Result<Self> {
         if base & 3 != 0
             || bytes == 0
@@ -22,6 +23,59 @@ impl Region {
             return Err(Error::Range);
         }
         Ok(Self { base, bytes })
+    }
+    /// Read only this owned allocation. Live GPU-written data is an observation,
+    /// not an atomic snapshot or completion proof; caller must establish those.
+    pub fn read<P: Platform>(
+        &self,
+        p: &mut P,
+        offset: u64,
+        words: &mut [u32],
+        deadline: u64,
+    ) -> Result<()> {
+        let length = (words.len() as u64).checked_mul(4).ok_or(Error::Range)?;
+        if offset & 3 != 0
+            || offset
+                .checked_add(length)
+                .is_none_or(|end| end > self.bytes)
+        {
+            return Err(Error::Range);
+        }
+        if words.is_empty() {
+            return Ok(());
+        }
+        if p.now_us()? >= deadline {
+            return Err(Error::Timeout);
+        }
+        let previous = p.read32(raw::HORN_PRAMIN_WINDOW)?;
+        if previous & !(raw::HORN_PRAMIN_BASE_MASK | raw::HORN_PRAMIN_TARGET_MASK) != 0 {
+            return Err(Error::State);
+        }
+        let mut bank = None;
+        for (i, word) in words.iter_mut().enumerate() {
+            if i % 256 == 0 && p.now_us()? >= deadline {
+                return Err(Error::Timeout);
+            }
+            let address = self.base + offset + i as u64 * 4;
+            let selector = u32::try_from(address / BANK_BYTES).map_err(|_| Error::Range)?;
+            if selector & !raw::HORN_PRAMIN_BASE_MASK != 0 {
+                return Err(Error::Range);
+            }
+            let selector = selector << raw::HORN_PRAMIN_BASE_SHIFT;
+            if bank != Some(selector) {
+                p.write32(raw::HORN_PRAMIN_WINDOW, selector)?;
+                if p.read32(raw::HORN_PRAMIN_WINDOW)? != selector {
+                    return Err(Error::State);
+                }
+                bank = Some(selector);
+            }
+            *word = p.read32(PRAMIN + (address % BANK_BYTES) as u32)?;
+        }
+        p.write32(raw::HORN_PRAMIN_WINDOW, previous)?;
+        if p.read32(raw::HORN_PRAMIN_WINDOW)? != previous {
+            return Err(Error::State);
+        }
+        Ok(())
     }
     pub fn write<P: Platform>(
         &self,

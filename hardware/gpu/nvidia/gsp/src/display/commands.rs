@@ -81,11 +81,33 @@ pub struct Core {
     pub push: Push,
     pub topology: Topology,
     pub ownership_put: u32,
+    pub modeset_put: u32,
+    pub capture_stop_put: u32,
 }
 impl Core {
     /// corec57d_init followed by corec37d_wndw_owner and a notifier UPDATE.
     /// Static ownership must be committed *before* programming window formats.
     pub fn new(topology: Topology, notifier: u32) -> Result<Self> {
+        Self::build(topology, notifier, None)
+    }
+    pub fn for_modeset(
+        topology: Topology,
+        notifier: u32,
+        t: &Timing,
+        link: &super::dp::Link,
+    ) -> Result<Self> {
+        let mut core = Self::build(topology, notifier, Some((t, link)))?;
+        super::head::append_after_ownership(&mut core)?;
+        core.modeset_put = core.push.put();
+        super::crc::stop(&mut core.push)?;
+        core.capture_stop_put = core.push.put();
+        Ok(core)
+    }
+    fn build(
+        topology: Topology,
+        notifier: u32,
+        mode: Option<(&Timing, &super::dp::Link)>,
+    ) -> Result<Self> {
         let topology = Topology::new(topology.windows, topology.heads)?;
         let mut push = Push::default();
         push.extend(&probe_words()?)?;
@@ -104,6 +126,11 @@ impl Core {
                 raw::HORN_WINDOW_USAGE_BOUNDS + stride,
                 &[raw::HORN_WINDOW_BOUNDS],
             )?;
+        }
+        if let Some((timing, link)) = mode {
+            super::head::append_mode(&mut push, timing, link)?;
+            // One fixed SF capture context, activated with the first head state.
+            super::crc::enable(&mut push)?;
         }
         for i in 0..8 {
             if topology.windows & (1 << i) == 0 {
@@ -129,6 +156,8 @@ impl Core {
             push,
             topology,
             ownership_put,
+            modeset_put: 0,
+            capture_stop_put: 0,
         })
     }
 }

@@ -440,3 +440,76 @@ quiet connected state did not prove the panel was awake; the sleep hypothesis
 is not conclusively disproved, but this gate is insufficient. No retraining,
 extra UPDATE, notifier reuse or reset was attempted; backing retained. No QEMU
 remains. Russian handoff/report: `DISPLAY-REPORT-2026-11-02.md`.
+
+### Prepared follow-up: four checks, no launch
+
+The operator explicitly requested training-only observation, post-replug link
+checks, source-backed initial ordering correction and internal CRC together,
+but prohibited launching while the host driver is still loaded. Implemented
+and native-built; **no GPU access or hardware run performed**. See
+`DISPLAY-DIAGNOSTIC.md` for exact sequence, bounds, source basis and limitations.
+Unit tests skipped; selected formatting/diff checks passed. Hardware status is
+still the black-screen observation from 050431, not a claimed fix.
+
+The operator supplied a photo of the successful moment:
+`/home/user/.cache/pi-sandbox/49ec0cce9e90beb45119a93c05fd9e4461738fc2dbe6791102db1643d634d846/pi-clipboard-e317b883-a74c-447a-ad4d-797b2934fdb9.png`.
+It visibly shows the test pattern: white/yellow/cyan/green/magenta/red/blue/black
+bars, lower checkerboard and red border. This supports the operator's earlier
+image confirmation. The photo alone does not establish refresh/timing, event
+ordering or why only that run worked. The image is not copied into the repo.
+
+### Four-part diagnostic run 151518 — operator confirms image
+
+`work/nvidia-vfio-20261102-151518/serial.log`: one authorized 60 s run, exit124
+on timeout TERM, not graceful STOP/unload. Operator confirms visible image.
+DPCD power initially2, one successful conditional D0 write; connected/quiet gate
+passes. Training/SST succeeds; no selected HPD/DP_IRQ is logged during the3 s
+training-only interval or later in this run. Thus deferred reconnect probes were
+not exercised. Ownership publishes at16465981 us, commit completes16541089 us.
+Raster/loadv progress with no sampled underflow; GET_ACTIVE remains0x100.
+CRC detach completes: status0x018a0001, count394, DONE, no reported overflow.
+Initial SF CRC0xfe34a8d1; final entries390..393 consistently0xd1e9b9e9.
+Expected pattern CRC is unknown; operator observation establishes visible pixels.
+Normal service entered19800997 us, no recorded panic. This is one successful
+run, not proof of repeatability or isolation of the causal change: D0 write,
+training-only delay, sequence correction and CRC instrumentation differ from
+prior runs. User requested instructions for independent launches; no automatic
+repeat is authorized or performed.
+
+### Intermittent empty startup logs, then training-only link loss
+
+Operator launches `151635` and `151809` produced empty serial logs and reached
+QEMU's timeout, with no captured QMP/stacks. The former used the same root image
+as successful151518. Operator supplied only ordinary VFIO vgaarb messages, not
+reset errors. These empty logs do not distinguish blocked QEMU/VFIO startup from
+a silent guest. No reset failure is established.
+
+One subsequent authorized diagnostic run:
+`work/nvidia-vfio-20261102-152343/serial.log`, exit124 at60s, no STOP/unload.
+The startup hang did not reproduce: seL4/GSP/RM loaded. The new read-only observer
+was **skipped because python3 was absent from doas PATH**, so no QMP/stacks were
+captured. No claim of QMP verification. No second run was made. Interpreter
+resolution is subsequently fixed to use pinned Nix Python and fail before
+launch if unavailable; bash/Python syntax and native Python package resolution
+checked only, not hardware-run with that fix. No QEMU remains after this run.
+
+This run nevertheless isolates the HPD issue BEFORE ANY UPDATE:
+
+- DPCD power already1, no D0 write. Wake gate passes13292794 us.
+- Training begins13296260 us, successful reply13307467 us; AUX config
+  `[14,84,00,0a,0a,0a,0a]`, status`[77,77,01,03,66,66]`; SST reply13329897 us.
+- Training-only observation begins13334637 us; raster/head asleep, no UPDATE.
+- HPD unplug0x300 at13978689 us, replug0x100/unplug0x200 at15609599 us.
+- Deferred probe at15815121 us: fresh connection=true; both AUX calls succeed.
+  Config`[14,04,00,00,00,00,00]`, status`[00,00,00,02,00,00]`:
+  configured=false,equalized=false,retrain_candidate=true,current_generation=true.
+- Training-only interval ends16335085 us, revision1→3. Fail-stop Error::State,
+  supervisor stops driver CPU; backing retained. No ownership/modeset/CRC
+  activation or detach was submitted. CRC backing was prepared but not enabled.
+
+Unplug is about0.64s after the successful training/SST sequence, without head
+activation. Head timing/window UPDATE is therefore not necessary for this HPD
+cycle. This supports investigating sink wake/link loss and a source-backed
+pre-first-UPDATE revalidation/retraining state machine. It does not prove the
+physical cause, authorize automatic recovery, or explain empty QEMU logs. No
+operator pixel observation for152343 is recorded yet.

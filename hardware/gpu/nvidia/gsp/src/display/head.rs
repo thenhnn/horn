@@ -22,13 +22,14 @@ fn pair(x: u16, y: u16) -> Result<u32> {
     Ok((u32::from(x) << raw::HORN_HEAD_X_SHIFT) | (u32::from(y) << raw::HORN_HEAD_Y_SHIFT))
 }
 
-pub fn append(core: &mut Core, t: &Timing, link: &Link) -> Result<()> {
+/// Head/output state staged before the non-window-interlocked ownership UPDATE,
+/// matching nv50_head_flush_set. Cursor and OLUT deliberately remain deferred.
+pub fn append_mode(p: &mut Push, t: &Timing, link: &Link) -> Result<()> {
     let clock = t
         .pixel_clock_khz
         .checked_mul(1000)
         .filter(|v| *v <= 0x7fffffff)
         .ok_or(Error::Range)?;
-    let p = &mut core.push;
     p.method(
         raw::HORN_HEAD_RASTER_SIZE,
         &[
@@ -50,13 +51,6 @@ pub fn append(core: &mut Core, t: &Timing, link: &Link) -> Result<()> {
     p.method(raw::HORN_HEAD_PROCAMP, &[0])?; // RGB / VESA / chroma LPF disabled
     p.method(raw::HORN_HEAD_DITHER_CONTROL, &[0])?;
     p.method(raw::HORN_HEAD_OVERSCAN_COLOR, &[0])?;
-    p.method(raw::HORN_HEAD_CONTROL_CURSOR, &[raw::HORN_HEAD_CURSOR_OFF])?;
-    p.method(raw::HORN_HEAD_CURSOR_DMA, &[0])?;
-    p.method(raw::HORN_HEAD_OCSC1CONTROL, &[0])?;
-    p.method(
-        raw::HORN_HEAD_OLUT_CONTROL,
-        &[raw::HORN_HEAD_OLUT, u32::MAX, LUT_HANDLE, 0],
-    )?;
     p.method(raw::HORN_HEAD_DISPLAY_ID, &[link.display_id])?;
     p.method(
         raw::HORN_SOR_CONTROL + link.sor * raw::HORN_SOR_STRIDE,
@@ -71,6 +65,20 @@ pub fn append(core: &mut Core, t: &Timing, link: &Link) -> Result<()> {
         &[raw::HORN_HEAD_RGB8
             | if t.h_positive { 0 } else { raw::HORN_HEAD_HNEG }
             | if t.v_positive { 0 } else { raw::HORN_HEAD_VNEG }],
+    )?;
+    Ok(())
+}
+
+/// Window-dependent head state, matching nv50_head_flush_set_wndw.
+/// Mode/output was already staged before the ownership prefix.
+pub(super) fn append_after_ownership(core: &mut Core) -> Result<()> {
+    let p = &mut core.push;
+    p.method(raw::HORN_HEAD_CONTROL_CURSOR, &[raw::HORN_HEAD_CURSOR_OFF])?;
+    p.method(raw::HORN_HEAD_CURSOR_DMA, &[0])?;
+    p.method(raw::HORN_HEAD_OCSC1CONTROL, &[0])?;
+    p.method(
+        raw::HORN_HEAD_OLUT_CONTROL,
+        &[raw::HORN_HEAD_OLUT, u32::MAX, LUT_HANDLE, 0],
     )?;
     p.method(
         raw::NVC77D_SET_NOTIFIER_CONTROL,
