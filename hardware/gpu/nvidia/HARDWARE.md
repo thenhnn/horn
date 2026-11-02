@@ -317,3 +317,23 @@ the removal: same training/commit/source state, no recorded panic, script exit
 avoids the observed diagnostic-query panic but does not establish reproducible
 scanout. No causal claim about the AUX request making pixels visible. Stable
 display remains unproven.
+
+### Restored post-commit AUX with timing/event logs — black again
+
+`work/nvidia-vfio-20261102-043158/serial.log`: operator reports a black screen
+with the restored 500 ms delayed AUX diagnostic. Thus the request is not a
+sufficient condition for reproducing the one visible-image run. Modeset,
+image/LUT and UPDATE recipe were unchanged; added logging affects timing.
+
+Commit began at 10158565 us, completed about 23 ms later. Before AUX,
+clock=10775135 us (616570 us after submit), core PUT=GET=0x22c,
+window PUT=GET=0xf0, DPCA=0x00490318, core FINISHED=0x80000000,
+window BEGUN=0x40000000. Internal raster continued advancing during the delay.
+DPCD 0x100 read request cmd=0x9, size=6 (seven bytes) received the matching
+RM_CONTROL reply, transport sequence 42, outer status/private status both 0.
+The decoded RM control status was NV_ERR_GENERIC=0xffff; no AUX bytes were
+accepted as valid. The two-read diagnostic stopped at its first request;
+no status read/retry followed. No intervening GSP event was logged in this
+RPC wait. Fail-stop retained DMA backing; supervisor CPU stopped, cleanup
+pending. Native build passed, no unit tests run. QEMU invocation ended
+aborted/Killed, not graceful STOP/unload.

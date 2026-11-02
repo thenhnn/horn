@@ -849,6 +849,16 @@ fn display_event<M: Memory>(
     // No synchronous RPC is outstanding during direct submission.
     if let Some(bytes) = queue.try_receive()? {
         let packet = wire::Packet::decode(&bytes)?;
+        sel4::debug_println!(
+            "NVIDIA_GSP_RX phase=display clock_us={} function={:#x} status={:#x} private={:#x} transport_sequence={} rpc_sequence={} bytes={}",
+            ctx.time_us()?,
+            packet.header.function,
+            packet.header.status,
+            packet.header.private_status,
+            packet.header.transport_sequence,
+            packet.header.rpc_sequence,
+            packet.payload.len()
+        );
         if packet.header.function == wire::CPU_SEQUENCE {
             unsafe {
                 ctx.run_sequence(packet.payload, libos, version, deadline)?;
@@ -1138,6 +1148,17 @@ fn wait<M: Memory>(
         }
         if let Some(bytes) = queue.try_receive()? {
             let packet = wire::Packet::decode(&bytes)?;
+            sel4::debug_println!(
+                "NVIDIA_GSP_RX phase=rpc clock_us={} wanted={:#x} function={:#x} status={:#x} private={:#x} transport_sequence={} rpc_sequence={} bytes={}",
+                now,
+                function,
+                packet.header.function,
+                packet.header.status,
+                packet.header.private_status,
+                packet.header.transport_sequence,
+                packet.header.rpc_sequence,
+                packet.payload.len()
+            );
             if packet.header.function == function {
                 return Ok(bytes);
             }
@@ -1589,6 +1610,10 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                     sel4::debug_println!("NVIDIA_DISPLAY_RM_FAILED error={:?}", error);
                     error
                 })?;
+                sel4::debug_println!(
+                    "NVIDIA_DISPLAY_SERVICE_ENTER clock_us={} backing=retained",
+                    ctx.time_us()?
+                );
                 // Compute/GMMU and window/cursor probes remain parked while
                 // validating the display core; no timeout-heavy CE side path.
             }
@@ -1637,6 +1662,16 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                 ctx.with_platform(Native::service_gsp_event)?;
                 while let Some(bytes) = queue.try_receive()? {
                     let packet = wire::Packet::decode(&bytes)?;
+                    sel4::debug_println!(
+                        "NVIDIA_GSP_RX phase=service clock_us={} function={:#x} status={:#x} private={:#x} transport_sequence={} rpc_sequence={} bytes={}",
+                        ctx.time_us()?,
+                        packet.header.function,
+                        packet.header.status,
+                        packet.header.private_status,
+                        packet.header.transport_sequence,
+                        packet.header.rpc_sequence,
+                        packet.payload.len()
+                    );
                     if wire::fatal_event(packet.header.function) {
                         return Err(Error::FirmwareStatus(FirmwareStatus(
                             packet.header.function,

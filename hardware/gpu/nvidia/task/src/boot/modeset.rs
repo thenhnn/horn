@@ -170,7 +170,11 @@ fn aux<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
         read,
         data.len()
     );
-    let reply = api.control::<api::DpAux>(rm::HANDLE_DISP_COMMON, &params)?;
+    let reply = api.control::<api::DpAux>(rm::HANDLE_DISP_COMMON, &params).map_err(|error| {
+        sel4::debug_println!("NVIDIA_DISPLAY_RM_AUX_FAILED id={:#x} addr={:#x} cmd={:#x} request_size={} error={:?} retry=false",
+            id, address, params.cmd, params.size, error);
+        error
+    })?;
     sel4::debug_println!(
         "NVIDIA_DISPLAY_RM_AUX_REPLY addr={:#x} reply={:#x} bytes={} retry_ms={}",
         address,
@@ -467,6 +471,12 @@ pub(super) fn commit<M: Memory>(
         ),
         (gsp_disp::CORE_USER, core.ownership_put, core.push.put()),
     ];
+    let submit_us = ctx.time_us()?;
+    sel4::debug_println!(
+        "NVIDIA_DISPLAY_COMMIT_BEGIN clock_us={} deadline_us={}",
+        submit_us,
+        deadline
+    );
     // Check both old prefixes *before* either UPDATE. Never wait for an
     // interlocked window to finish before publishing the matching core UPDATE.
     ctx.with_platform(|p| {
@@ -526,11 +536,62 @@ pub(super) fn commit<M: Memory>(
                 core_status,
                 window_status
             );
+            sel4::debug_println!(
+                "NVIDIA_DISPLAY_COMMIT_DONE clock_us={} elapsed_us={}",
+                ctx.time_us()?,
+                ctx.time_us()?.saturating_sub(submit_us)
+            );
             snapshot(ctx, deadline, plan)?;
-            // No speculative post-commit AUX: the first operator-visible image
-            // was followed by NV_ERR_GENERIC on that diagnostic read. Return to
-            // normal event service with all scanout backing retained. This is
-            // not recovery from that failed epoch or proof of safe AUX access.
+            // Controlled diagnostic: restore the same 500 ms delay and AUX read
+            // as the first visible-image run. No new UPDATE, training or retry.
+            let wake = ctx.time_us()?.checked_add(500_000).ok_or(Error::Range)?;
+            if wake >= deadline {
+                return Err(Error::Timeout);
+            }
+            sel4::debug_println!(
+                "NVIDIA_DISPLAY_POST_AUX_WAIT clock_us={} wake_us={}",
+                ctx.time_us()?,
+                wake
+            );
+            ctx.sleep_until(wake)?;
+            let registers = ctx.with_platform(|p| {
+                Ok([
+                    p.read32(gsp_disp::CORE_USER + gsp_disp::PUT)?,
+                    p.read32(gsp_disp::CORE_USER + gsp_disp::GET)?,
+                    p.read32(raw::HORN_WINDOW_USER + gsp_disp::PUT)?,
+                    p.read32(raw::HORN_WINDOW_USER + gsp_disp::GET)?,
+                    p.read32(raw::HORN_HEAD_RASTER_COUNTER)?,
+                ])
+            })?;
+            let start = ctx.time_us()?;
+            sel4::debug_println!(
+                "NVIDIA_DISPLAY_POST_AUX_BEGIN clock_us={} since_submit_us={} registers={:08x?} core_status={:#x} window_status={:#x}",
+                start,
+                start.saturating_sub(submit_us),
+                registers,
+                unsafe { notifier.read32(head::MODE_NOTIFIER)? },
+                unsafe { notifier.read32(head::WINDOW_NOTIFIER)? }
+            );
+            let mut config = [0; 7];
+            let mut status = [0; 6];
+            let result = {
+                let mut api = rm_api(ctx, queue, HANDLE_DISP_CLIENT, libos, version, deadline);
+                aux(&mut api, plan.display_id, 0x100, true, &mut config)
+                    .and_then(|()| aux(&mut api, plan.display_id, 0x202, true, &mut status))
+            };
+            sel4::debug_println!(
+                "NVIDIA_DISPLAY_POST_AUX_END clock_us={} elapsed_us={} result={:?} config={:02x?} status={:02x?} valid_only_on_success=true",
+                ctx.time_us()?,
+                ctx.time_us()?.saturating_sub(start),
+                result,
+                config,
+                status
+            );
+            result?; // Retain the original fail-stop on any RM/transport error.
+            plan.check_status(&status)?;
+            if config[0] != plan.rate || config[1] & 31 != plan.lanes || config[2] & 0x27 != 0 {
+                return Err(Error::State);
+            }
             return Ok(());
         }
         let now = ctx.time_us()?;
