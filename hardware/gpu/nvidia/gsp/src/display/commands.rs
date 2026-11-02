@@ -80,6 +80,7 @@ pub const OWNER_NOTIFIER: usize = 16; // fresh 16-byte slot, never reset/reused
 pub struct Core {
     pub push: Push,
     pub topology: Topology,
+    pub ownership_put: u32,
 }
 impl Core {
     /// corec57d_init followed by corec37d_wndw_owner and a notifier UPDATE.
@@ -123,7 +124,12 @@ impl Core {
             raw::NVC77D_SET_NOTIFIER_CONTROL,
             &[raw::HORN_DISP_NOTIFIER_DISABLED],
         )?;
-        Ok(Self { push, topology })
+        let ownership_put = push.put();
+        Ok(Self {
+            push,
+            topology,
+            ownership_put,
+        })
     }
 }
 

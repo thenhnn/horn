@@ -36,7 +36,13 @@ pub fn request(owner: u32, t: &Timing) -> Result<raw::NV_MEMORY_ALLOCATION_PARAM
 /// Permit only the published, uncompressed pitch/generic kinds and verify
 /// layout, compression, location and physical contiguity independently.
 pub fn validate_allocation(t: &Timing, reply: &raw::NV_MEMORY_ALLOCATION_PARAMS) -> Result<()> {
-    let requested = allocation_bytes(t)? as u64;
+    validate_memory(allocation_bytes(t)? as u64, reply)
+}
+
+pub fn validate_memory(requested: u64, reply: &raw::NV_MEMORY_ALLOCATION_PARAMS) -> Result<()> {
+    if requested == 0 || requested & 0xffff != 0 || requested > 64 * 1024 * 1024 {
+        return Err(Error::Range);
+    }
     if reply.size < requested
         || reply.size > 64 * 1024 * 1024
         || reply.size & 0xffff != 0

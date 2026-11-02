@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! Prepare one bounded, linear VRAM surface and window 0 assembly.
-//! No window UPDATE or DP/head modeset is published in this stage.
+//! Preload assembly and final UPDATE, but initially publish assembly only.
 use super::{
     Ad106, DISP_PB_BYTES, DISP_PB_SIZE, DeviceAccess, Error, HANDLE_DISP_CLIENT, Memory, Native,
     Queue, Result, Rm, Span, Vec, api, display_event, display_memory, display_pushbuffer, gsp_disp,
@@ -93,7 +93,8 @@ pub(super) fn prepare<M: Memory>(
 }
 
 pub(super) struct Window {
-    program: commands::Push,
+    pub(super) program: commands::Push,
+    pub(super) assembly_put: u32,
     _pb: super::DmaBlock,
 }
 
@@ -106,7 +107,9 @@ pub(super) fn window<M: Memory>(
     boot_deadline: u64,
     timing: &Timing,
 ) -> Result<Window> {
-    let program = commands::window(timing, IMAGE_HANDLE)?;
+    let mut program = commands::window(timing, IMAGE_HANDLE)?;
+    let assembly_put = program.put();
+    gsp_disp::head::append_window(&mut program, super::DISP_NOTIFIER_HANDLE)?;
     let mut pb = ctx.with_platform(|p| p.allocate(DISP_PB_BYTES as usize, DeviceAccess::Read))?;
     // Entire ring preloaded once, before RM is given its IOVA. No recycling.
     unsafe {
@@ -146,7 +149,11 @@ pub(super) fn window<M: Memory>(
             pb.bytes
         );
     }
-    Ok(Window { program, _pb: pb })
+    Ok(Window {
+        program,
+        assembly_put,
+        _pb: pb,
+    })
 }
 
 pub(super) fn submit_window<M: Memory>(
@@ -157,7 +164,6 @@ pub(super) fn submit_window<M: Memory>(
     boot_deadline: u64,
     window: &Window,
 ) -> Result<()> {
-    let program = &window.program;
     let deadline = ctx
         .time_us()?
         .checked_add(2_000_000)
@@ -174,7 +180,7 @@ pub(super) fn submit_window<M: Memory>(
         return Err(Error::State);
     }
     let mut previous = 0;
-    for (kind, target) in [("nop", 4), ("assembly", program.put())] {
+    for (kind, target) in [("nop", 4), ("assembly", window.assembly_put)] {
         if ctx.time_us()? >= deadline {
             return Err(Error::Timeout);
         }

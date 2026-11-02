@@ -24,6 +24,7 @@ use horn_nvidia_gsp::{
     wire,
 };
 use horn_nvidia_gsp::{ce as gsp_ce, display as gsp_disp};
+mod modeset;
 mod scanout;
 mod images {
     include!(concat!(env!("OUT_DIR"), "/images.rs"));
@@ -649,7 +650,7 @@ fn rm_disp<M: Memory>(
         )?
         .offset
     };
-    let program = {
+    let (program, plan) = {
         let mut api = rm_api(ctx, queue, HANDLE_DISP_CLIENT, libos, version, deadline);
         api.for_client(rm.client).control::<api::DisplayInstMem>(
             rm.subdevice,
@@ -683,7 +684,9 @@ fn rm_disp<M: Memory>(
             info.numDispChannels
         );
         let topology = gsp_disp::commands::Topology::new(info.windowPresentMask, info.numHeads)?;
-        let program = gsp_disp::commands::Core::new(topology, DISP_NOTIFIER_HANDLE)?;
+        let plan = modeset::route(&mut api, supported.displayMask, report, &timing)?;
+        let mut program = gsp_disp::commands::Core::new(topology, DISP_NOTIFIER_HANDLE)?;
+        gsp_disp::head::append(&mut program, &timing, &plan)?;
         unsafe {
             for (i, &word) in program.push.words().iter().enumerate() {
                 core_pb.write32(i * 4, word)?;
@@ -726,9 +729,10 @@ fn rm_disp<M: Memory>(
             reply.channelPBSize,
             reply.subDeviceId
         );
-        program
+        (program, plan)
     }; // End the RPC client's exclusive transport borrow before direct submission.
     let surface = scanout::prepare(ctx, queue, libos, version, deadline, &timing)?;
+    let luts = modeset::luts(ctx, queue, libos, version, deadline)?;
     let window = scanout::window(ctx, queue, rm, libos, version, deadline, &timing)?;
     let bindings = [
         gsp_disp::instance::Binding::coherent(
@@ -738,6 +742,24 @@ fn rm_disp<M: Memory>(
             notifier.bytes,
         )?,
         gsp_disp::instance::Binding::vram(1, scanout::IMAGE_HANDLE, surface.base, surface.bytes)?,
+        gsp_disp::instance::Binding::vram(
+            0,
+            gsp_disp::head::LUT_HANDLE,
+            luts.base,
+            gsp_disp::head::LUT_BYTES,
+        )?,
+        gsp_disp::instance::Binding::vram(
+            1,
+            gsp_disp::head::LUT_HANDLE,
+            luts.base + gsp_disp::head::LUT_BYTES as u64,
+            gsp_disp::head::LUT_BYTES,
+        )?,
+        gsp_disp::instance::Binding::coherent(
+            1,
+            DISP_NOTIFIER_HANDLE,
+            notifier.iova,
+            notifier.bytes,
+        )?,
     ];
     ctx.with_platform(|p| {
         gsp_disp::instance::install(p, instance, HANDLE_DISP_CLIENT, &bindings, deadline)
@@ -750,7 +772,11 @@ fn rm_disp<M: Memory>(
         DISP_NOTIFIER_HANDLE
     );
     core_submit(ctx, queue, libos, version, deadline, &notifier, &program)?;
-    scanout::submit_window(ctx, queue, libos, version, deadline, &window)
+    scanout::submit_window(ctx, queue, libos, version, deadline, &window)?;
+    modeset::train(ctx, queue, libos, version, deadline, report, &plan)?;
+    modeset::commit(
+        ctx, queue, libos, version, deadline, &notifier, &program, &window,
+    )
 }
 
 /// Allocation policy stays here; the ABI and reply decoding live in the client.
@@ -874,7 +900,7 @@ fn core_submit<M: Memory>(
         "NVIDIA_DISPLAY_OWNERSHIP_INPUT windows={:#x} heads={} put={} notifier_offset={}",
         program.topology.windows,
         program.topology.heads,
-        program.push.put(),
+        program.ownership_put,
         gsp_disp::commands::OWNER_NOTIFIER
     );
     let mut previous = 0;
@@ -884,7 +910,7 @@ fn core_submit<M: Memory>(
         ("notifier", gsp_disp::NOTIFIER_PUT, Some(0)),
         (
             "ownership",
-            program.push.put(),
+            program.ownership_put,
             Some(gsp_disp::commands::OWNER_NOTIFIER),
         ),
     ] {

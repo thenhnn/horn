@@ -20,6 +20,9 @@
 #   QEMU=<path>          qemu-system-x86_64 override
 #   PRIV=<cmd>           elevation command for QEMU only (default: doas, then sudo)
 #   OUT_DIR=<path>       log directory (default: <repo>/work)
+# QEMU has an internal 30-second wall-clock limit (then SIGKILL after 3s).
+# Build time is not counted. Run the authorized script itself through doas;
+# no separate doas permission for timeout/QEMU is required.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
@@ -147,7 +150,16 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 set -o pipefail
-"${launcher[@]}" "${command[@]}" 2>&1 | tee "$run_dir/serial.log"
+note "QEMU time limit: 30s (+3s kill grace); timeout is not graceful STOP/unload"
+set +e
+"${launcher[@]}" timeout --signal=TERM --kill-after=3s 30s "${command[@]}" 2>&1 | tee "$run_dir/serial.log"
+status=${PIPESTATUS[0]}
+set -e
+if [[ $status == 124 ]]; then
+    note "QEMU reached the 30s limit; no driver STOP/unload was performed"
+elif [[ $status != 0 ]]; then
+    exit "$status"
+fi
 
 note
 note "expected markers:"
@@ -157,3 +169,4 @@ note "  NVIDIA_GSP_INIT_DONE / STATIC_INFO / READY"
 note "on failure look for NVIDIA_GSP_FAILED, DEVMGR_MMIO_FAIL,"
 note "DEVICE_WINDOW_FAIL, DEVICE_BANK_EXHAUSTED, VTD_FAULT"
 note "Ctrl-C kills QEMU; it is not a graceful driver STOP/unload."
+exit "$status"

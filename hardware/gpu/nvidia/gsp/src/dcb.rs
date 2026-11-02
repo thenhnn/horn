@@ -64,6 +64,8 @@ pub struct Output {
     pub connector: u8,
     pub heads: u8,
     pub or: u8,
+    pub dp_rate: u8,
+    pub dp_lanes: u8,
 }
 
 /// Parsed DCB table.
@@ -118,10 +120,14 @@ pub fn parse(image: &[u8]) -> Result<Dcb> {
     }
 
     let mut outputs = alloc::vec::Vec::new();
-    outputs.try_reserve_exact(count as usize).map_err(|_| Error::Exhausted)?;
+    outputs
+        .try_reserve_exact(count as usize)
+        .map_err(|_| Error::Exhausted)?;
     for index in 0..count {
         let at = dcb + header as usize + index as usize * len as usize;
         let conn = rd32(image, at)?;
+        let conf = rd32(image, at + 4)?;
+        let dp = version >= 0x40 && conn & 15 == u32::from(OUTPUT_DP);
         let output = Output {
             index,
             kind: (conn & 0x0000_000f) as u8,
@@ -130,6 +136,28 @@ pub fn parse(image: &[u8]) -> Result<Dcb> {
             connector: ((conn & 0x0000_f000) >> 12) as u8,
             heads: ((conn & 0x0000_0f00) >> 8) as u8,
             or: ((conn & 0x0f00_0000) >> 24) as u8,
+            // Nouveau nvbios dcb_outp_parse, DCB 4.x DP configuration.
+            dp_rate: if dp {
+                match (conf >> 21) & 7 {
+                    0 => 6,
+                    1 => 10,
+                    2 => 20,
+                    3 => 30,
+                    _ => 0,
+                }
+            } else {
+                0
+            },
+            dp_lanes: if dp {
+                match (conf >> 24) & 15 {
+                    15 | 4 => 4,
+                    3 | 2 => 2,
+                    1 => 1,
+                    _ => 0,
+                }
+            } else {
+                0
+            },
         };
         outputs.push(output);
     }
@@ -233,7 +261,10 @@ impl Dcb {
         self.outputs
             .iter()
             .filter(|output| {
-                matches!(output.kind, OUTPUT_TMDS | OUTPUT_DP | OUTPUT_ANALOG | OUTPUT_LVDS)
+                matches!(
+                    output.kind,
+                    OUTPUT_TMDS | OUTPUT_DP | OUTPUT_ANALOG | OUTPUT_LVDS
+                )
             })
             .map(|output| {
                 let entry = self

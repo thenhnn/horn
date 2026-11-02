@@ -175,6 +175,7 @@ fields!(NV0073_CTRL_DFP_ASSIGN_SOR_PARAMS {
     reservedSorMask,
     flags
 });
+fields!(NV0073_CTRL_DP_AUXCH_CTRL_PARAMS { subDeviceInstance, displayId, bAddrOnly, cmd, addr, data, size, replyType, retryTimeMs });
 fields!(NV0073_CTRL_DP_CTRL_PARAMS {
     subDeviceInstance,
     displayId,

@@ -77,11 +77,7 @@ impl Kind {
             Kind::I2cRead => 0x1,
             Kind::I2cWrite => 0x0,
         };
-        if more {
-            base | 0x4
-        } else {
-            base
-        }
+        if more { base | 0x4 } else { base }
     }
     fn is_read(self) -> bool {
         matches!(self, Kind::NativeRead | Kind::I2cRead)
@@ -281,9 +277,8 @@ impl<'a, R: Registers> Aux<'a, R> {
         // 0x8 is ACK and 0x2 DEFER on the parts nouveau documents. This one also
         // answers 0 while returning the full payload, which is a completed
         // transaction, not a rejection: only an empty reply is treated as one.
-        let completed = reply == REPLY_ACK
-            || reply == REPLY_DEFER
-            || (reply == 0 && (stat & STAT_BYTES) > 0);
+        let completed =
+            reply == REPLY_ACK || reply == REPLY_DEFER || (reply == 0 && (stat & STAT_BYTES) > 0);
         if !completed {
             return Err(Error::Step("aux-reply"));
         }
@@ -454,7 +449,11 @@ mod tests {
                 } else {
                     self.dpcd.clone()
                 };
-                let start = if is_i2c { self.cursor } else { address as usize };
+                let start = if is_i2c {
+                    self.cursor
+                } else {
+                    address as usize
+                };
                 let available = source.len().saturating_sub(start);
                 let count = size.min(available);
                 for (index, byte) in source[start..start + count].iter().enumerate() {
@@ -508,7 +507,9 @@ mod tests {
     }
 
     fn edid() -> Vec<u8> {
-        (0..128u32).map(|i| (i.wrapping_mul(7) ^ 0x5a) as u8).collect()
+        (0..128u32)
+            .map(|i| (i.wrapping_mul(7) ^ 0x5a) as u8)
+            .collect()
     }
 
     #[test]
