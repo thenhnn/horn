@@ -774,6 +774,7 @@ fn rm_disp<M: Memory>(
         DISP_NOTIFIER_HANDLE
     );
     modeset::baseline(ctx, deadline, &plan)?;
+    modeset::settle(ctx, queue, libos, version, deadline, &plan)?;
     core_submit(ctx, queue, libos, version, deadline, &notifier, &program)?;
     scanout::submit_window(ctx, queue, libos, version, deadline, &window)?;
     modeset::train(ctx, queue, libos, version, deadline, report, &plan)?;
@@ -848,9 +849,13 @@ fn display_event<M: Memory>(
     deadline: u64,
 ) -> Result<()> {
     ctx.with_platform(Native::service_pending_gsp_event)?;
-    // Service firmware events while polling, as in the RPC wait path.
+    // Drain pending events, not just the first packet: the wake gate must not
+    // overlook HPD behind an unrelated notification. Bound even an event storm.
     // No synchronous RPC is outstanding during direct submission.
-    if let Some(bytes) = queue.try_receive()? {
+    while let Some(bytes) = queue.try_receive()? {
+        if ctx.time_us()? >= deadline {
+            return Err(Error::Timeout);
+        }
         let packet = wire::Packet::decode(&bytes)?;
         sel4::debug_println!(
             "NVIDIA_GSP_RX phase=display clock_us={} function={:#x} status={:#x} private={:#x} transport_sequence={} rpc_sequence={} bytes={}",
@@ -862,7 +867,7 @@ fn display_event<M: Memory>(
             packet.header.rpc_sequence,
             packet.payload.len()
         );
-        modeset::notification(&packet, "display", ctx.time_us()?)?;
+        modeset::notification(ctx, &packet, "display")?;
         if packet.header.function == wire::CPU_SEQUENCE {
             unsafe {
                 ctx.run_sequence(packet.payload, libos, version, deadline)?;
@@ -1163,7 +1168,7 @@ fn wait<M: Memory>(
                 packet.header.rpc_sequence,
                 packet.payload.len()
             );
-            modeset::notification(&packet, "rpc", now)?;
+            modeset::notification(ctx, &packet, "rpc")?;
             if packet.header.function == function {
                 return Ok(bytes);
             }
@@ -1677,7 +1682,7 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                         packet.header.rpc_sequence,
                         packet.payload.len()
                     );
-                    modeset::notification(&packet, "service", ctx.time_us()?)?;
+                    modeset::notification(&mut ctx, &packet, "service")?;
                     if wire::fatal_event(packet.header.function) {
                         return Err(Error::FirmwareStatus(FirmwareStatus(
                             packet.header.function,

@@ -4,6 +4,8 @@
 use super::*;
 use gsp_disp::{dp::Link, head, timing::Timing};
 use horn_nvidia_gsp::rm::codec::Wire;
+mod sink;
+pub(super) use sink::settle;
 
 const HOTPLUG_EVENT: u32 = 0x007e0000;
 const DP_IRQ_EVENT: u32 = 0x007e0001;
@@ -51,10 +53,15 @@ pub(super) fn subscribe<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
 
 /// r535_gsp_msg_post_event: validate generated header/length, then decode only
 /// our registered notifications. A notification never authorizes a new UPDATE.
-pub(super) fn notification(packet: &wire::Packet<'_>, phase: &str, clock: u64) -> Result<()> {
+pub(super) fn notification(
+    ctx: &mut Ad106<Native>,
+    packet: &wire::Packet<'_>,
+    phase: &str,
+) -> Result<()> {
     if packet.header.function != wire::NOTIFY {
         return Ok(());
     }
+    let clock = ctx.time_us()?;
     packet.success()?;
     let size = core::mem::size_of::<raw::rpc_post_event_v17_00>();
     let header =
@@ -82,11 +89,18 @@ pub(super) fn notification(packet: &wire::Packet<'_>, phase: &str, clock: u64) -
     if header.hClient != HANDLE_DISP_CLIENT {
         return Err(Error::Malformed);
     }
+    if header.status != raw::NV_OK {
+        return Err(Error::FirmwareStatus(FirmwareStatus(header.status)));
+    }
     let start = core::mem::offset_of!(raw::rpc_post_event_v17_00, eventData);
     let end = start.checked_add(bytes).ok_or(Error::Range)?;
     let data = packet.payload.get(start..end).ok_or(Error::Malformed)?;
     if header.hEvent == HOTPLUG_EVENT {
         let event = raw::Nv2080HotplugNotification::read(data)?;
+        ctx.with_platform(|p| {
+            p.display_wake
+                .hpd(event.plugDisplayMask, event.unplugDisplayMask, clock)
+        })?;
         sel4::debug_println!(
             "NVIDIA_DISPLAY_HPD phase={} clock_us={} plug={:#x} unplug={:#x} recovery=none",
             phase,
@@ -96,6 +110,10 @@ pub(super) fn notification(packet: &wire::Packet<'_>, phase: &str, clock: u64) -
         );
     } else {
         let event = raw::Nv2080DpIrqNotification::read(data)?;
+        ctx.with_platform(|p| {
+            p.display_wake.irq(event.displayId, clock);
+            Ok(())
+        })?;
         sel4::debug_println!(
             "NVIDIA_DISPLAY_DP_IRQ phase={} clock_us={} display_id={:#x} recovery=none",
             phase,
@@ -381,16 +399,10 @@ pub(super) fn train<M: Memory>(
         .checked_add(5_000_000)
         .ok_or(Error::Range)?
         .min(boot_deadline);
-    // Same sink D0 power-up as nouveau_dp_train, through the RM-owned AUX.
-    aux(
-        &mut rm_api(ctx, queue, HANDLE_DISP_CLIENT, libos, version, deadline),
-        plan.display_id,
-        0x600,
-        false,
-        &mut [1],
-    )?;
-    let powered = ctx.time_us()?.saturating_add(1000).min(deadline);
-    ctx.sleep_until(powered)?;
+    // Power/wake was settled before any UPDATE. Do not issue another D0 write
+    // here: that would invalidate the very precondition this variant tests.
+    display_event(ctx, queue, libos, version, deadline)?;
+    sink::ensure_settled(ctx, plan)?;
     sel4::debug_println!(
         "NVIDIA_DISPLAY_DP_TRAIN_BEGIN id={:#x} sor={} rate={:#x} lanes={}",
         plan.display_id,
@@ -711,6 +723,8 @@ pub(super) fn commit<M: Memory>(
         ),
         (gsp_disp::CORE_USER, core.ownership_put, core.push.put()),
     ];
+    display_event(ctx, queue, libos, version, deadline)?;
+    sink::ensure_settled(ctx, plan)?;
     let submit_us = ctx.time_us()?;
     sel4::debug_println!(
         "NVIDIA_DISPLAY_COMMIT_BEGIN clock_us={} deadline_us={}",

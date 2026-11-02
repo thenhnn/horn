@@ -409,4 +409,34 @@ This timing recollection is tentative. Wake-induced hotplug could explain the
 late AUX failure, but an invalid output stream causing sink cycling is also
 possible; causality and stable scanout remain unproven. A future experiment can
 separate wake/settling from the first training/UPDATE instead of retrying an
-already-active uncertain display epoch. No such change/run has been made yet.
+already-active uncertain display epoch. That experiment was subsequently implemented and run below.
+
+### Pre-first-UPDATE wake/settle gate — black again
+
+`work/nvidia-vfio-20261102-050431/serial.log`: operator confirms black screen.
+One authorized 60 s run, exit 137 after TERM/kill grace; no orderly unload.
+Native build, selected rustfmt and diff checks passed; unit tests skipped.
+
+Wake began at 10246302 us. DPCD SET_POWER already read 1 (D0), so no power
+write was issued. DEFAULT detection and subsequent CACHED connect samples
+reported connected. No subscribed HPD/DP_IRQ was recorded during the settling
+interval. Final full detection and D0 readback passed. WAKE_READY at 13277725 us,
+3031423 us after wake began, before any training or UPDATE.
+
+One training and the unchanged preferred-mode commit completed at 13404869 us.
+RM reported unplug=0x300 at 13995904 us (591035 us after completion), then
+plug=0x100/unplug=0x200 at 15642363 us (2237494 us after completion), and DP_IRQ
+for 0x100 at 15652696 us. A further unplug/replug occurred at 22006273/22517010 us.
+Internal raster/loadv progressed, sampled underflow remained clear, and active
+ID stayed 0x100. Normal service entered at 16606747 us without recorded panic.
+
+Comparison: in 045358 the first unplug was 602037 us after commit, replug
+2246712 us after commit. Delaying training/commit by about 3.1 s shifted the
+first unplug by about the same amount; post-commit intervals stayed close.
+This supports investigating training/stream activation or sink acquisition,
+rather than merely extending a pre-modeset delay. Training and commit are too
+close together here to identify which precedes the relevant trigger. D0 and
+quiet connected state did not prove the panel was awake; the sleep hypothesis
+is not conclusively disproved, but this gate is insufficient. No retraining,
+extra UPDATE, notifier reuse or reset was attempted; backing retained. No QEMU
+remains. Russian handoff/report: `DISPLAY-REPORT-2026-11-02.md`.

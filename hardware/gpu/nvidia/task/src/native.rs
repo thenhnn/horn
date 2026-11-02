@@ -110,6 +110,7 @@ pub struct Native {
     fixed: Vec<(u32, MmioWindow)>,
     irq_prepared: bool,
     events_enabled: bool,
+    pub(crate) display_wake: crate::display::wake::Watch,
     poisoned: Rc<Cell<bool>>,
 }
 impl Native {
@@ -133,6 +134,7 @@ impl Native {
             fixed,
             irq_prepared: false,
             events_enabled: false,
+            display_wake: Default::default(),
             poisoned: Rc::new(Cell::new(false)),
         }
     }

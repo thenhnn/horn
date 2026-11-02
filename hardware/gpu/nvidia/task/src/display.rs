@@ -12,6 +12,8 @@ use horn_nvidia_gsp::{Error, Result, aux, dcb, edid};
 
 use crate::native::Native;
 
+pub(crate) mod wake;
+
 /// What the probe learned, for the boot log.
 pub struct Report {
     pub connector: u8,

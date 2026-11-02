@@ -149,6 +149,12 @@ fields!(Nv2080HotplugNotification {
     unplugDisplayMask
 });
 fields!(Nv2080DpIrqNotification { displayId });
+fields!(NV0073_CTRL_SYSTEM_GET_CONNECT_STATE_PARAMS {
+    subDeviceInstance,
+    flags,
+    displayMask,
+    retryTimeMs
+});
 fields!(NV0073_CTRL_SYSTEM_GET_ACTIVE_PARAMS {
     subDeviceInstance,
     head,

@@ -60,3 +60,35 @@ Mvid/MSA; MSA_DEBUG_MAUD/NAUD are audio. No source-backed video-MSA readback was
 found. No register sweep, error clearing, GPU reset, fallback mode or repeated
 modeset is performed. A black screen despite active RM topology would still
 leave fetch/color-path and sink-valid stream generation unresolved.
+
+## Follow-up variant: settle before the first UPDATE
+
+The combined run observed unsolicited unplug/replug, including the selected
+sink, while the operator did not touch power/input/cable. The earlier successful
+image may have happened while the monitor was already awake (tentative recall).
+This motivates a pre-modeset wake experiment, not a claim of root cause.
+
+`task/src/boot/modeset/sink.rs` now runs after allocation/baseline and before
+any core probe/ownership UPDATE or training. It reads DPCD SET_POWER and only
+writes D0 when needed, preserving other bits, as `nouveau_dp_train` does.
+Per-session fixed-size state observes only the selected sink's HPD/DP_IRQ;
+those events reset its quiet interval. No static/global watch or watch reset.
+
+The explicit experimental gate requires at least 3 s after the power operation,
+connected state and 2 s without relevant notification/state change, within an
+8 s budget bounded by the boot deadline. An initial DEFAULT GET_CONNECT_STATE
+seeds detection; successful CACHED samples every 200 ms observe it without
+repeated full detection. Final DEFAULT detection and a D0 readback recheck the
+candidate. Malformed replies, retry statuses, RPC/AUX errors or invalidation
+at final verification stop the session; no failed operation is retried.
+Pending events are drained with a deadline, including events received during
+RPC waits. Training and commit recheck the gate; the old unconditional D0 write
+in train is removed. No second wake write, training, UPDATE, ring or notifier
+reuse occurs on failure.
+
+These delays are experiment policy, not a DisplayPort readiness guarantee.
+D0 plus connected/quiet HPD may still leave the panel asleep until video starts.
+An unplug/replug after commit would show this gate was insufficient; that does
+not authorize retraining the active uncertain epoch. Timing, image and LUT
+recipe remain unchanged. Unit tests remain skipped; build/run evidence belongs
+in HARDWARE.md.

@@ -44,6 +44,7 @@
 /* Evaluate NVIDIA's function-like/range macros with clang, not handwritten
  * Rust shifts. This adds no ABI declarations or copied field definitions. */
 enum {
+    HORN_CONNECT_CACHED = DRF_DEF(0073, _CTRL_SYSTEM_GET_CONNECT_STATE_FLAGS, _METHOD, _CACHED),
     HORN_HEAD_RASTER_SIZE = NVC77D_HEAD_SET_RASTER_SIZE(0),
     HORN_HEAD_RASTER_SYNC_END = NVC77D_HEAD_SET_RASTER_SYNC_END(0),
     HORN_HEAD_RASTER_BLANK_END = NVC77D_HEAD_SET_RASTER_BLANK_END(0),
