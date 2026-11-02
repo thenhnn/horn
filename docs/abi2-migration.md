@@ -11,8 +11,8 @@ logger failures and critical contexts that cannot safely perform RPC.
 | HTTP demo, shell | ABI2 and shared logger; user confirmed shell commands and HTTP |
 | netd | ABI2, named caps, Inbox receive cleanup, DHCP logs; user boot-confirmed |
 | virtio-net | Dynamic ABI2 context and shared logger; deployment builds, awaiting boot confirmation |
-| virtio-console | ABI2 and shared logger; normal, DMA-probe and orderly-stop deployments build, awaiting user boot check |
-| devmgr, supervisor | Pending: boot-critical startup and logger dependency ordering |
+| virtio-console | ABI2 and shared logger; user boot-confirmed; DMA-probe and orderly-stop deployments compile-checked |
+| devmgr, supervisor | Still ABI1. Native procd install/context provisioning API added and compile-checked; entry points, named-cap access and logger bootstrap ordering still pending |
 | NVIDIA | Pending source migration only; hardware launches remain separately authorized |
 | legacy examples, probe fixtures | Pending inventory and migration |
 

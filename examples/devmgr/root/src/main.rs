@@ -318,10 +318,11 @@ fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
         (SUPERVISOR_CAPS_CRITICAL_FAULT_SLOT, critical_slot as _),
         (SUPERVISOR_CAPS_CRITICAL_EXIT_SLOT, critical_exit as _),
     ] {
-        child
-            .absolute_cptr_from_bits_with_depth(slot as _, SUPERVISOR_CAPS_SIZE_BITS as _)
-            .copy(
-                &root.absolute_cptr(sel4::CPtr::from_bits(source)),
+        manager
+            .install_initial_capability(
+                process,
+                slot,
+                root.absolute_cptr(sel4::CPtr::from_bits(source)),
                 sel4::CapRights::all(),
             )
             .unwrap();

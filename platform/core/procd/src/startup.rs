@@ -13,6 +13,45 @@ use libhorn::{
 };
 
 impl Manager {
+    /// Provision ABI2 from trusted native-loader bytes. The native caller owns
+    /// installation authority; runtime addresses and CSpace bounds are still
+    /// derived here, never accepted from this descriptor.
+    pub fn startup_context_bytes(&mut self, id: ProcessId, bytes: &[u8]) -> Result<(), Error> {
+        let p = self.process(id)?;
+        if p.state != State::Created || p.abi != 2 || p.startup_attempted {
+            return Err(Error::Denied);
+        }
+        if bytes.is_empty() || bytes.len() > p.allocator.account().usage().limit {
+            return Err(Error::Denied);
+        }
+        self.install_context(id, bytes)
+    }
+
+    /// Native counterpart of ProcessControl.install. Installation freezes once
+    /// startup allocation begins, including after a partial failed allocation.
+    pub fn install_initial_capability(
+        &mut self,
+        id: ProcessId,
+        slot: u32,
+        source: sel4::AbsoluteCPtr,
+        rights: sel4::CapRights,
+    ) -> Result<(), Error> {
+        let p = self.process(id)?;
+        if p.state != State::Created
+            || p.startup_attempted
+            || slot as u64 >= (1u64 << p.cnode_bits) / 2 - 3
+        {
+            return Err(Error::Denied);
+        }
+        let bits = p.cnode_bits;
+        self.cnode(id)?
+            .absolute_cptr_from_bits_with_depth(slot as _, bits)
+            .copy(&source, rights)?;
+        let p = self.process_mut(id)?;
+        p.bootstrap_end = p.bootstrap_end.max(slot + 1);
+        Ok(())
+    }
+
     pub(crate) fn provision_context(
         &mut self,
         id: ProcessId,
