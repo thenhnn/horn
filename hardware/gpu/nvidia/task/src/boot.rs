@@ -775,7 +775,7 @@ fn rm_disp<M: Memory>(
     scanout::submit_window(ctx, queue, libos, version, deadline, &window)?;
     modeset::train(ctx, queue, libos, version, deadline, report, &plan)?;
     modeset::commit(
-        ctx, queue, libos, version, deadline, &notifier, &program, &window,
+        ctx, queue, libos, version, deadline, &notifier, &program, &window, &plan,
     )
 }
 

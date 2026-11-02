@@ -239,7 +239,9 @@ pub(super) fn train<M: Memory>(
         );
         plan.check_training(&reply)?;
     }
-    let mut config = [0; 2];
+    // Include TRAINING_PATTERN_SET: CR/EQ alone can still describe a link
+    // left sending training symbols instead of scrambled video.
+    let mut config = [0; 7];
     let mut status = [0; 6];
     {
         let mut api = rm_api(ctx, queue, HANDLE_DISP_CLIENT, libos, version, deadline);
@@ -258,6 +260,13 @@ pub(super) fn train<M: Memory>(
         return Err(Error::State);
     }
     plan.check_status(&status)?;
+    if config[2] & 0x27 != 0 {
+        sel4::debug_println!(
+            "NVIDIA_DISPLAY_DP_NOT_VIDEO training_pattern={:#x}",
+            config[2]
+        );
+        return Err(Error::State);
+    }
     let params = plan.stream();
     let reply = rm_api(ctx, queue, HANDLE_DISP_CLIENT, libos, version, deadline)
         .control::<api::DpStream>(rm::HANDLE_DISP_COMMON, &params)?;
@@ -323,8 +332,9 @@ pub(super) fn luts<M: Memory>(
 /// Read-only method shadows, following nouveau gv100_disp_{core,wndw}_mthd.
 /// These are latched method values, not proof that the fetch/color path works.
 /// Never write shadows, clear errors, re-submit UPDATE or reuse a notifier here.
-fn snapshot(ctx: &mut Ad106<Native>, deadline: u64) -> Result<()> {
+fn snapshot(ctx: &mut Ad106<Native>, deadline: u64, plan: &Link) -> Result<()> {
     let head = [
+        ("display-id", raw::HORN_HEAD_DISPLAY_ID),
         ("raster", raw::HORN_HEAD_RASTER_SIZE),
         ("clock", raw::HORN_HEAD_PIXEL_CLOCK_FREQUENCY),
         ("view-point", raw::HORN_HEAD_VIEWPORT_POINT_IN),
@@ -389,6 +399,33 @@ fn snapshot(ctx: &mut Ad106<Native>, deadline: u64) -> Result<()> {
             );
         }
     }
+    // Read-only source state from nouveau's gv100_sor_dp_watermark/audio_sym,
+    // gf119_sor_dp_links/clock and gm107_sor_dp_pattern. Never program the PHY
+    // behind RM's back. These raw words do not by themselves prove valid MSA.
+    let sor = plan.sor * 0x800;
+    let link = sor + if plan.link == 2 { 0x80 } else { 0 };
+    for (name, addr) in [
+        ("watermark", 0x616550),
+        ("hblank", 0x616568),
+        ("vblank", 0x61656c),
+        ("clock", 0x612300 + sor),
+        ("link-control", 0x61c10c + link),
+        (
+            "pattern",
+            0x61c110 + sor + if plan.link == 2 { 0x1c } else { 0 },
+        ),
+    ] {
+        if ctx.time_us()? >= deadline {
+            return Err(Error::Timeout);
+        }
+        let value = ctx.with_platform(|p| p.read32(addr))?;
+        sel4::debug_println!(
+            "NVIDIA_DISPLAY_DP_SOURCE field={} addr={:#x} value={:#x}",
+            name,
+            addr,
+            value
+        );
+    }
     // Published DPCA contains a frame/line counter. Two samples separated by
     // >2 preferred-mode frames distinguish a running raster from a static shadow.
     let first = ctx.with_platform(|p| p.read32(raw::HORN_HEAD_RASTER_COUNTER))?;
@@ -415,6 +452,7 @@ pub(super) fn commit<M: Memory>(
     notifier: &DmaBlock,
     core: &gsp_disp::commands::Core,
     window: &scanout::Window,
+    plan: &Link,
 ) -> Result<()> {
     let deadline = ctx
         .time_us()?
@@ -488,7 +526,11 @@ pub(super) fn commit<M: Memory>(
                 core_status,
                 window_status
             );
-            snapshot(ctx, deadline)?;
+            snapshot(ctx, deadline, plan)?;
+            // No speculative post-commit AUX: the first operator-visible image
+            // was followed by NV_ERR_GENERIC on that diagnostic read. Return to
+            // normal event service with all scanout backing retained. This is
+            // not recovery from that failed epoch or proof of safe AUX access.
             return Ok(());
         }
         let now = ctx.time_us()?;

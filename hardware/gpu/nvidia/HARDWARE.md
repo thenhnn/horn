@@ -285,3 +285,35 @@ now 60s (+3s kill grace), build excluded. This invocation ended with shell
 query found no remaining QEMU/timeout/run-vfio process. The cause/timing of the
 monitor darkening is not established. Native Nix build passed, no unit tests
 run. No retry/reset or active-buffer changes made during the snapshot.
+
+### First operator-confirmed visible image (not yet stable)
+
+`work/nvidia-vfio-20261102-042511/serial.log`: operator explicitly reported
+**a visible image**, followed by a crash. Same preferred 2560x1440 ~120 Hz
+RGB8 timing, image/LUT programming and interlocked commit as above. No claim
+that this run isolated the cause of the earlier black screens.
+
+The expanded pre-commit DPCD read returned
+`[14, 84, 00, 0a, 0a, 0a, 0a]`: HBR2/four enhanced-framed lanes, training
+pattern disabled, scrambling enabled; all lanes still CR/EQ/symbol locked.
+Read-only source state: watermark=0x08000017, hblank=0x90, vblank=0xaa0,
+SOR clock=0x03890040, link-control=0x000f4001, pattern=0x50505050
+(low five bits per byte are normal-video pattern 0x10 in gm107_sor_dp_pattern).
+These are not a direct measurement of MSA or M/N.
+
+The newly added optional post-commit DPCD 0x100 read (500 ms later) returned
+RM `NV_ERR_GENERIC` (0xffff), propagated to the existing fail-stop panic;
+`dma_retained=true`, supervisor CPU stopped, cleanup pending. Why RM rejects
+this active-display AUX request is **not established**. There was no retry or
+in-epoch recovery. Script ended with exit 137 after TERM/kill grace, not an
+orderly driver STOP/unload.
+
+Fix for the next fresh boot: remove the optional post-commit AUX RPC, retaining
+strict pre-commit DPCD/training checks, fresh notifiers, read-only shadows,
+backing retention and normal event service. Do not merely swallow RM errors.
+Follow-up `work/nvidia-vfio-20261102-042832/serial.log` hardware-validates
+the removal: same training/commit/source state, no recorded panic, script exit
+137. Operator reports a **black screen**, not a visible image. Thus removal
+avoids the observed diagnostic-query panic but does not establish reproducible
+scanout. No causal claim about the AUX request making pixels visible. Stable
+display remains unproven.
