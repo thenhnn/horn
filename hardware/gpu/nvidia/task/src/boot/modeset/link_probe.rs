@@ -130,14 +130,20 @@ pub(crate) fn pending<M: Memory>(
     Ok(())
 }
 
-pub(crate) fn after_training<M: Memory>(
+pub(super) enum Observation {
+    Stable,
+    Invalidated,
+}
+
+/// Invalidated is an observed link/activity transition, never an RPC error.
+pub(super) fn after_training<M: Memory>(
     ctx: &mut Ad106<Native>,
     queue: &mut Queue<M>,
     libos: Span,
     version: u32,
     boot_deadline: u64,
     plan: &Link,
-) -> Result<()> {
+) -> Result<Observation> {
     let start = ctx.time_us()?;
     let end = start.checked_add(3_000_000).ok_or(Error::Range)?;
     if end >= boot_deadline {
@@ -172,8 +178,9 @@ pub(crate) fn after_training<M: Memory>(
         watch.revision,
         watch.revision == revision
     );
-    if watch.revision != revision {
-        return Err(Error::State);
+    if watch.revision != revision || watch.link_invalid {
+        return Ok(Observation::Invalidated);
     }
-    sink::ensure_settled(ctx, plan)
+    sink::ensure_settled(ctx, plan)?;
+    Ok(Observation::Stable)
 }

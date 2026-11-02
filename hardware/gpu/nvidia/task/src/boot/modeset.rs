@@ -6,9 +6,11 @@ use gsp_disp::{dp::Link, head, timing::Timing};
 use horn_nvidia_gsp::rm::codec::Wire;
 mod crc;
 mod link_probe;
+mod recovery;
 mod sink;
 pub(super) use crc::prepare as prepare_crc;
-pub(super) use link_probe::{after_training, pending as diagnose_pending};
+pub(super) use link_probe::pending as diagnose_pending;
+pub(super) use recovery::prepare_link;
 pub(super) use sink::settle;
 
 /// Revalidate the exact trained observation before every activation prefix.
@@ -404,7 +406,7 @@ pub(super) fn train<M: Memory>(
     libos: Span,
     version: u32,
     boot_deadline: u64,
-    report: &crate::display::Report,
+    dpcd: &[u8; 16],
     plan: &Link,
 ) -> Result<()> {
     let deadline = ctx
@@ -431,8 +433,7 @@ pub(super) fn train<M: Memory>(
     );
     {
         let mut api = rm_api(ctx, queue, HANDLE_DISP_CLIENT, libos, version, deadline);
-        let reply =
-            api.control::<api::DpControl>(rm::HANDLE_DISP_COMMON, &plan.training(&report.dpcd))?;
+        let reply = api.control::<api::DpControl>(rm::HANDLE_DISP_COMMON, &plan.training(dpcd))?;
         sel4::debug_println!(
             "NVIDIA_DISPLAY_DP_TRAIN_REPLY id={:#x} cmd={:#x} data={:#x} err={:#x} retry_ms={}",
             reply.displayId,
@@ -491,13 +492,7 @@ pub(super) fn train<M: Memory>(
         );
         return Err(Error::State);
     }
-    ctx.with_platform(|p| {
-        if p.display_wake.trained_revision.is_some() {
-            return Err(Error::State);
-        }
-        p.display_wake.trained_revision = Some(revision);
-        Ok(())
-    })?;
+    ctx.with_platform(|p| p.display_wake.record_training(revision))?;
     sel4::debug_println!(
         "NVIDIA_DISPLAY_DP_TRAINED id={:#x} sor={} rate={:#x} lanes={} tu=64 watermark={}",
         plan.display_id,

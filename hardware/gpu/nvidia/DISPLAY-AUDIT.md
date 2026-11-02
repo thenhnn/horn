@@ -105,3 +105,20 @@ One immutable SF CRC context is enabled before ownership and detached after
 post-commit observation by a prebuilt capture-control UPDATE with a fresh slot.
 No source switching, second modeset, retraining, DMA/notifier reuse or reset.
 Native build and selected formatting/diff checks passed; unit tests skipped.
+
+## Subsequent pre-publication recovery audit (build-only)
+
+After run152343 established pre-UPDATE HPD/config/EQ loss, bounded recovery was
+implemented and exercised by run154234 with operator-confirmed pixels.
+This supersedes only the unconditional stop
+following the first training-only observation. See DISPLAY-DIAGNOSTIC.md.
+
+nouveau_dp_link_check_locked reads PHY status and calls
+nouveau_dp_train_link(outp, true) when channel EQ is lost. In the pinned GSP
+backend, r535_dp_train ignores its retrain bool and calls the existing
+r535_dp_train_target DP_CTRL path. Horn permits a new training only after a
+confirmed reconnect, fresh sink/mode validation, observed config/EQ loss and
+zero publication. No Linux retry loop is imported. RAW EDID uses the pinned
+SDK output-only bufferSize, inline 2048-byte array and generated layout;
+field-wise encoding zeroes padding. One allowance and an irreversible first-PUT
+guard prevent active recovery. Revisions/event counters/probe budget are not reset.

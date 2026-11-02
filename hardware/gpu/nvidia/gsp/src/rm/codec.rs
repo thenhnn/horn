@@ -217,6 +217,13 @@ fields!(NV0073_CTRL_DFP_ASSIGN_SOR_PARAMS {
     reservedSorMask,
     flags
 });
+fields!(NV0073_CTRL_SPECIFIC_GET_EDID_V2_PARAMS {
+    subDeviceInstance,
+    displayId,
+    bufferSize,
+    flags,
+    edidBuffer
+});
 fields!(NV0073_CTRL_DP_AUXCH_CTRL_PARAMS {
     subDeviceInstance,
     displayId,

@@ -2,8 +2,9 @@
 
 Run history is in HARDWARE.md:151518 has operator-confirmed pixels and CRC DONE;
 152343 demonstrates HPD/link loss during the no-UPDATE training-only interval.
-Neither proves repeatability or complete recovery. The startup observer was
-skipped in152343; its later pinned-Python fix has not been hardware-run.
+154234 exercised one bounded pre-publication recovery and the operator confirmed
+an image, then manually sent SIGTERM. The pinned-Python observer captured all
+three snapshots. Neither repeatability nor safe unload/restart is established.
 
 This follows the operator's request to combine all four checks. **Do not launch
 until the operator explicitly permits it after unloading the host driver.**
@@ -23,15 +24,16 @@ No copied C notifier structures or handwritten ABI offsets are introduced.
    RAMHT, including a dedicated CRC context. Capture the existing baseline.
 2. Existing bounded pre-training D0/connected/quiet gate. D0 is written only
    when necessary. This gate did not fix the previous black screen.
-3. Exactly one RM training and SST configuration, with existing strict replies
+3. Initial RM training and SST configuration, with existing strict replies
    and link-status validation. Relevant notification revision changes during
    training cancel activation.
 4. Observe for at least **3 s after training/SST, before any core UPDATE**.
    Service events and take passive raster/formatter state. A pending link probe
    may extend this observation, bounded by another 2 s and the boot deadline.
    Any selected HPD/IRQ/state revision change invalidates the trained snapshot:
-   log and stop without publishing ownership/modeset, even if replug follows.
-5. If unchanged, publish the immutable core prefixes. **Head timing/output and
+   no ownership/modeset may use it. Limited pre-publication recovery below
+   can instead establish a new trained snapshot for one confirmed reconnect.
+5. With a current validated snapshot, publish the immutable core prefixes. **Head timing/output and
    SF CRC state now precede the ownership UPDATE**, rather than following it.
    Training now also precedes ownership. Every core prefix drains events and
    rechecks the exact trained activity revision; neither a quiet replug nor a
@@ -51,6 +53,52 @@ publication. Correlate HPD with both `CORE_SUBMIT kind=ownership clock_us=...`
 and `COMMIT_DONE`, not only the latter. Training-only logs delimit the earlier
 no-UPDATE interval. This diagnostic changes several things together; a visible
 image alone would not identify which addition helped.
+
+## Bounded pre-publication recovery
+
+Implemented in `task/src/boot/modeset/recovery.rs`; run154234 exercised this path
+with operator-confirmed visible output. See HARDWARE.md for timings and limits.
+The entire prepare-link phase, including initial training/observation and any
+recovery, is bounded by 30 s and the boot deadline. Only an explicit
+`Observation::Invalidated` after successful training can enter recovery.
+No catch-and-retry of Error::State, failed RPC, timeout or AUX error.
+
+- Require exactly one selected unplug after the trained snapshot, then a later
+  selected plug. DEFAULT connection samples or IRQ alone do not establish this
+  pair. A second unplug is terminal, including during the reconnect wait.
+- Wait up to 8 s for reconnect and 2 s without relevant activity. Require core
+  and window PUT/GET zero and no prior publication. The first core PUT, even
+  NOP, irreversibly closes recovery before attempting the doorbell.
+- Freeze the activity revision, query fresh DEFAULT connection, read DPCD
+  capabilities and power via RM. Require capabilities byte-for-byte unchanged,
+  compatible with the prebuilt link, and already D0. No additional power write.
+- Use SDK SPECIFIC_GET_EDID_V2 with RAW/no-cache flags. Validate echoed IDs and
+  flags, returned bounds and complete extension count, then parse EDID. Require
+  the original exact preferred timing; no fallback. This proves compatibility,
+  not cryptographic or unique monitor identity.
+- Read fresh config/status with event draining and revision checks around every
+  RPC. Require actual lost configuration/EQ in valid replies. An already-good
+  link after reconnect conservatively stops: no blind training or reinterpretation
+  of the old token. Activity during validation also stops.
+- Consume the per-session allowance and invalidate only the old training token
+  and its sticky lost-link flag; issue one new training/SST for the new connection.
+  Revisions, event counters and probe budget are not reset. The watch is initialized
+  once per Native session.
+- Observe another 3 s with existing bounded probes, re-read config/status, drain
+  events and recheck the new trained revision before publication. Repeated activity
+  or loss, or any failed RPC, is terminal; backing remains retained.
+
+Source basis at pinned nouveau: nouveau_dp_link_check_locked / nouveau_dp_train_link
+recheck EQ and request training when lost. The GSP backend r535_dp_train ignores
+its retrain bool and calls the same r535_dp_train_target RM DP_CTRL path. Horn
+keeps its strict direct-SST recipe, not Linux retries or active-head recovery.
+The EDID command, flags, bounds, sizes and offsets come from pinned 570.144
+ctrl0073specific.h, bindgen and field-wise codecs.
+
+No UPDATE/ring/notifier reuse, allocation replacement, free/reset, IRQ-vector
+acknowledgement or active-head recovery is added. The first publication uses
+the original immutable program. Fresh AUX reads do not establish visible video.
+Build: `work/nvidia-reconnect-build.log`; unit tests intentionally skipped.
 
 ## Deferred reconnect / IRQ checks
 
@@ -106,8 +154,9 @@ source switching is mixed into this epoch.
   activation; no ownership/modeset is attempted on the invalidated snapshot.
 - No HPD there, but HPD after ownership/final UPDATE: inspect stream/head/sink
   acquisition and use deferred link status to distinguish lost EQ/configuration.
-- `retrain_candidate=true` on current-generation data supports implementing
-  recovery; it does not itself authorize reuse of the old display/DMA epoch.
+- `retrain_candidate=true` does not itself authorize display/DMA epoch reuse.
+  Only the bounded pre-publication transition above may train once for a new
+  connection; deferred probes and active service never do.
 - CRC DONE/count and settled tail provide internal-path evidence, not a pixel
   correctness oracle. Zero count, overflow or timeout must remain explicit.
 - Any earlier fail-stop means later checks may not be reached. We do not bypass

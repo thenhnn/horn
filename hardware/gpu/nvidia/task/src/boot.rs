@@ -777,8 +777,7 @@ fn rm_disp<M: Memory>(
     );
     modeset::baseline(ctx, deadline, &plan)?;
     modeset::settle(ctx, queue, libos, version, deadline, &plan)?;
-    modeset::train(ctx, queue, libos, version, deadline, report, &plan)?;
-    modeset::after_training(ctx, queue, libos, version, deadline, &plan)?;
+    modeset::prepare_link(ctx, queue, libos, version, deadline, report, &plan)?;
     core_submit(ctx, queue, libos, version, deadline, &notifier, &program)?;
     scanout::submit_window(ctx, queue, libos, version, deadline, &window)?;
     modeset::commit(
@@ -949,7 +948,12 @@ fn core_submit<M: Memory>(
         // BAR1 or a GPU VA for this sysmem ring; RM was given its scoped IOVA.
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
         let value = gsp_disp::put_word(target)?;
-        ctx.with_platform(|p| p.write32(gsp_disp::CORE_USER + gsp_disp::PUT, value))?;
+        ctx.with_platform(|p| {
+            // Even the first NOP publication irrevocably closes the recovery
+            // gate. Never reset this flag after a failed/uncertain doorbell.
+            p.display_wake.publication_started = true;
+            p.write32(gsp_disp::CORE_USER + gsp_disp::PUT, value)
+        })?;
         sel4::debug_println!(
             "NVIDIA_DISPLAY_CORE_SUBMIT kind={} put={} put_raw={:#x} clock_us={}",
             kind,

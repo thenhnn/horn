@@ -513,3 +513,48 @@ cycle. This supports investigating sink wake/link loss and a source-backed
 pre-first-UPDATE revalidation/retraining state machine. It does not prove the
 physical cause, authorize automatic recovery, or explain empty QEMU logs. No
 operator pixel observation for152343 is recorded yet.
+
+### Prepared after 152343 — build-only, not new hardware evidence
+
+Operator approved implementation of one bounded pre-first-publication recovery.
+It requires a confirmed single unplug/replug after successful training, quiet
+connection, fresh RM DPCD/RAW EDID with unchanged capabilities/preferred timing,
+and valid replies confirming lost config/EQ. A second loss or any RPC error
+stops. First PUT (including NOP) permanently prohibits recovery. No DMA/ring/
+notifier reuse, reset or active-head recovery. See DISPLAY-DIAGNOSTIC.md.
+Native build passed (`work/nvidia-reconnect-build.log`); tests skipped as requested.
+**No hardware launch:** neither this recovery nor the pinned-Python observer fix
+has hardware validation. Most recent physical evidence at that point was 152343.
+
+## 2026-11-02 15:42:34 — visible image after one pre-publication recovery
+
+One authorized launch: `work/nvidia-vfio-20261102-154234/serial.log`.
+Root: `/nix/store/9zjwmsygk6w923wmb0jx1089xsfj894r-rust_devmgr-demo-root-0.1.0`.
+**Operator confirmed an image and manually sent SIGTERM.** QEMU reports signal15
+from btop; script exited0, not timeout124. No QEMU remained on inspection.
+This is not graceful guest STOP/unload and does not prove safe restart.
+
+- Power already D0; no wake write. First training begins13460409 us, succeeds
+  with config`[14,84,00,0a,0a,0a,0a]`, status`[77,77,01,03,66,66]`.
+- Before any UPDATE: unplug0x300 at14143330 us, replug0x100/unplug0x200 at
+  15777620 us. Deferred probe confirms lost config/EQ in successful replies:
+  config`[14,04,00,00,00,00,00]`, status`[00,00,00,02,00,00]`.
+- Recovery waits for quiet; fresh connection/DPCD/D0 and RAW EDID384 bytes pass.
+  Exact preferred timing and capabilities unchanged. Fresh link again lost.
+- Sole recovery allowance consumed17844502 us. New training starts17847454 us:
+  config`[14,84,00,02,02,02,02]`, status`[77,77,01,03,22,22]`.
+- Second training-only observation lasts3 s, revision3 unchanged. Fresh link
+  at20907578 us is configured/equalized; READY20911500 us. No selected HPD/IRQ
+  is logged after this recovery through the end of the run.
+- First PUT20917342 us; ownership20929772 us; commit completes21005375 us.
+  CRC detach reaches DONE, count394, no reported overflow; final SF entries
+  390..393 are`0xd1e9b9e9`, matching the earlier visible151518 run. Expected
+  pattern CRC remains unknown; operator observation establishes visibility.
+  Normal service begins24265174 us; backing retained.
+- Pinned-Python observer now works: `qemu-diagnostic.log` contains /proc state,
+  kernel stacks and QMP status/vCPU/register snapshots at3/15/35 s. QMP reports
+  running. Empty-serial startup failure did not reproduce; its cause is unresolved.
+
+This demonstrates one successful bounded pre-publication recovery with visible
+output, not repeatability or a physical explanation of the original HPD cycle.
+No reset/rebind, active-head recovery or automatic repeat was performed.
