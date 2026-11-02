@@ -1,6 +1,6 @@
 # Services, dependencies and the registry
 
-The initial configuration lives in `examples/devmgr/module.nix`. It uses
+The initial configuration lives in `platform/system/module.nix`. It uses
 `services.definitions` from `platform/services/module.nix`.
 
 There are no `shell`, `devmgr` or `pci-driver` ABI categories in the launcher.

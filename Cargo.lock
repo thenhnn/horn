@@ -143,19 +143,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "devmgr-demo-root"
-version = "0.1.0"
-dependencies = [
- "horn-devmgr",
- "horn-ipc",
- "horn-procd",
- "horn-supervisor",
- "horn-vm",
- "sel4",
- "sel4-root-task",
-]
-
-[[package]]
 name = "display-types"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -482,6 +469,19 @@ dependencies = [
  "horn-vm",
  "libhorn",
  "sel4",
+]
+
+[[package]]
+name = "horn-system-root"
+version = "0.1.0"
+dependencies = [
+ "horn-devmgr",
+ "horn-ipc",
+ "horn-procd",
+ "horn-supervisor",
+ "horn-vm",
+ "sel4",
+ "sel4-root-task",
 ]
 
 [[package]]

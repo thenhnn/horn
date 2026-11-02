@@ -38,7 +38,7 @@ shell accel="kvm" cpus="2":
     [[ '{{ cpus }}' =~ ^[1-9][0-9]*$ ]] && (( {{ cpus }} <= 64 )) || { echo 'CPU count must be 1..64' >&2; exit 1; }
     mkdir -p work
     mapfile -t images < <(nix-build nix -A sel4.out -A root-task.package \
-      --argstr profile pc-dev --arg modules '[ ./examples/devmgr/console.nix ]' \
+      --argstr profile pc-dev --arg modules '[ ./platform/system/console.nix ]' \
       --no-out-link)
     [[ ${#images[@]} == 2 ]]
     exec qemu-system-x86_64 -machine "$machine" -accel '{{ accel }}' -cpu "$cpu" -m 512 -smp '{{ cpus }}' \

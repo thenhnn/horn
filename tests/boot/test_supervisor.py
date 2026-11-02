@@ -6,7 +6,7 @@ from test_virtio_console import assert_idle, console_connection
 def test_supervisor_requires_explicit_ready(system, scenario):
     vm = system(
         modules=(
-            "examples/devmgr/module.nix",
+            "platform/system/module.nix",
             "tests/boot/devmgr_checks.nix",
             f"tests/boot/supervisor_{scenario}.nix",
         ),
@@ -35,7 +35,7 @@ def test_supervisor_requires_explicit_ready(system, scenario):
 )
 def test_supervisor_driver_revoke(system, mode, release, cpus):
     modules = (
-        "examples/devmgr/module.nix",
+        "platform/system/module.nix",
         "tests/boot/devmgr_checks.nix",
         f"tests/boot/supervisor_{mode}.nix",
     )

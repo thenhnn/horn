@@ -43,16 +43,6 @@ rec {
   # You can override the features with
   # workspaceMembers."${crateName}".build.override { features = [ "default" "feature1" ... ]; }.
   workspaceMembers = {
-    "devmgr-demo-root" = rec {
-      packageId = "devmgr-demo-root";
-      build = internal.buildRustCrateWithFeatures {
-        packageId = "devmgr-demo-root";
-      };
-
-      # Debug support which might change between releases.
-      # File a bug if you depend on any for non-debug work!
-      debug = internal.debugCrate { inherit packageId; };
-    };
     "horn-clock" = rec {
       packageId = "horn-clock";
       build = internal.buildRustCrateWithFeatures {
@@ -287,6 +277,16 @@ rec {
       packageId = "horn-supervisor-task";
       build = internal.buildRustCrateWithFeatures {
         packageId = "horn-supervisor-task";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "horn-system-root" = rec {
+      packageId = "horn-system-root";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-system-root";
       };
 
       # Debug support which might change between releases.
@@ -831,54 +831,6 @@ rec {
         ];
         features = {
         };
-      };
-      "devmgr-demo-root" = rec {
-        crateName = "devmgr-demo-root";
-        version = "0.1.0";
-        edition = "2024";
-        crateBin = [
-          {
-            name = "task";
-            path = "src/main.rs";
-            requiredFeatures = [ ];
-          }
-        ];
-        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./examples/devmgr/root; };
-        dependencies = [
-          {
-            name = "horn-devmgr";
-            packageId = "horn-devmgr";
-          }
-          {
-            name = "horn-ipc";
-            packageId = "horn-ipc";
-            features = [ "sel4" ];
-          }
-          {
-            name = "horn-procd";
-            packageId = "horn-procd";
-          }
-          {
-            name = "horn-supervisor";
-            packageId = "horn-supervisor";
-          }
-          {
-            name = "horn-vm";
-            packageId = "horn-vm";
-            features = [ "rpc" ];
-          }
-          {
-            name = "sel4";
-            packageId = "sel4";
-          }
-          {
-            name = "sel4-root-task";
-            packageId = "sel4-root-task";
-          }
-        ];
-        features = {
-        };
-        resolvedDefaultFeatures = [ "boot-tests" ];
       };
       "display-types" = rec {
         crateName = "display-types";
@@ -1883,6 +1835,54 @@ rec {
           {
             name = "sel4";
             packageId = "sel4";
+          }
+        ];
+        features = {
+        };
+        resolvedDefaultFeatures = [ "boot-tests" ];
+      };
+      "horn-system-root" = rec {
+        crateName = "horn-system-root";
+        version = "0.1.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "task";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/system/root; };
+        dependencies = [
+          {
+            name = "horn-devmgr";
+            packageId = "horn-devmgr";
+          }
+          {
+            name = "horn-ipc";
+            packageId = "horn-ipc";
+            features = [ "sel4" ];
+          }
+          {
+            name = "horn-procd";
+            packageId = "horn-procd";
+          }
+          {
+            name = "horn-supervisor";
+            packageId = "horn-supervisor";
+          }
+          {
+            name = "horn-vm";
+            packageId = "horn-vm";
+            features = [ "rpc" ];
+          }
+          {
+            name = "sel4";
+            packageId = "sel4";
+          }
+          {
+            name = "sel4-root-task";
+            packageId = "sel4-root-task";
           }
         ];
         features = {

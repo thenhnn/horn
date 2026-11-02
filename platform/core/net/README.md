@@ -31,8 +31,8 @@ new processes/endpoints.
    fixed response with Content-Length/Connection: close. There is no network-
    configuration or device authority in the application.
 
-Nix definitions in `examples/devmgr/module.nix` wire dependencies and separate
-RAM accounts. `examples/devmgr/console.nix` enables networking in `just shell`;
+Nix definitions in `platform/system/module.nix` wire dependencies and separate
+RAM accounts. `platform/system/console.nix` enables networking in `just shell`;
 clock/timerd remain enabled without it. The PCI catalog matches modern
 `1af4:1041`, not a fixed BDF. The example uses:
 `/net/ethernet/virtio/0000:00:05.0`, `/services/clock`, `/services/net/tcp`.

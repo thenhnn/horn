@@ -17,7 +17,7 @@
     nativeBuildInputs = [pkgs.pkgsBuildBuild.llvmPackages.llvm];
   } ''llvm-objcopy --strip-debug ${driver}/bin/nvidia_probe.elf "$out"'';
 in {
-  imports = [../../../examples/devmgr/module.nix];
+  imports = [../../../platform/system/module.nix];
   options.nvidia.boot = lib.mkOption {
     type = lib.types.bool;
     default = true;

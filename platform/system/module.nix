@@ -41,8 +41,8 @@
     '')
     config.devmgr.drivers
     + "];\n");
-  mimalloc = import ../../platform/runtime/mimalloc {pkgs = pkgs.pkgsBuildBuild;};
-  console = import ../../platform/drivers/virtio/console {
+  mimalloc = import ../runtime/mimalloc {pkgs = pkgs.pkgsBuildBuild;};
+  console = import ../drivers/virtio/console {
     workspace = config.rust.workspace;
     pkgs = pkgs.pkgsBuildBuild;
     probe = config.devmgr-demo.dma-probe;
@@ -97,7 +97,7 @@
   rootWorkspace = config.rust.workspace.override {
     target = "sel4-roottask";
     crateOverrides = {
-      devmgr-demo-root = old: {
+      horn-system-root = old: {
         features = (old.features or []) ++ lib.optional config.devmgr-demo.boot-tests "boot-tests";
         SUPERVISOR_ELF = "${runtimeElf childWorkspace.members.horn-supervisor-task "supervisor"}";
         HORN_LARGE_IMAGES =
@@ -118,7 +118,7 @@
     };
   };
 in {
-  imports = [../../platform/services/module.nix];
+  imports = [../services/module.nix];
   options.devmgr.drivers = lib.mkOption {
     type = lib.types.listOf (lib.types.submodule {
       options = {
@@ -454,6 +454,6 @@ in {
       };
     };
     sel4.settings.KernelRootCNodeSizeBits = lib.mkOverride 900 16;
-    root-task.package = lib.mkForce rootWorkspace.members.devmgr-demo-root;
+    root-task.package = lib.mkForce rootWorkspace.members.horn-system-root;
   };
 }

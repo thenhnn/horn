@@ -203,7 +203,7 @@ assignment ID is consumed inside devmgr; its resulting scoped device capability
 is delivered to root and copied into the unstarted driver's named slot. The
 driver receives neither assignment authority nor the private platform endpoint.
 
-`examples/devmgr/` is a Q35 test root, not a production supervisor. Its device
+`platform/system/` is a Q35 test root, not a production supervisor. Its device
 Untypeds belong exclusively to a shared `DeviceBank`. Temporary reads and
 retained HPET/VT-d/BAR frames share a bounded 256-slot tree; eviction releases only its
 own reference, and coalesces/revokes idle ancestors without touching live BARs.

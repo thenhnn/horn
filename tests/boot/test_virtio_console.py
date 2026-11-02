@@ -67,7 +67,7 @@ def assert_idle(vm):
 @pytest.mark.parametrize("cpus", [1, 2], ids=["up", "smp"])
 @pytest.mark.parametrize("release", [False, True], ids=["debug", "release"])
 def test_virtio_console_dma_irq(system, release, cpus):
-    modules = ("examples/devmgr/module.nix", "tests/boot/virtio_console.nix")
+    modules = ("platform/system/module.nix", "tests/boot/virtio_console.nix")
     if release:
         modules += ("tests/boot/rust_release.nix",)
     vm = system(modules=modules, cpus=cpus)
@@ -114,7 +114,7 @@ def test_virtio_console_dma_irq(system, release, cpus):
 def test_virtio_console_denied_dma(system, probe):
     vm = system(
         modules=(
-            "examples/devmgr/module.nix",
+            "platform/system/module.nix",
             "tests/boot/virtio_console.nix",
             f"tests/boot/virtio_console_{probe}.nix",
         )

@@ -4,7 +4,7 @@ from test_virtio_console import assert_idle, console_connection
 
 @pytest.mark.parametrize("console", [False, True], ids=["discovery", "console"])
 def test_devmgr_ordinary_boot_has_no_probes(system, console):
-    modules = ("examples/devmgr/module.nix",)
+    modules = ("platform/system/module.nix",)
     if console:
         modules += ("tests/boot/virtio_console_clean.nix",)
     vm = system(modules=modules, cpus=1)
@@ -36,7 +36,7 @@ def test_devmgr_ordinary_boot_has_no_probes(system, console):
 @pytest.mark.parametrize("release", [False, True], ids=["debug", "release"])
 @pytest.mark.parametrize("fault", [False, True], ids=["discovery", "fatal"])
 def test_devmgr_discovery(system, release, fault, cpus):
-    modules = ("examples/devmgr/module.nix", "tests/boot/devmgr_checks.nix")
+    modules = ("platform/system/module.nix", "tests/boot/devmgr_checks.nix")
     if fault:
         modules += ("tests/boot/devmgr_fault.nix",)
     if release:
@@ -76,7 +76,7 @@ def test_devmgr_discovery(system, release, fault, cpus):
 def test_device_manager_startup_deadline(system):
     vm = system(
         modules=(
-            "examples/devmgr/module.nix",
+            "platform/system/module.nix",
             "tests/boot/devmgr_checks.nix",
             "tests/boot/devmgr_stall.nix",
         ),

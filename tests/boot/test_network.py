@@ -50,7 +50,7 @@ def test_http_event_loop_and_growing_pool(system, cpus):
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
     vm = system(
-        modules=("examples/devmgr/console.nix",),
+        modules=("platform/system/console.nix",),
         cpus=cpus,
         extra_args=(
             "-device",

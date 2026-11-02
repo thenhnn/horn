@@ -10,7 +10,7 @@
     sel4 = config.sel4.out;
   };
 in {
-  imports = [../../examples/devmgr/module.nix];
+  imports = [../system/module.nix];
   # Root's bounded CSpace must cover resident Linux RAM and frame aliases.
   sel4.settings.KernelRootCNodeSizeBits = 18;
   devmgr-demo.console = true;
