@@ -303,8 +303,7 @@ in {
       };
       timerd = {
         elf = runtimeElf childWorkspace.members.horn-timerd "timerd";
-        bootstrap = bootstrap "horn_clock";
-        capset = "TimerCaps";
+        abi = 2;
         ram = 8 * 1024 * 1024;
         requires.source = {path = "/devices/platform/clock";};
         objects = {

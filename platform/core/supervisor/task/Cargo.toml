@@ -11,6 +11,7 @@ path = "src/main.rs"
 boot-tests = []
 
 [dependencies]
+libhorn = { path = "../../../libhorn" }
 horn-registry = {path = "../../registry"}
 horn-supervisor = { path = "..", features = ["client"] }
 horn-runtime = { path = "../../../runtime/rust/horn-runtime" }

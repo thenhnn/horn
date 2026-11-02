@@ -104,7 +104,7 @@ fn range(offset: u64, length: u64, limit: usize) -> Result<core::ops::Range<usiz
     }
     Ok(start..end)
 }
-fn valid_name(name: &[u8]) -> bool {
+pub(crate) fn valid_name(name: &[u8]) -> bool {
     !name.is_empty() && name.iter().all(|b| (0x21..=0x7e).contains(b))
 }
 fn valid_runtime(config: RuntimeConfig) -> bool {
@@ -112,7 +112,6 @@ fn valid_runtime(config: RuntimeConfig) -> bool {
         && config.ipc_buffer & 7 == 0
         && config.cspace_bits > 0
         && config.cspace_bits < 64
-        && config.cspace_root != 0
         && config.cspace_root < config.free_start
         && config.free_start < config.free_end
         && config.free_end <= (1u64 << config.cspace_bits)
@@ -243,11 +242,19 @@ pub fn encode(
     entries: &[Entry<'_>],
     out: &mut [u8],
 ) -> Result<usize, Error> {
+    encode_iter(config, entries.iter().copied(), out)
+}
+
+pub fn encode_iter<'a>(
+    config: RuntimeConfig,
+    entries: impl Iterator<Item = Entry<'a>> + Clone,
+    out: &mut [u8],
+) -> Result<usize, Error> {
     if !valid_runtime(config) {
         return Err(Error::Invalid);
     }
-    let table_size = entries
-        .len()
+    let count = entries.clone().count();
+    let table_size = count
         .checked_mul(HORN_CONTEXT_ENTRY_SIZE as usize)
         .ok_or(Error::Invalid)?;
     let strings_offset = (HORN_STARTUP_HEADER_SIZE as usize)
@@ -255,7 +262,7 @@ pub fn encode(
         .ok_or(Error::Invalid)?;
     let mut size = strings_offset;
     let mut previous = None;
-    for entry in entries {
+    for entry in entries.clone() {
         let name = entry.name.as_bytes();
         if !valid_name(name)
             || previous.is_some_and(|p: &[u8]| p >= name)
@@ -281,7 +288,7 @@ pub fn encode(
     for (offset, value) in [
         (16, size as u64),
         (24, HORN_STARTUP_HEADER_SIZE as u64),
-        (32, entries.len() as u64),
+        (32, count as u64),
         (40, strings_offset as u64),
         (48, (size - strings_offset) as u64),
         (56, config.ipc_buffer),
@@ -293,7 +300,7 @@ pub fn encode(
     }
     out[72..76].copy_from_slice(&config.cspace_bits.to_le_bytes());
     let mut cursor = strings_offset;
-    for (i, entry) in entries.iter().enumerate() {
+    for (i, entry) in entries.enumerate() {
         let offset = HORN_STARTUP_HEADER_SIZE as usize + i * HORN_CONTEXT_ENTRY_SIZE as usize;
         put(out, offset, (cursor - strings_offset) as u64);
         put(out, offset + 8, entry.name.len() as u64);

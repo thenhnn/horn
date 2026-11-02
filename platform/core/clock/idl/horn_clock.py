@@ -64,16 +64,3 @@ class AlarmObject:
 @object(implements=(ClockInterface, AlarmInterface))
 class ClockHost:
     pass
-
-
-@capset(capacity=256)
-class TimerCaps:
-    vm: Cap[sel4.Endpoint, Copy]
-    address_space: Cap[sel4.Endpoint, Copy]
-    lifecycle: Cap[sel4.Endpoint, Copy]
-    reply: Cap[sel4.Reply, Move]
-    ready: Cap[sel4.Notification, Copy]
-    source: Cap[sel4.Endpoint, Copy]
-    service: Cap[sel4.Endpoint, Copy]
-    events: Cap[sel4.Notification, Copy]
-    signal: Cap[sel4.Notification, Copy]

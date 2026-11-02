@@ -4,9 +4,51 @@
 runtime machinery. It is for ordinary **single-threaded** Horn ABI tasks, not
 root tasks that implement the VM backend.
 
-## Normal tasks
+## ABI2 named context (first consumer: timer)
 
-Declare the entrypoint once per ELF, using generated bootstrap slot names:
+```rust
+horn_runtime::task!(main);
+
+fn main(mut ctx: horn_runtime::Context) -> ! {
+    let mut io = ctx.transport().unwrap();
+    let source = ctx.cap::<horn_clock::protocol::ClockSourceTag>("source").unwrap();
+    // Application code uses service names, never bootstrap selectors.
+    // ...
+    loop {}
+}
+```
+
+This form emits ABI2 and accepts the loader record through RDI/RSI (x86-64 only
+for now). After rust-sel4 initializes TLS, the runtime strictly validates the
+record, installs its IPC buffer and the VM-backed heap, then calls `main(ctx)`.
+Malformed records fail closed, without ABI1 guessing/fallback. There is no
+ambient `current()` or replaceable context.
+
+The non-Clone Context hands out the application transport and inbox once each,
+keeping their slot ranges private and separate from heap callbacks. `cap(name)`
+returns a process-lifetime initial view, not an owning managed handle or proof of
+the kernel object's type. `copy`/`mint` create imported capabilities using the
+provided transport, without exposing its root selector. Import lifetime/close
+still uses the existing IPC cap-space API; generation/pin/close handles are not
+implemented by this slice.
+
+`inbox("service")` uses `horn.reply` and an internal receive slot.
+`receive()` returns a cleanup guard: inspect its badge for notification hints,
+or decode once using the generated request layout/decoder before further IPC.
+The guard deletes any leftover received cap on drop, including notification,
+decode-error and early-return paths. Reply/completion/timeout policy remains the
+consumer's responsibility; this is not a concurrent event executor. Context,
+inbox and transport are single-thread-only, like the existing runtime.
+
+Runtime names: `horn.vm`, `horn.address-space`, `horn.lifecycle`,
+`horn.reply`, `horn.ready`. `notify_ready()` and `wait(name)` hide notification
+selectors. Notification badges coalesce; callers recheck their condition.
+
+The complete deployment build passes, but this ABI2 path is not boot-validated.
+
+## Legacy ABI1 tasks
+
+Existing executables retain generated bootstrap slot names:
 
 ```rust
 const SLOTS: horn_runtime::TaskSlots =

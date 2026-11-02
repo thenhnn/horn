@@ -385,6 +385,7 @@ dependencies = [
  "horn-idl-build",
  "horn-ipc",
  "horn-vm",
+ "libhorn",
  "object",
  "sel4",
 ]
@@ -404,6 +405,7 @@ dependencies = [
  "horn-ipc",
  "horn-mimalloc",
  "horn-vm",
+ "libhorn",
  "sel4",
  "sel4-dlmalloc",
  "sel4-panicking",
@@ -454,6 +456,7 @@ dependencies = [
  "horn-runtime",
  "horn-supervisor",
  "horn-vm",
+ "libhorn",
  "sel4",
 ]
 

@@ -122,8 +122,19 @@ VM sharing. No probe executable/marker is part of the ordinary desktop demo.
 ## ELF and execution policy
 
 The pinned `object` crate parses static, little-endian x86-64 executable ELF.
-`.horn` must contain exactly `HORN` plus little-endian ABI version 1; emit
-`horn_ipc::horn_tag!()` once per executable. The tag grants no trust or permissions.
+`.horn` must contain exactly `HORN` plus little-endian ABI version 1 or 2.
+`horn_ipc::horn_tag!()` retains ABI1; `horn_runtime::task!(main)` opts into ABI2.
+Unknown versions/reserved bytes fail, with no fallback. The tag grants no trust
+or permissions.
+
+For ABI2, Created processes must receive a sealed names/selectors descriptor via
+`startup_context` before start. Procd supplies actual runtime fields and creates
+accounted resident RO/NX backing outside the VM window. Initial slot installs
+freeze once record allocation begins; a partial failure retains backing until
+teardown and cannot be retried. RDI/RSI receive the record address/exact size.
+The process owns its record independently of the provisioning memory object,
+which the supervisor closes after the method returns. The mixed-ABI deployment
+build passes; ABI2 has not yet been boot-validated.
 Entry, segments and TLS use standard ELF metadata; rust-sel4 initializes static
 TLS and the image supplies its stack. The loader checks segment bounds, rejects
 dynamic linking/executable stack requests and enforces page-granular W^X,

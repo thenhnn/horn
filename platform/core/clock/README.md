@@ -17,6 +17,16 @@ Only the nearest deadline programs HPET. An empty queue disables the comparator;
 there is no periodic tick, polled deadline loop or periodically updated counter.
 Initialization calibrates against one 100-ms HPET wakeup, not a busy wait.
 
+## Initial context
+
+Timer is the first ABI2 service: `horn_runtime::task!(main)` enters
+`main(ctx: horn_runtime::Context)`. Deployment assigns private slots and grants
+`source`, `service`, `events` and `signal`; runtime-owned names use `horn.*`.
+There is no TimerCaps declaration in the clock RPC IDL, handwritten VmBootstrap,
+root selector or slot bookkeeping in timer. The inbox receive guard owns cleanup.
+The complete mixed-ABI pc-dev deployment builds; this migration is not yet
+boot-validated. The clock/calibration/alarm protocols and limits are unchanged.
+
 ## Read-only time page
 
 On single-CPU boots, when CPUID advertises invariant TSC, tasks can read time

@@ -75,9 +75,26 @@ fn image() -> alloc::vec::Vec<u8> {
 }
 
 #[test]
+fn elf_abi2_is_explicit_and_reserved_tag_bytes_are_checked() {
+    let mut bytes = image();
+    bytes[0x18c] = 2;
+    assert_eq!(Image::parse(&bytes, 4096..0x800000, 2).unwrap().abi, 2);
+    bytes[0x18d] = 1;
+    assert!(matches!(
+        Image::parse(&bytes, 4096..0x800000, 2),
+        Err(Error::InvalidAbi)
+    ));
+    assert_eq!(
+        <crate::protocol::ProcesscontrolStartupContextArgs as horn_ipc::Wire>::CAPS,
+        1
+    );
+}
+
+#[test]
 fn elf_checks_abi_bounds_entry_and_page_level_wx() {
     let valid = image();
     let parsed = Image::parse(&valid, 4096..0x800000, 2).unwrap();
+    assert_eq!(parsed.abi, 1);
     assert_eq!(parsed.entry, 0x400000);
     assert_eq!(parsed.ipc_address, 0x402000);
     assert!(matches!(
@@ -85,7 +102,7 @@ fn elf_checks_abi_bounds_entry_and_page_level_wx() {
         Err(Error::Resource(horn_vm::Error::QuotaExceeded))
     ));
     for (offset, data, expected) in [
-        (0x18c, 2u64.to_le_bytes().to_vec(), Error::InvalidAbi),
+        (0x18c, 3u64.to_le_bytes().to_vec(), Error::InvalidAbi),
         (68, 7u32.to_le_bytes().to_vec(), Error::Denied),
         (136, 0x400100u64.to_le_bytes().to_vec(), Error::Denied),
         (160, u64::MAX.to_le_bytes().to_vec(), Error::InvalidElf),

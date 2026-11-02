@@ -9,6 +9,9 @@
 use core::ops::Range;
 use horn_ipc::*;
 
+mod context;
+pub use context::{Context, Inbox, Received};
+
 pub use horn_ipc::TaskSlots;
 pub use horn_mimalloc as allocator;
 pub use horn_mimalloc::Error;
@@ -105,6 +108,28 @@ pub fn is_control(pointer: *const u8) -> bool {
 /// the caller installs the heap; use it for staged bootstrap/allocator probes.
 #[macro_export]
 macro_rules! task {
+    ($main:path $(,)?) => {
+        mod __horn_task {
+            use super::*;
+            #[cfg(not(target_arch = "x86_64"))]
+            compile_error!("Horn ABI2 register startup is currently x86_64 only");
+            #[global_allocator]
+            static ALLOCATOR: $crate::__private::GlobalAllocator = unsafe {
+                $crate::__private::GlobalAllocator::new($crate::__private::CONTROL.bounds())
+            };
+            #[used]
+            #[unsafe(link_section = ".horn")]
+            static HORN_TAG: [u8; 8] = *b"HORN\x02\x00\x00\x00";
+            $crate::__private::runtime::declare_stack!(256 * 1024);
+            $crate::__private::panicking::register_debug_put_char!($crate::__private::sel4::debug_put_char);
+            $crate::__private::runtime::declare_entrypoint_with_stack_init!();
+            $crate::__private::runtime::declare_rust_entrypoint! { horn_entry(pointer: usize, length: usize) }
+            fn horn_entry(pointer: usize, length: usize) -> ! {
+                let application: fn($crate::Context) -> ! = $main;
+                unsafe { $crate::__private::enter_context(application, pointer, length) }
+            }
+        }
+    };
     ($main:path, vm: $vm:expr $(,)?) => {
         $crate::task!(@entry $main, ::core::option::Option::Some($vm));
     };
@@ -144,6 +169,30 @@ pub mod __private {
     pub use sel4_runtime_common as runtime;
     pub static CONTROL: sel4_dlmalloc::StaticHeap<{ 256 * 1024 }> =
         sel4_dlmalloc::StaticHeap::new();
+
+    /// Loader-only ABI2 entry. Invalid records fail closed; never try ABI1.
+    pub unsafe fn enter_context(main: fn(super::Context) -> !, pointer: usize, length: usize) -> ! {
+        if pointer == 0 || length > isize::MAX as usize || pointer.checked_add(length).is_none() {
+            panicking::abort!("invalid ABI2 startup range");
+        }
+        let bytes = unsafe { core::slice::from_raw_parts(pointer as *const u8, length) };
+        let context = unsafe { super::Context::from_record(bytes) }.expect("ABI2 startup record");
+        let ipc = context.record.header().ipc_buffer as *mut sel4::IpcBuffer;
+        unsafe {
+            sel4::set_ipc_buffer(ipc.as_mut().unwrap());
+        }
+        match sel4_panicking::catch_unwind(|| {
+            let heap = context.heap_bootstrap().expect("ABI2 heap context");
+            unsafe {
+                super::install_heap(heap).expect("runtime VM heap");
+            }
+            main(context)
+        }) {
+            #[allow(unreachable_patterns)]
+            Ok(never) => never,
+            Err(_) => panicking::abort!("main(ctx) panicked"),
+        }
+    }
 
     pub unsafe fn enter(main: fn() -> !, vm: Option<super::VmBootstrap>) -> ! {
         unsafe extern "C" {

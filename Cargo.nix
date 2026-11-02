@@ -1520,6 +1520,10 @@ rec {
             features = [ "rpc" ];
           }
           {
+            name = "libhorn";
+            packageId = "libhorn";
+          }
+          {
             name = "object";
             packageId = "object";
             usesDefaultFeatures = false;
@@ -1578,6 +1582,10 @@ rec {
             name = "horn-vm";
             packageId = "horn-vm";
             features = [ "protocol" ];
+          }
+          {
+            name = "libhorn";
+            packageId = "libhorn";
           }
           {
             name = "sel4";
@@ -1763,6 +1771,10 @@ rec {
           {
             name = "horn-vm";
             packageId = "horn-vm";
+          }
+          {
+            name = "libhorn";
+            packageId = "libhorn";
           }
           {
             name = "sel4";

@@ -87,8 +87,32 @@ def compile_services(definitions):
         visit(name, set(), done)
     result = ["pub static SERVICES: &[ServiceDefinition] = &["]
     for name, service in sorted(definitions.items()):
-        metadata = json.loads(Path(service["bootstrap"]).read_text())[service["capset"]]
-        slots = metadata["slots"]
+        abi = service.get("abi", 1)
+        assert abi in (1, 2), f"{name}: unsupported startup ABI"
+        if abi == 2:
+            assert service.get("bootstrap") is None and service.get("capset") is None
+            assert service["activation"] != "boot", (
+                "ABI2 boot-service provisioning not implemented"
+            )
+            ports = ["vm", "address_space", "lifecycle", "reply", "ready"]
+            local = (
+                list(service["requires"])
+                + list(service["namespaces"])
+                + list(service["grants"])
+                + [p for obj in service["objects"].values() for p in obj["bindings"]]
+            )
+            assert len(local) == len(set(local)), f"{name}: duplicate context binding"
+            for port in local:
+                assert port and all(0x21 <= ord(c) <= 0x7E for c in port), port
+                assert port not in ports and not port.startswith("horn."), port
+            # Slot 0 is the process's own CNode. Physical placement stays private
+            # to deployment/procd; no generated constants enter the service.
+            slots = {port: i for i, port in enumerate(ports + sorted(local), 1)}
+        else:
+            metadata = json.loads(Path(service["bootstrap"]).read_text())[
+                service["capset"]
+            ]
+            slots = metadata["slots"]
         assigned = set()
 
         def slot(port, slots=slots, assigned=assigned, name=name):
@@ -134,8 +158,28 @@ def compile_services(definitions):
         published_prefixes = ",".join(quote(p) for p in service["publish"])
         for p in service["publish"]:
             valid_path(p)
+        context = "&[]"
+        if abi == 2:
+            runtime_names = {
+                "vm": "horn.vm",
+                "address_space": "horn.address-space",
+                "lifecycle": "horn.lifecycle",
+                "reply": "horn.reply",
+                "ready": "horn.ready",
+            }
+            context = (
+                "&["
+                + ",".join(
+                    f"ContextBinding{{name:{quote(runtime_names.get(p, p))},slot:{s}}}"
+                    for p, s in sorted(
+                        slots.items(),
+                        key=lambda item: runtime_names.get(item[0], item[0]),
+                    )
+                )
+                + "]"
+            )
         result.append(
-            f"ServiceDefinition{{name:{quote(name)},elf:include_bytes!({quote(service['elf'])}),ram:{service['ram']},boot:{str(service['activation'] == 'boot').lower()},bootstrap:ProcessBootstrap{{vm:{base['vm']},address_space:{base['address_space']},lifecycle:{base['lifecycle']},reply:{base['reply']}}},ready:{base['ready']},objects:&[{','.join(objects)}],requires:&[{requirements}],namespaces:&[{namespaces}],grants:&[{grants}],after:&[{after}],publish:&[{published_prefixes}]}},"
+            f"ServiceDefinition{{context:{context},name:{quote(name)},elf:include_bytes!({quote(service['elf'])}),ram:{service['ram']},boot:{str(service['activation'] == 'boot').lower()},bootstrap:ProcessBootstrap{{vm:{base['vm']},address_space:{base['address_space']},lifecycle:{base['lifecycle']},reply:{base['reply']}}},ready:{base['ready']},objects:&[{','.join(objects)}],requires:&[{requirements}],namespaces:&[{namespaces}],grants:&[{grants}],after:&[{after}],publish:&[{published_prefixes}]}},"
         )
     return "\n".join(result + ["];"])
 

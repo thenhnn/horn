@@ -287,6 +287,13 @@ class ProcessControl:
     @method
     def close(self) -> Result[None, ProcessError]: ...
 
+    # ABI2 only, Created child. Names/selectors in sealed resident memory;
+    # runtime addresses are supplied by procd, not the provisioning descriptor.
+    @method
+    def startup_context(
+        self, descriptor: Cap[VmMemoryObject, Borrow], length: U64
+    ) -> Result[None, ProcessError]: ...
+
 
 @object(implements=(ProcessControl,))
 class ProcessObject:

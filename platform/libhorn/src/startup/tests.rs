@@ -21,6 +21,20 @@ fn entries() -> [Entry<'static>; 2] {
     ]
 }
 #[test]
+fn installed_root_capability_may_have_selector_zero() {
+    let mut config = config();
+    config.cspace_root = 0;
+    let mut bytes = [0; 256];
+    let n = encode(config, &entries(), &mut bytes).unwrap();
+    let context = Context::parse(&bytes[..n]).unwrap();
+    assert_eq!(context.header().cspace_root, 0);
+    assert_eq!(context.lookup("horn.vm"), Some(2));
+    // Root zero does not relax the reserved-prefix bound.
+    config.cspace_root = config.free_start;
+    assert_eq!(encode(config, &entries(), &mut bytes), Err(Error::Invalid));
+}
+
+#[test]
 fn roundtrip_and_borrowed_lookup() {
     let mut bytes = [0; 256];
     let size = encode(config(), &entries(), &mut bytes).unwrap();
@@ -53,7 +67,7 @@ fn header_and_offsets_are_checked() {
         (40, 0),
         (48, u64::MAX),
         (56, 0),
-        (64, 0),
+        (64, 16),
         (80, 0),
         (88, 257),
     ] {

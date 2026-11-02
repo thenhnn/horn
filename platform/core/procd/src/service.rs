@@ -41,7 +41,7 @@ pub(crate) fn error(e: Error) -> ProcessError {
         Error::Resource(_) => ProcessError::Exhausted,
     }
 }
-fn vm_error(e: VmError) -> ProcessError {
+pub(super) fn vm_error(e: VmError) -> ProcessError {
     match e {
         VmError::Denied => ProcessError::Denied,
         VmError::Invalid => ProcessError::Invalid,
@@ -296,6 +296,7 @@ impl Manager {
         ];
         self.attach_vm(id, vm)?;
         for (slot, source) in caps {
+            self.process_mut(id)?.bootstrap_end = self.process(id)?.bootstrap_end.max(slot + 1);
             self.cnode(id)?
                 .absolute_cptr_from_bits_with_depth(slot as _, PROCESS_CAPS_SIZE_BITS as _)
                 .copy(
@@ -489,6 +490,10 @@ impl ProcessObserver for Caller<'_> {
     }
 }
 impl ProcessControl for Caller<'_> {
+    fn startup_context(&mut self, descriptor: Cap<VmMemoryObjectTag>, length: u64) -> Result<(), ProcessError> {
+        let id = self.control()?;
+        self.manager.provision_context(id, descriptor.as_ref(), length)
+    }
     fn info(&mut self) -> Result<ProcessInfo, ProcessError> {
         Ok(wire_info(
             self.manager.process(self.control()?).map_err(error)?,
@@ -542,7 +547,7 @@ impl ProcessControl for Caller<'_> {
     fn install(&mut self, source: Cap<CNode>, source_bits: u32, source_slot: u32,
         target_slot: u32, badge: Option<u64>, rights: u32) -> Result<(), ProcessError> {
         let id = self.control()?;
-        if self.manager.process(id).map_err(error)?.state != State::Created { return Err(ProcessError::State); }
+        if self.manager.process(id).map_err(error)?.state != State::Created || self.manager.process(id).map_err(error)?.startup_attempted { return Err(ProcessError::State); }
         if source.as_ref().unwrapped_badge().is_some() || source_bits == 0 || source_bits > 32
             || source_slot as u64 >= 1u64 << source_bits || target_slot == 0 || target_slot >= 128 || rights & !15 != 0 {
             return Err(ProcessError::Invalid);
@@ -551,7 +556,10 @@ impl ProcessControl for Caller<'_> {
             .absolute_cptr_from_bits_with_depth(source_slot as _, source_bits as _);
         let target = self.manager.cnode(id).map_err(error)?.absolute_cptr_from_bits_with_depth(target_slot as _, PROCESS_CAPS_SIZE_BITS as _);
         let rights = sel4::CapRights::new(rights & 8 != 0, rights & 4 != 0, rights & 1 != 0, rights & 2 != 0);
-        match badge { Some(badge) => target.mint(&source, rights, badge as _), None => target.copy(&source, rights) }.map_err(|e| error(e.into()))
+        match badge { Some(badge) => target.mint(&source, rights, badge as _), None => target.copy(&source, rights) }.map_err(|e| error(e.into()))?;
+        let p = self.manager.process_mut(id).map_err(error)?;
+        p.bootstrap_end = p.bootstrap_end.max(target_slot + 1);
+        Ok(())
     }
     fn fault_handler(&mut self, source: Cap<CNode>, source_bits:u32, source_slot:u32) -> Result<(), ProcessError> {
         let id = self.control()?;

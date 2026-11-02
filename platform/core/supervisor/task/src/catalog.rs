@@ -35,7 +35,12 @@ pub struct BootGrant {
     pub source: BootSource,
     pub rights: u8,
 }
+pub struct ContextBinding {
+    pub name: &'static str,
+    pub slot: u32,
+}
 pub struct ServiceDefinition {
+    pub context: &'static [ContextBinding],
     pub name: &'static str,
     pub elf: &'static [u8],
     pub ram: u64,
@@ -220,6 +225,18 @@ impl Manager {
                     Rights(Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0),
                 );
                 self.io.space.delete(directory.as_ref()).unwrap();
+            }
+            if !definition.context.is_empty() {
+                let entries: Vec<_> = definition.context.iter().map(|binding| libhorn::startup::Entry {
+                    name: binding.name, selector: binding.slot as u64,
+                }).collect();
+                let size = entries.iter().try_fold(8usize, |n, e| n.checked_add(16)?.checked_add(e.name.len())).unwrap();
+                let mut bytes = alloc::vec![0; size];
+                libhorn::bindings::encode(&entries, &mut bytes).unwrap();
+                let descriptor = BOOT.upload(&mut self.io, &bytes);
+                ProcessControlClient::new(&mut self.io, Cap::from_ref(process.as_ref()))
+                    .startup_context(&descriptor, size as u64).unwrap();
+                horn_supervisor::client::close_image(&mut self.io, descriptor);
             }
             self.jobs[i].lifecycle.start().unwrap();
             self.jobs[i].deadline = now().wrapping_add(self.ticks * crate::ready_timeout_us());

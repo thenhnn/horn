@@ -13,7 +13,7 @@ ordinary service does not require changing the compiler or supervisor.
 
 Each definition supplies:
 
-- `elf`, `bootstrap`, `capset`, `ram`;
+- `elf`, `ram`, and `abi` (default 1); ABI1 also requires `bootstrap`, `capset`;
 - `activation`: `boot` for the one root-critical bootstrap service, otherwise
   `automatic`;
 - `requires.<port> = { path; select = "exact" | "first"; }`;
@@ -24,8 +24,18 @@ Each definition supplies:
 - privileged bootstrap `grants` and allowed child-publication prefixes `publish`.
 
 The common task ports are `vm`, `address_space`, `lifecycle`, `reply`, and `ready`.
-Other ports belong to the program's capset. Unknown/duplicate bindings and static
-configuration dependency cycles are rejected during catalog generation.
+For ABI1, other ports belong to the program's capset. Unknown/duplicate bindings
+and static configuration dependency cycles are rejected during catalog generation.
+
+ABI2 automatic services instead omit `bootstrap`/`capset`. The compiler assigns
+private slots to the common ports followed by bytewise-sorted deployment ports;
+no slot constants are generated for the application. Common ports appear in its
+context as `horn.vm`, `horn.address-space`, `horn.lifecycle`, `horn.reply` and
+`horn.ready`. Application ports must be printable ASCII and must not shadow the
+common ports or reserved `horn.*` namespace. The supervisor sends a sealed
+names/selectors descriptor after all installs and before start; procd constructs
+the actual startup record. Timer is the first ABI2 consumer. Root-critical boot
+service migration is deliberately not supported yet; it retains ABI1.
 
 `requires` copies a published endpoint into the named input. `first` selects one
 currently available endpoint in the subtree, once, in publication order. It does

@@ -20,6 +20,7 @@ mod execution;
 mod loader;
 mod placement;
 mod service;
+mod startup;
 pub use service::LaunchPolicy;
 #[cfg(test)]
 mod tests;
@@ -92,6 +93,13 @@ struct Process {
     tcb: sel4::cap::Tcb,
     loaded: loader::Loaded,
     entry: usize,
+    abi: u8,
+    ipc_address: usize,
+    cnode_bits: usize,
+    bootstrap_end: u32,
+    startup: Option<(usize, usize)>,
+    startup_attempted: bool,
+    resident_limit: usize,
     lifecycle: Option<(usize, sel4::Word)>,
     exit_signal: Option<usize>,
     fault_endpoint: Option<usize>,
@@ -244,7 +252,7 @@ impl Manager {
                 self.caller_vspace,
                 self.scratch,
                 self.asid_pool,
-                config.vm_window,
+                config.vm_window.clone(),
             )?;
             let cnode =
                 allocator.allocate_variable_sized::<sel4::cap_type::CNode>(config.cnode_bits)?;
@@ -303,6 +311,13 @@ impl Manager {
             tcb,
             loaded,
             entry: image.entry,
+            abi: image.abi,
+            ipc_address: image.ipc_address,
+            cnode_bits: config.cnode_bits,
+            bootstrap_end: 2,
+            startup: None,
+            startup_attempted: false,
+            resident_limit: config.vm_window.start,
             lifecycle: None,
             exit_signal: None,
             fault_endpoint: None,
@@ -515,6 +530,11 @@ impl Manager {
         }
         let mut regs = sel4::UserContext::default();
         *regs.pc_mut() = p.entry as sel4::Word;
+        if p.abi == 2 {
+            let (address, length) = p.startup.ok_or(Error::InvalidState)?;
+            regs.inner_mut().rdi = address as _;
+            regs.inner_mut().rsi = length as _;
+        }
         p.tcb.tcb_write_all_registers(true, &mut regs)?;
         p.state = State::Active;
         Ok(())

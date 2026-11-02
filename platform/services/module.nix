@@ -48,12 +48,19 @@
   definition = types.submodule {
     options = {
       elf = mkOption {type = types.path;};
+      abi = mkOption {
+        type = types.enum [1 2];
+        default = 1;
+        description = "Executable startup ABI; ABI2 derives named slots from deployment.";
+      };
       bootstrap = mkOption {
-        type = types.path;
+        type = types.nullOr types.path;
+        default = null;
         description = "IDL-generated named bootstrap slot descriptor.";
       };
       capset = mkOption {
-        type = types.str;
+        type = types.nullOr types.str;
+        default = null;
         description = "Declaration name in the descriptor, not a service category.";
       };
       activation = mkOption {
@@ -109,7 +116,10 @@ in {
       s
       // {
         elf = toString s.elf;
-        bootstrap = toString s.bootstrap;
+        bootstrap =
+          if s.bootstrap == null
+          then null
+          else toString s.bootstrap;
       })
     config.services.definitions);
     passAsFile = ["manifest"];
