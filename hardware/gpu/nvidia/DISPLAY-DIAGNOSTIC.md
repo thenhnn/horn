@@ -174,4 +174,10 @@ vCPU thread information and `info registers` at3/15/35s. Results go to the run's
 `qemu-diagnostic.log`. Its own50s budget does not change QEMU's60s/+3s limit.
 It never attaches, stops/continues the VM, changes PCI state or resets anything.
 Kernel stacks are not userspace backtraces. Missing interpreter fails pre-launch;
-no more silent PATH-based skip. No new launch after this dependency fix.
+no more silent PATH-based skip. Run154234 validated the observer on a normal
+boot. Independent shell run154540 captured QEMU stopped in do_signal_stop while
+performing a terminal ioctl on stdin, not a proven VFIO wait. See HARDWARE.md.
+The launcher now uses timeout --foreground to avoid the default separate process
+group stopping -serial stdio during TTY configuration. The60s/+3s QEMU limit is
+unchanged; foreground mode does not time out descendants. This launcher fix has
+only syntax/diff validation so far, no subsequent hardware run.

@@ -165,7 +165,11 @@ note "read-only QEMU diagnostics: $run_dir/qemu-diagnostic.log"
 set -o pipefail
 note "QEMU time limit: 60s (+3s kill grace); timeout is not graceful STOP/unload"
 set +e
-"${launcher[@]}" timeout --signal=TERM --kill-after=3s 60s "${command[@]}" 2>&1 | tee "$run_dir/serial.log"
+# Keep QEMU in the foreground job's process group: -serial stdio configures
+# stdin's TTY. timeout's default separate group can receive SIGTTOU during that
+# ioctl and stop before guest startup. Foreground mode still bounds QEMU itself
+# (not its descendants); the separately launched observer has its own limit.
+"${launcher[@]}" timeout --foreground --signal=TERM --kill-after=3s 60s "${command[@]}" 2>&1 | tee "$run_dir/serial.log"
 status=${PIPESTATUS[0]}
 if [[ -n $observer_pid ]]; then
     wait "$observer_pid" || note "QEMU observer exited with an error (see diagnostic log)"

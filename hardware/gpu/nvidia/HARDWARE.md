@@ -558,3 +558,24 @@ This is not graceful guest STOP/unload and does not prove safe restart.
 This demonstrates one successful bounded pre-publication recovery with visible
 output, not repeatability or a physical explanation of the original HPD cycle.
 No reset/rebind, active-head recovery or automatic repeat was performed.
+
+## 2026-11-02 15:45:40 — shell launch stopped by a signal before serial output
+
+Operator's independent shell launch: `work/nvidia-vfio-20261102-154540/`.
+Serial is0 bytes. Observer found QEMU pid78419 at3/15 s with all three threads
+in `State: T (stopped)` / `do_signal_stop`. Main thread's recorded syscall is
+ioctl on fd0 (`0x402c542b`, terminal settings). QMP socket connects, but greeting
+times out. No vCPU thread is present in these snapshots. No QEMU remained when
+inspected afterward. The exact stopping signal was not captured.
+
+This run is stopped, not evidence of a VFIO reset wait or executing silent guest.
+The combination strongly suggests terminal job control: timeout's default new
+process group plus QEMU `-serial stdio` terminal configuration can trigger SIGTTOU.
+It does not retroactively establish the cause of earlier empty-serial runs.
+The `<nixpkgs>.bashInteractive` lookup warning is followed by shell fallback and
+is not evidence of this stop.
+
+Prepared fix: use `timeout --foreground`, preserving the foreground job group
+and the unchanged QEMU60s/+3s limit. This limits QEMU itself, not descendants;
+the observer remains independently bounded. Bash syntax/diff checks passed.
+No new QEMU/hardware launch or target signal was issued to validate this fix.
