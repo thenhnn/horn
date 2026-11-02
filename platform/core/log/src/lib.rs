@@ -34,7 +34,9 @@ pub enum Error {
 pub fn enabled(level: log::Level, target: &str) -> bool {
     let rust_sel4 = target == "sel4" || target.starts_with("sel4::") || target.starts_with("sel4_");
     level
-        <= if rust_sel4 {
+        <= if target == "virtio_drivers" || target.starts_with("virtio_drivers::") {
+            log::Level::Warn
+        } else if rust_sel4 {
             log::Level::Info
         } else {
             log::Level::Debug

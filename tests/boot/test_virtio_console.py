@@ -97,9 +97,9 @@ def test_virtio_console_dma_irq(system, release, cpus):
         )
         vm.serial.wait_for(b"VTD_FAULT_IRQ armed=true")
         vm.serial.wait_for(
-            b"VIRTIO_CONSOLE_READY allocator=mimalloc transport=upstream dma=iova irq=msix"
+            b"Console ready"
         )
-        vm.serial.wait_for(b"VIRTIO_CONSOLE_IRQ delivered=true")
+        vm.serial.wait_for(b"Console interrupt received")
         assert "VTD_FAULT source=" not in vm.serial.path.read_text()
         assert vm.monitor.execute("query-status")["running"]
         assert_idle(vm)

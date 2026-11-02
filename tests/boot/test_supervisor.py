@@ -51,7 +51,7 @@ def test_supervisor_driver_revoke(system, mode, release, cpus):
         assert "SUPERVISOR_START policy=generic cleanup=owner-ack" in output
         assert "DEVMGR_SERVICE_START name=virtio-console policy=devmgr" in output
         if mode == "orderly":
-            assert "VIRTIO_CONSOLE_STOPPED reset=true dma_closed=true" in output
+            assert "Console stopped" in output
             assert "DEVMGR_DRIVER_REVOKE cpu_stopped=true orderly=true" in output
         else:
             assert "DEVMGR_DRIVER_REVOKE cpu_stopped=true orderly=false" in output

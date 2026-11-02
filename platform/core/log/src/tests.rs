@@ -3,6 +3,8 @@ use super::*;
 use std::string::String;
 #[test]
 fn defaults_keep_application_debug_but_not_rust_sel4_debug_or_trace() {
+    assert!(!enabled(log::Level::Info, "virtio_drivers::device::net"));
+    assert!(enabled(log::Level::Warn, "virtio_drivers::device::net"));
     for target in ["timer", "horn_clock::alarm", "app"] {
         assert!(enabled(log::Level::Debug, target));
         assert!(!enabled(log::Level::Trace, target));

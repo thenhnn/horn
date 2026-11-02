@@ -5,9 +5,13 @@ use ::sel4::{
     Cap, CapTypeForObjectOfFixedSize, CapTypeForObjectOfVariableSize, ObjectBlueprint, Word, cap,
     cap_type,
 };
-use alloc::{collections::{BTreeMap, BTreeSet}, rc::Rc, vec::Vec};
-use core::{alloc::Layout, cell::RefCell, ops::Range};
-use sel4_abstract_allocator::{ByRange, basic::BasicAllocator};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+    vec::Vec,
+};
+use core::{cell::RefCell, ops::Range};
+use horn_ipc::root_slots::RootSlots;
 
 pub const PAGE_SIZE: usize = ::sel4::FrameObjectType::GRANULE.bytes();
 const MIN_BITS: usize = PAGE_SIZE.trailing_zeros() as usize;
@@ -19,8 +23,7 @@ pub struct KernelAllocator {
 }
 struct Allocator {
     root: cap::CNode,
-    first_slot: usize,
-    slots: ByRange<BasicAllocator>,
+    slots: RootSlots,
     nodes: Vec<Node>,
     // Best fit by order, then node index, without scanning resident Used nodes.
     free_nodes: BTreeSet<(usize, usize)>,
@@ -68,10 +71,7 @@ impl UntypedLease {
 
 impl Allocator {
     fn reserve_slot(&mut self) -> Result<usize, Error> {
-        self.slots
-            .allocate(Layout::new::<u8>())
-            .map(|range| self.first_slot + range.start)
-            .map_err(|_| { ::sel4::debug_println!("ALLOC_SLOTS_EXHAUSTED first={} nodes={}",self.first_slot,self.nodes.len()); Error::Exhausted })
+        self.slots.allocate().ok_or(Error::Exhausted)
     }
     fn clear_slot(&self, slot: usize) -> Result<(), Error> {
         self.root
@@ -81,8 +81,7 @@ impl Allocator {
     }
     fn free_slot(&mut self, slot: usize) -> Result<(), Error> {
         self.clear_slot(slot)?;
-        let offset = slot.checked_sub(self.first_slot).ok_or(Error::Backend)?;
-        self.slots.deallocate(offset..offset + 1);
+        self.slots.release(slot);
         Ok(())
     }
     fn revoke(&self, node: usize) -> Result<(), Error> {
@@ -92,7 +91,14 @@ impl Allocator {
             .map_err(|_| Error::Backend)
     }
     fn acquire(&mut self, bits: usize) -> Result<usize, Error> {
-        let &(order, mut node) = self.free_nodes.range((bits, 0)..).next().ok_or_else(|| { ::sel4::debug_println!("ALLOC_RAM_EXHAUSTED nodes={} free={}",self.nodes.len(),self.free_nodes.len()); Error::Exhausted })?;
+        let &(order, mut node) = self.free_nodes.range((bits, 0)..).next().ok_or_else(|| {
+            ::sel4::debug_println!(
+                "ALLOC_RAM_EXHAUSTED nodes={} free={}",
+                self.nodes.len(),
+                self.free_nodes.len()
+            );
+            Error::Exhausted
+        })?;
         self.free_nodes.remove(&(order, node));
         debug_assert!(self.nodes[node].state == State::Free);
         while self.nodes[node].bits > bits {
@@ -124,7 +130,12 @@ impl Allocator {
                 )
             });
             if let Err(e) = result {
-                ::sel4::debug_println!("ALLOC_SPLIT_FAIL node={} bits={} error={:?}",node,self.nodes[node].bits,e);
+                ::sel4::debug_println!(
+                    "ALLOC_SPLIT_FAIL node={} bits={} error={:?}",
+                    node,
+                    self.nodes[node].bits,
+                    e
+                );
                 if self.revoke(node).is_err() {
                     self.nodes[node].state = State::Quarantined;
                     return Err(Error::Backend);
@@ -171,7 +182,9 @@ impl Allocator {
             }
             // Neither child may remain selectable if parent revoke or cleanup
             // fails and the subtree becomes quarantined.
-            for child in children { self.free_nodes.remove(&(self.nodes[child].bits, child)); }
+            for child in children {
+                self.free_nodes.remove(&(self.nodes[child].bits, child));
+            }
             // Coalescing revokes the two child Untypeds before recycling their slots.
             if self.revoke(parent).is_err() {
                 // A failed revoke gives no assurance that child caps survived.
@@ -202,12 +215,19 @@ impl KernelAllocator {
         size_bits: usize,
         slots: Range<usize>,
     ) -> Self {
+        Self::with_slots(root, untyped, size_bits, RootSlots::new(slots))
+    }
+    pub fn with_slots(
+        root: cap::CNode,
+        untyped: cap::Untyped,
+        size_bits: usize,
+        slots: RootSlots,
+    ) -> Self {
         Self {
             account: Account::new(1usize << size_bits),
             inner: Rc::new(RefCell::new(Allocator {
                 root,
-                first_slot: slots.start,
-                slots: ByRange::new(BasicAllocator::with_granule_size(slots.len(), 1)),
+                slots,
                 nodes: alloc::vec![Node {
                     cap: untyped,
                     bits: size_bits,

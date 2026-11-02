@@ -30,7 +30,8 @@ this change does **not** claim every existing message is migrated.
   allocator/pager critical paths and logger failures. Existing panic machinery
   remains direct. Emergency/kernel/legacy output can still interleave with
   normal logs until all ordinary writers are migrated.
-- Default facade level is DEBUG, with INFO for `sel4` / `sel4_*` targets.
+- Default facade level is DEBUG, with INFO for `sel4` / `sel4_*` targets
+  and WARN for `virtio_drivers` (feature-negotiation chatter is not an event).
   Their warnings/errors remain visible; syscall tracing is not implicitly
   enabled. The per-target filter is checked in both enabled() and log().
   Explicit emit() bypasses facade filtering; invocation traces with an active

@@ -145,14 +145,11 @@ const ROOT_HEAP_BYTES: usize = if cfg!(large_images) {
 fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
     let root = sel4::init_thread::slot::CNODE.cap();
     let empty = boot.empty().range();
-    let split = empty.start + empty.len() / 2;
-    sel4::debug_println!(
-        "ROOT_RESOURCES cspace_slots={} kernel_slots={} ipc_slots={} heap_bytes={}",
-        empty.end,
-        split - empty.start,
-        empty.end - split - platform::TEMP_SLOTS - 1,
-        ROOT_HEAP_BYTES
-    );
+    // Only fixed device-discovery scratch slots and the public receive slot
+    // are excluded. Kernel objects and IPC imports share everything else.
+    let discovery_start = empty.start;
+    let slots =
+        horn_ipc::root_slots::RootSlots::new(discovery_start + platform::TEMP_SLOTS + 1..empty.end);
     assert!(
         !cfg!(large_images) || empty.end >= 1 << 20,
         "large firmware images require KernelRootCNodeSizeBits >= 20; rebuild kernel AND root"
@@ -163,11 +160,11 @@ fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
         .enumerate()
         .filter(|(_, d)| !d.is_device());
     let (i, d) = sources.next().unwrap();
-    let mut allocator = KernelAllocator::new(
+    let mut allocator = KernelAllocator::with_slots(
         root,
         boot.untyped().index(i).cap(),
         d.size_bits(),
-        empty.start..split,
+        slots.clone(),
     );
     for (i, d) in sources {
         allocator.add_untyped(boot.untyped().index(i).cap(), d.size_bits());
@@ -358,18 +355,16 @@ fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
             boot,
             allocator,
             scratch,
-            split,
+            discovery_start,
             manager,
             option_env!("DEVMGR_TEST_VTD") == Some("1"),
             mhz,
         )
     };
-    let receive = root.absolute_cptr(sel4::CPtr::from_bits((split + platform::TEMP_SLOTS) as _));
-    let space = Sel4CapSpace::new_local(
-        root,
-        (split + platform::TEMP_SLOTS + 1) as _,
-        empty.end as _,
-    );
+    let receive = root.absolute_cptr(sel4::CPtr::from_bits(
+        (discovery_start + platform::TEMP_SLOTS) as _,
+    ));
+    let space = Sel4CapSpace::new_shared_local(root, slots);
     let mut server = Sel4Server::new(root, bootstrap, receive, space);
     let root_tcb = sel4::init_thread::slot::TCB.cap();
     root_tcb.tcb_set_priority(root_tcb, 0).unwrap();

@@ -7,10 +7,9 @@
 //! The current implementation supports flat layouts: root CNodes and one
 //! level of child CNodes.  Deeper trees are rejected rather than guessed at.
 
-use core::alloc::Layout;
+use crate::root_slots::{LocalSlots, RootSlots};
 use sel4::cap_type::CNode;
 use sel4::{AbsoluteCPtr, CPtr, Cap, CapRights, ObjectBlueprint, Word};
-use sel4_abstract_allocator::{ByRange, basic::BasicAllocator};
 
 use crate::layout::{CapSpace, SlotRef};
 use crate::{CapMode, CapRef, Rights, RpcError};
@@ -18,9 +17,7 @@ use crate::{CapMode, CapRef, Rights, RpcError};
 pub struct Sel4CapSpace {
     pub root: sel4::cap::CNode,
     pub untyped: Option<sel4::cap::Untyped>,
-    first_slot: Word,
-    end_slot: Word,
-    slots: ByRange<BasicAllocator>,
+    slots: LocalSlots,
     root_ref: CapRef,
 }
 
@@ -46,15 +43,26 @@ impl Sel4CapSpace {
         first_slot: Word,
         end_slot: Word,
     ) -> Self {
+        Self::with_pool(
+            root,
+            untyped,
+            RootSlots::new(first_slot as usize..end_slot as usize),
+        )
+    }
+
+    pub fn new_shared_local(root: sel4::cap::CNode, slots: RootSlots) -> Self {
+        Self::with_pool(root, None, slots)
+    }
+
+    fn with_pool(
+        root: sel4::cap::CNode,
+        untyped: Option<sel4::cap::Untyped>,
+        slots: RootSlots,
+    ) -> Self {
         Self {
             root,
             untyped,
-            first_slot,
-            end_slot,
-            slots: ByRange::new(BasicAllocator::with_granule_size(
-                (end_slot - first_slot) as usize,
-                1,
-            )),
+            slots: LocalSlots::new(slots),
             root_ref: CapRef::new(
                 root.cptr().bits() as u64,
                 0,
@@ -76,9 +84,9 @@ impl Sel4CapSpace {
 
     fn alloc_root_slot(&mut self) -> Result<Word, RpcError> {
         self.slots
-            .allocate(Layout::new::<u8>())
-            .map(|range| self.first_slot + range.start as Word)
-            .map_err(|_| RpcError::TooManyCaps)
+            .allocate()
+            .map(|slot| slot as Word)
+            .ok_or(RpcError::TooManyCaps)
     }
 
     fn cnode_cptr_of(&self, cnode: CapRef) -> Result<u64, RpcError> {
@@ -242,9 +250,8 @@ impl CapSpace for Sel4CapSpace {
         let abs = self.cap_abs(cap)?;
         abs.delete().map_err(|_| RpcError::Transport)?;
         let slot = cap.slot as Word;
-        if cap.cnode == self.root_cptr() && slot >= self.first_slot && slot < self.end_slot {
-            let offset = (slot - self.first_slot) as usize;
-            self.slots.deallocate(offset..offset + 1);
+        if cap.cnode == self.root_cptr() {
+            self.slots.release_if_owned(slot as usize);
         }
         Ok(())
     }
@@ -257,19 +264,26 @@ impl CapSpace for Sel4CapSpace {
             cnode: self.root_ref,
             slot: slot as u32,
         };
-        if cap.mode == CapMode::MOVE {
-            self.move_into(dest, cap)?;
-        } else {
-            self.copy_into(dest, cap, cap.rights)?;
-        }
-        Ok(CapRef::new(
+        let local = CapRef::new(
             self.root_cptr(),
             slot as u32,
             sel4::WORD_SIZE as u8,
             0,
             cap.mode,
             cap.rights,
-        ))
+        );
+        let result = if cap.mode == CapMode::MOVE {
+            self.move_into(dest, cap)
+        } else {
+            self.copy_into(dest, cap, cap.rights)
+        };
+        if let Err(error) = result {
+            // Recycle only after successful deletion; retain ownership if
+            // cleanup fails so an uncertain slot cannot be handed out again.
+            self.delete(local)?;
+            return Err(error);
+        }
+        Ok(local)
     }
 
     fn install_self_cnode(&mut self, cnode: CapRef) -> Result<(), RpcError> {

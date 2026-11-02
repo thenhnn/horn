@@ -900,6 +900,8 @@ pub trait AsyncServer {
 pub mod sel4_backend;
 
 #[cfg(feature = "sel4")]
+pub mod root_slots;
+#[cfg(feature = "sel4")]
 pub mod sel4_space;
 
 #[cfg(feature = "sel4")]

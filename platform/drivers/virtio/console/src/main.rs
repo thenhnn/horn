@@ -215,9 +215,7 @@ fn main() -> ! {
     #[cfg(feature = "lifecycle-test")]
     hal::probe_for_test(); // Must pass before the host sees a readiness banner.
 
-    sel4::debug_println!(
-        "VIRTIO_CONSOLE_READY allocator=mimalloc transport=upstream dma=iova irq=msix"
-    );
+    sel4::debug_println!("Console ready");
     horn_runtime::notify_ready(DEVICE_DRIVER_CAPS_READY_SLOT);
     #[cfg(feature = "lifecycle-test")]
     match option_env!("HORN_DRIVER_TEST") {
@@ -256,7 +254,7 @@ fn main() -> ! {
                     unsafe {
                         hw.shutdown(|| hal::with(|s| s.session.discard_shared()));
                     }
-                    sel4::debug_println!("VIRTIO_CONSOLE_STOPPED reset=true dma_closed=true");
+                    sel4::debug_println!("Console stopped");
                     sel4::cap::Notification::from_bits(DEVICE_DRIVER_CAPS_STOPPED_SLOT as _)
                         .signal();
                 }
@@ -265,7 +263,7 @@ fn main() -> ! {
                 console.as_mut().unwrap().interrupt().expect("console IRQ");
                 hal::with(|s| s.session.ack_interrupt());
                 if !irq_reported {
-                    sel4::debug_println!("VIRTIO_CONSOLE_IRQ delivered=true");
+                    sel4::debug_println!("Console interrupt received");
                     irq_reported = true;
                 }
             }
