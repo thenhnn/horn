@@ -667,6 +667,7 @@ fn rm_disp<M: Memory>(
             "NVIDIA_DISPLAY_RM step=common handle={:#x}",
             rm::HANDLE_DISP_COMMON
         );
+        modeset::subscribe(&mut api)?;
         let supported =
             api.control::<api::DisplaySupported>(rm::HANDLE_DISP_COMMON, &Default::default())?;
         sel4::debug_println!(
@@ -684,6 +685,7 @@ fn rm_disp<M: Memory>(
             info.numDispChannels
         );
         let topology = gsp_disp::commands::Topology::new(info.windowPresentMask, info.numHeads)?;
+        modeset::active(&mut api, "before-route", topology.heads, None)?;
         let plan = modeset::route(&mut api, supported.displayMask, report, &timing)?;
         let mut program = gsp_disp::commands::Core::new(topology, DISP_NOTIFIER_HANDLE)?;
         gsp_disp::head::append(&mut program, &timing, &plan)?;
@@ -771,6 +773,7 @@ fn rm_disp<M: Memory>(
         notifier.bytes,
         DISP_NOTIFIER_HANDLE
     );
+    modeset::baseline(ctx, deadline, &plan)?;
     core_submit(ctx, queue, libos, version, deadline, &notifier, &program)?;
     scanout::submit_window(ctx, queue, libos, version, deadline, &window)?;
     modeset::train(ctx, queue, libos, version, deadline, report, &plan)?;
@@ -859,6 +862,7 @@ fn display_event<M: Memory>(
             packet.header.rpc_sequence,
             packet.payload.len()
         );
+        modeset::notification(&packet, "display", ctx.time_us()?)?;
         if packet.header.function == wire::CPU_SEQUENCE {
             unsafe {
                 ctx.run_sequence(packet.payload, libos, version, deadline)?;
@@ -1159,6 +1163,7 @@ fn wait<M: Memory>(
                 packet.header.rpc_sequence,
                 packet.payload.len()
             );
+            modeset::notification(&packet, "rpc", now)?;
             if packet.header.function == function {
                 return Ok(bytes);
             }
@@ -1672,6 +1677,7 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                         packet.header.rpc_sequence,
                         packet.payload.len()
                     );
+                    modeset::notification(&packet, "service", ctx.time_us()?)?;
                     if wire::fatal_event(packet.header.function) {
                         return Err(Error::FirmwareStatus(FirmwareStatus(
                             packet.header.function,

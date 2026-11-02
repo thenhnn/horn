@@ -119,6 +119,42 @@ macro_rules! fields {
         }
     };
 }
+fields!(NV0005_ALLOC_PARAMETERS {
+    hParentClient,
+    hSrcResource,
+    hClass,
+    notifyIndex,
+    data
+});
+fields!(NV2080_CTRL_EVENT_SET_NOTIFICATION_PARAMS {
+    event,
+    action,
+    bNotifyState,
+    info32,
+    info16
+});
+fields!(rpc_post_event_v17_00 {
+    hClient,
+    hEvent,
+    notifyIndex,
+    data,
+    info16,
+    status,
+    eventDataSize,
+    bNotifyList,
+    eventData
+});
+fields!(Nv2080HotplugNotification {
+    plugDisplayMask,
+    unplugDisplayMask
+});
+fields!(Nv2080DpIrqNotification { displayId });
+fields!(NV0073_CTRL_SYSTEM_GET_ACTIVE_PARAMS {
+    subDeviceInstance,
+    head,
+    flags,
+    displayId
+});
 fields!(NV0073_CTRL_SPECIFIC_GET_CONNECTOR_DATA_PARAMS {
     subDeviceInstance,
     displayId,
@@ -175,7 +211,17 @@ fields!(NV0073_CTRL_DFP_ASSIGN_SOR_PARAMS {
     reservedSorMask,
     flags
 });
-fields!(NV0073_CTRL_DP_AUXCH_CTRL_PARAMS { subDeviceInstance, displayId, bAddrOnly, cmd, addr, data, size, replyType, retryTimeMs });
+fields!(NV0073_CTRL_DP_AUXCH_CTRL_PARAMS {
+    subDeviceInstance,
+    displayId,
+    bAddrOnly,
+    cmd,
+    addr,
+    data,
+    size,
+    replyType,
+    retryTimeMs
+});
 fields!(NV0073_CTRL_DP_CTRL_PARAMS {
     subDeviceInstance,
     displayId,

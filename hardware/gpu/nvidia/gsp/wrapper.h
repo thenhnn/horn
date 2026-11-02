@@ -4,10 +4,12 @@
 #include <nvmisc.h>
 #include <nvos.h>
 #include <class/cl0000.h>
+#include <class/cl0005.h>
 #include <class/cl0040.h>
 #include <class/cl0073.h>
 #include <class/cl0080.h>
 #include <class/cl2080.h>
+#include <class/cl2080_notification.h>
 #include <class/cl90f1.h>
 /* Legacy user-register byte pointers, as used by nouveau's NV507C accessor. */
 #include <class/cl917c.h>
@@ -34,6 +36,7 @@
 #include <ctrl/ctrl2080/ctrl2080internal.h>
 #include <ctrl/ctrl2080/ctrl2080fifo.h>
 #include <ctrl/ctrl2080/ctrl2080ce.h>
+#include <ctrl/ctrl2080/ctrl2080event.h>
 #include <ctrl/ctrla06f/ctrla06fgpfifo.h>
 #define RPC_STRUCTURES
 #include <g_rpc-structures.h>

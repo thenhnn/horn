@@ -13,6 +13,7 @@ pub const MAX_FRAME: usize = 65536;
 pub const MAX_PAYLOAD: usize = MAX_FRAME - HEADER;
 pub const INIT_DONE: u32 = abi::NV_VGPU_MSG_EVENT_GSP_INIT_DONE;
 pub const CPU_SEQUENCE: u32 = abi::NV_VGPU_MSG_EVENT_GSP_RUN_CPU_SEQUENCER;
+pub const NOTIFY: u32 = abi::NV_VGPU_MSG_EVENT_POST_EVENT;
 pub const SET_SYSTEM_INFO: u32 = abi::NV_VGPU_MSG_FUNCTION_GSP_SET_SYSTEM_INFO;
 pub const SET_REGISTRY: u32 = abi::NV_VGPU_MSG_FUNCTION_SET_REGISTRY;
 pub const UNLOADING: u32 = abi::NV_VGPU_MSG_FUNCTION_UNLOADING_GUEST_DRIVER;
@@ -138,7 +139,9 @@ impl<'a> Packet<'a> {
     }
     pub fn success(&self) -> Result<()> {
         if self.header.status != 0 {
-            return Err(Error::FirmwareStatus(crate::FirmwareStatus(self.header.status)));
+            return Err(Error::FirmwareStatus(crate::FirmwareStatus(
+                self.header.status,
+            )));
         }
         Ok(())
     }

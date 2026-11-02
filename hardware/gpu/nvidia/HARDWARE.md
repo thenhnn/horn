@@ -366,3 +366,47 @@ status/private status 0 and inner RM NV_ERR_GENERIC; fail-stop retained backing
 and supervisor stopped the CPU. No retry, extra UPDATE, reset or orderly unload.
 Internal progress and absence of sampled underflow do not prove visible pixels
 or exclude later faults after the diagnostic stops the driver.
+
+### Combined baseline / active-ID / subscribed hotplug diagnostic
+
+`work/nvidia-vfio-20261102-045358/serial.log`: operator confirms black throughout
+and no cable, monitor-power or input manipulation. One authorized 60 s run,
+exit 137 after TERM/kill grace, no orderly STOP/unload. Native build and selected
+format/diff checks passed; no unit tests. Audit: `DISPLAY-AUDIT.md`.
+
+Both scoped event subscriptions succeeded (HOTPLUG and DP_IRQ). GET_ACTIVE
+before route returned zero for all four heads in both any/NV-client scopes.
+Before our first UPDATE, head 0 had clock/displayID zero, owner=0xf (unowned),
+RG/SF asleep, no raster/loadv progress and no image/LUT DMA. Thus no active
+inherited display was observed; this does not prove every unused field was reset.
+
+After commit, GET_ACTIVE reported expected 0x100 in both scopes at each timed
+sample. Raster and paired loadv counters advanced; no sampled underflow or
+SF_DP_IRQ error bits. The optional post-commit AUX was not issued. Observation
+completed and normal service entered at 13491644 us without recorded panic.
+
+Crucially, subscribed RM notifications reported:
+
+| clock_us | Notification |
+|---|---|
+| 10913407 | HPD plug=0, unplug=0x300 (includes selected display 0x100) |
+| 12558082 | HPD plug=0x100, unplug=0x200 |
+| 12589633 | DP_IRQ displayId=0x100 |
+| 18928759 | HPD plug=0, unplug=0x300 |
+| 19439113 | HPD plug=0x100, unplug=0x200 |
+
+Commit completion was at 10311370 us. The first unplug was about 0.6 s later,
+then replug about 2.2 s after completion. RM active-ID remained 0x100 even after
+its unplug notification: logical active topology does not prove a connected
+sink. These are firmware notifications, not a direct electrical HPD measurement;
+0x300 is not assumed to mean two physical monitors. No recovery/retraining or
+additional UPDATE was attempted. Notification decoding worked in polling and
+normal service. Earlier unregistered event logs could not exclude these events.
+
+Operator suggests the monitor may reconnect while waking from sleep, and recalls
+that the one earlier visible-image run may have happened before it fell asleep.
+This timing recollection is tentative. Wake-induced hotplug could explain the
+late AUX failure, but an invalid output stream causing sink cycling is also
+possible; causality and stable scanout remain unproven. A future experiment can
+separate wake/settling from the first training/UPDATE instead of retrying an
+already-active uncertain display epoch. No such change/run has been made yet.

@@ -3,6 +3,175 @@
 //! acquire SOR, let RM train the PHY, then publish one interlocked modeset.
 use super::*;
 use gsp_disp::{dp::Link, head, timing::Timing};
+use horn_nvidia_gsp::rm::codec::Wire;
+
+const HOTPLUG_EVENT: u32 = 0x007e0000;
+const DP_IRQ_EVENT: u32 = 0x007e0001;
+
+/// r535_gsp_device_event_ctor/get and r535_disp_oneinit: scoped RM objects,
+/// no host callback pointer or extra DMA. Retained for the display session.
+pub(super) fn subscribe<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
+    api: &mut rm::Client<T>,
+) -> Result<()> {
+    for (handle, event) in [
+        (HOTPLUG_EVENT, raw::NV2080_NOTIFIERS_HOTPLUG),
+        (DP_IRQ_EVENT, raw::NV2080_NOTIFIERS_DP_IRQ),
+    ] {
+        api.alloc::<api::DisplayEvent>(
+            HANDLE_DISP_SUBDEVICE,
+            handle,
+            &raw::NV0005_ALLOC_PARAMETERS {
+                hParentClient: HANDLE_DISP_CLIENT,
+                hClass: raw::NV01_EVENT_KERNEL_CALLBACK_EX,
+                notifyIndex: raw::NV01_EVENT_CLIENT_RM | event,
+                ..Default::default()
+            },
+        )?;
+        let reply = api.control::<api::EventNotification>(
+            HANDLE_DISP_SUBDEVICE,
+            &raw::NV2080_CTRL_EVENT_SET_NOTIFICATION_PARAMS {
+                event,
+                action: raw::NV2080_CTRL_EVENT_SET_NOTIFICATION_ACTION_REPEAT,
+                ..Default::default()
+            },
+        )?;
+        if reply.event != event
+            || reply.action != raw::NV2080_CTRL_EVENT_SET_NOTIFICATION_ACTION_REPEAT
+        {
+            return Err(Error::Malformed);
+        }
+        sel4::debug_println!(
+            "NVIDIA_DISPLAY_SUBSCRIBED handle={:#x} event={} action=repeat recovery=none",
+            handle,
+            event
+        );
+    }
+    Ok(())
+}
+
+/// r535_gsp_msg_post_event: validate generated header/length, then decode only
+/// our registered notifications. A notification never authorizes a new UPDATE.
+pub(super) fn notification(packet: &wire::Packet<'_>, phase: &str, clock: u64) -> Result<()> {
+    if packet.header.function != wire::NOTIFY {
+        return Ok(());
+    }
+    packet.success()?;
+    let size = core::mem::size_of::<raw::rpc_post_event_v17_00>();
+    let header =
+        raw::rpc_post_event_v17_00::read(packet.payload.get(..size).ok_or(Error::Malformed)?)?;
+    let bytes = header.eventDataSize as usize;
+    if size.checked_add(bytes) != Some(packet.payload.len()) || header.bNotifyList > 1 {
+        return Err(Error::Malformed);
+    }
+    sel4::debug_println!(
+        "NVIDIA_DISPLAY_NOTIFICATION phase={} clock_us={} client={:#x} event={:#x} index={:#x} data={:#x} info16={:#x} status={:#x} bytes={} list={}",
+        phase,
+        clock,
+        header.hClient,
+        header.hEvent,
+        header.notifyIndex,
+        header.data,
+        header.info16,
+        header.status,
+        bytes,
+        header.bNotifyList
+    );
+    if !matches!(header.hEvent, HOTPLUG_EVENT | DP_IRQ_EVENT) {
+        return Ok(()); // Other clients' event objects carry no display authority.
+    }
+    if header.hClient != HANDLE_DISP_CLIENT {
+        return Err(Error::Malformed);
+    }
+    let start = core::mem::offset_of!(raw::rpc_post_event_v17_00, eventData);
+    let end = start.checked_add(bytes).ok_or(Error::Range)?;
+    let data = packet.payload.get(start..end).ok_or(Error::Malformed)?;
+    if header.hEvent == HOTPLUG_EVENT {
+        let event = raw::Nv2080HotplugNotification::read(data)?;
+        sel4::debug_println!(
+            "NVIDIA_DISPLAY_HPD phase={} clock_us={} plug={:#x} unplug={:#x} recovery=none",
+            phase,
+            clock,
+            event.plugDisplayMask,
+            event.unplugDisplayMask
+        );
+    } else {
+        let event = raw::Nv2080DpIrqNotification::read(data)?;
+        sel4::debug_println!(
+            "NVIDIA_DISPLAY_DP_IRQ phase={} clock_us={} display_id={:#x} recovery=none",
+            phase,
+            clock,
+            event.displayId
+        );
+    }
+    Ok(())
+}
+
+/// Same GET_ACTIVE query as r535_disp_get_active, additionally distinguish
+/// boot-established displays from displays established by an NV client.
+/// A topology mismatch is an observation, not permission to reroute/retrain.
+/// Transport/RM errors and malformed echoes still stop the diagnostic.
+pub(super) fn active<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
+    api: &mut rm::Client<T>,
+    stage: &str,
+    heads: u32,
+    expected: Option<u32>,
+) -> Result<()> {
+    if heads == 0 || heads > 8 {
+        return Err(Error::Range);
+    }
+    for head in 0..heads {
+        for (scope, flags) in [
+            (
+                "any",
+                raw::NV0073_CTRL_SYSTEM_GET_ACTIVE_FLAGS_CLIENT_DISABLE,
+            ),
+            (
+                "nv-client",
+                raw::NV0073_CTRL_SYSTEM_GET_ACTIVE_FLAGS_CLIENT_ENABLE,
+            ),
+        ] {
+            sel4::debug_println!(
+                "NVIDIA_DISPLAY_ACTIVE_BEGIN stage={} head={} scope={}",
+                stage,
+                head,
+                scope
+            );
+            let reply = api.control::<api::DisplayActive>(
+                rm::HANDLE_DISP_COMMON,
+                &raw::NV0073_CTRL_SYSTEM_GET_ACTIVE_PARAMS {
+                    head,
+                    flags,
+                    ..Default::default()
+                },
+            )?;
+            if reply.subDeviceInstance != 0 || reply.head != head || reply.flags != flags {
+                return Err(Error::Malformed);
+            }
+            sel4::debug_println!(
+                "NVIDIA_DISPLAY_ACTIVE stage={} head={} scope={} display_id={:#x} expected={:?} matches={:?}",
+                stage,
+                head,
+                scope,
+                reply.displayId,
+                expected,
+                expected.map(|id| reply.displayId == id)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Captured after allocation but before even the first probe/ownership UPDATE.
+pub(super) fn baseline(ctx: &mut Ad106<Native>, deadline: u64, plan: &Link) -> Result<()> {
+    sel4::debug_println!(
+        "NVIDIA_DISPLAY_BASELINE_BEGIN clock_us={} updates_submitted=false",
+        ctx.time_us()?
+    );
+    stream_snapshot(ctx, deadline, "before-first-update")?;
+    snapshot(ctx, deadline, plan)?;
+    sel4::debug_println!("NVIDIA_DISPLAY_BASELINE_END clock_us={}", ctx.time_us()?);
+    Ok(())
+}
 
 pub(super) fn route<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
     api: &mut rm::Client<T>,
@@ -615,56 +784,63 @@ pub(super) fn commit<M: Memory>(
             );
             stream_snapshot(ctx, deadline, "after-commit")?;
             snapshot(ctx, deadline, plan)?;
-            // Controlled diagnostic: restore the same 500 ms delay and AUX read
-            // as the first visible-image run. No new UPDATE, training or retry.
-            let wake = ctx.time_us()?.checked_add(500_000).ok_or(Error::Range)?;
-            if wake >= deadline {
-                return Err(Error::Timeout);
-            }
-            sel4::debug_println!(
-                "NVIDIA_DISPLAY_POST_AUX_WAIT clock_us={} wake_us={}",
-                ctx.time_us()?,
-                wake
-            );
-            ctx.sleep_until(wake)?;
-            stream_snapshot(ctx, deadline, "before-aux")?;
-            let registers = ctx.with_platform(|p| {
-                Ok([
-                    p.read32(gsp_disp::CORE_USER + gsp_disp::PUT)?,
-                    p.read32(gsp_disp::CORE_USER + gsp_disp::GET)?,
-                    p.read32(raw::HORN_WINDOW_USER + gsp_disp::PUT)?,
-                    p.read32(raw::HORN_WINDOW_USER + gsp_disp::GET)?,
-                    p.read32(raw::HORN_HEAD_RASTER_COUNTER)?,
-                ])
-            })?;
-            let start = ctx.time_us()?;
-            sel4::debug_println!(
-                "NVIDIA_DISPLAY_POST_AUX_BEGIN clock_us={} since_submit_us={} registers={:08x?} core_status={:#x} window_status={:#x}",
-                start,
-                start.saturating_sub(submit_us),
-                registers,
-                unsafe { notifier.read32(head::MODE_NOTIFIER)? },
-                unsafe { notifier.read32(head::WINDOW_NOTIFIER)? }
-            );
-            let mut config = [0; 7];
-            let mut status = [0; 6];
-            let result = {
-                let mut api = rm_api(ctx, queue, HANDLE_DISP_CLIENT, libos, version, deadline);
-                aux(&mut api, plan.display_id, 0x100, true, &mut config)
-                    .and_then(|()| aux(&mut api, plan.display_id, 0x202, true, &mut status))
-            };
-            sel4::debug_println!(
-                "NVIDIA_DISPLAY_POST_AUX_END clock_us={} elapsed_us={} result={:?} config={:02x?} status={:02x?} valid_only_on_success=true",
-                ctx.time_us()?,
-                ctx.time_us()?.saturating_sub(start),
-                result,
-                config,
-                status
-            );
-            result?; // Retain the original fail-stop on any RM/transport error.
-            plan.check_status(&status)?;
-            if config[0] != plan.rate || config[1] & 31 != plan.lanes || config[2] & 0x27 != 0 {
-                return Err(Error::State);
+            // Separate observation deadline; do not extend the 2s commit timeout.
+            // No post-commit AUX: its reproduced RM error used to stop event
+            // service before the monitor had time to finish acquiring the mode.
+            let origin = ctx.time_us()?;
+            let observe_deadline = origin
+                .checked_add(5_000_000)
+                .ok_or(Error::Range)?
+                .min(boot_deadline);
+            for (stage, delay) in [
+                ("settled-0ms", 0),
+                ("settled-500ms", 500_000),
+                ("settled-3000ms", 3_000_000),
+            ] {
+                let wake = origin.checked_add(delay).ok_or(Error::Range)?;
+                if wake >= observe_deadline {
+                    return Err(Error::Timeout);
+                }
+                loop {
+                    display_event(ctx, queue, libos, version, observe_deadline)?;
+                    let now = ctx.time_us()?;
+                    if now >= wake {
+                        break;
+                    }
+                    ctx.sleep_until(now.saturating_add(10_000).min(wake))?;
+                }
+                stream_snapshot(ctx, observe_deadline, stage)?;
+                let registers = ctx.with_platform(|p| {
+                    Ok([
+                        p.read32(gsp_disp::CORE_USER + gsp_disp::PUT)?,
+                        p.read32(gsp_disp::CORE_USER + gsp_disp::GET)?,
+                        p.read32(raw::HORN_WINDOW_USER + gsp_disp::PUT)?,
+                        p.read32(raw::HORN_WINDOW_USER + gsp_disp::GET)?,
+                        p.read32(raw::HORN_HEAD_RASTER_COUNTER)?,
+                    ])
+                })?;
+                sel4::debug_println!(
+                    "NVIDIA_DISPLAY_OBSERVE stage={} clock_us={} elapsed_us={} registers={:08x?} core_status={:#x} window_status={:#x}",
+                    stage,
+                    ctx.time_us()?,
+                    ctx.time_us()?.saturating_sub(origin),
+                    registers,
+                    unsafe { notifier.read32(head::MODE_NOTIFIER)? },
+                    unsafe { notifier.read32(head::WINDOW_NOTIFIER)? }
+                );
+                active(
+                    &mut rm_api(
+                        ctx,
+                        queue,
+                        HANDLE_DISP_CLIENT,
+                        libos,
+                        version,
+                        observe_deadline,
+                    ),
+                    stage,
+                    1,
+                    Some(plan.display_id),
+                )?;
             }
             return Ok(());
         }
