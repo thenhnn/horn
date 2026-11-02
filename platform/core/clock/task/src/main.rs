@@ -14,7 +14,7 @@ use horn_supervisor::client::{copy, mint};
 
 const SLOTS: TaskSlots = TaskSlots::new(TIMER_CAPS_FIRST_FREE_SLOT, TIMER_CAPS_SIZE_BITS);
 
-horn_runtime::task!(main, vm:horn_runtime::VmBootstrap{
+horn_runtime::task!(main, vm:horn_runtime::VmBootstrap {
   cnode: TIMER_CAPS_SELF_SLOT,
   factory: TIMER_CAPS_VM_SLOT,
   address_space: TIMER_CAPS_ADDRESS_SPACE_SLOT,
