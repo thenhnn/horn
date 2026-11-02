@@ -139,25 +139,58 @@ pub(super) fn route<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
 
 /// r535_dp_aux_xfer: SDK request size is N-1, reply size is actual N.
 /// After RM claims the output, all subsequent AUX traffic goes through RM.
-fn aux<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(api: &mut rm::Client<T>, id: u32,
-    address: u32, read: bool, data: &mut [u8]) -> Result<()> {
-    if data.is_empty() || data.len() > 16 || address >= 1 << 20 { return Err(Error::Range); }
+fn aux<T: FnMut(u32, &[u8]) -> Result<Vec<u8>>>(
+    api: &mut rm::Client<T>,
+    id: u32,
+    address: u32,
+    read: bool,
+    data: &mut [u8],
+) -> Result<()> {
+    if data.is_empty() || data.len() > 16 || address >= 1 << 20 {
+        return Err(Error::Range);
+    }
     let mut params = raw::NV0073_CTRL_DP_AUXCH_CTRL_PARAMS {
-        displayId: id, addr: address, size: data.len() as u32 - 1,
-        cmd: if read { raw::HORN_DP_AUX_READ } else { raw::HORN_DP_AUX_WRITE },
+        displayId: id,
+        addr: address,
+        size: data.len() as u32 - 1,
+        cmd: if read {
+            raw::HORN_DP_AUX_READ
+        } else {
+            raw::HORN_DP_AUX_WRITE
+        },
         ..Default::default()
     };
-    if !read { params.data[..data.len()].copy_from_slice(data); }
-    sel4::debug_println!("NVIDIA_DISPLAY_RM_AUX_BEGIN id={:#x} addr={:#x} read={} bytes={}", id, address, read, data.len());
+    if !read {
+        params.data[..data.len()].copy_from_slice(data);
+    }
+    sel4::debug_println!(
+        "NVIDIA_DISPLAY_RM_AUX_BEGIN id={:#x} addr={:#x} read={} bytes={}",
+        id,
+        address,
+        read,
+        data.len()
+    );
     let reply = api.control::<api::DpAux>(rm::HANDLE_DISP_COMMON, &params)?;
-    sel4::debug_println!("NVIDIA_DISPLAY_RM_AUX_REPLY addr={:#x} reply={:#x} bytes={} retry_ms={}",
-        address, reply.replyType, reply.size, reply.retryTimeMs);
-    if reply.subDeviceInstance != 0 || reply.displayId != id || reply.addr != address
-        || reply.bAddrOnly != 0 || reply.replyType != raw::HORN_DP_AUX_ACK
-        || reply.retryTimeMs != 0 || reply.size as usize != data.len() {
+    sel4::debug_println!(
+        "NVIDIA_DISPLAY_RM_AUX_REPLY addr={:#x} reply={:#x} bytes={} retry_ms={}",
+        address,
+        reply.replyType,
+        reply.size,
+        reply.retryTimeMs
+    );
+    if reply.subDeviceInstance != 0
+        || reply.displayId != id
+        || reply.addr != address
+        || reply.bAddrOnly != 0
+        || reply.replyType != raw::HORN_DP_AUX_ACK
+        || reply.retryTimeMs != 0
+        || reply.size as usize != data.len()
+    {
         return Err(Error::State);
     }
-    if read { data.copy_from_slice(&reply.data[..data.len()]); }
+    if read {
+        data.copy_from_slice(&reply.data[..data.len()]);
+    }
     Ok(())
 }
 
@@ -176,8 +209,13 @@ pub(super) fn train<M: Memory>(
         .ok_or(Error::Range)?
         .min(boot_deadline);
     // Same sink D0 power-up as nouveau_dp_train, through the RM-owned AUX.
-    aux(&mut rm_api(ctx, queue, HANDLE_DISP_CLIENT, libos, version, deadline),
-        plan.display_id, 0x600, false, &mut [1])?;
+    aux(
+        &mut rm_api(ctx, queue, HANDLE_DISP_CLIENT, libos, version, deadline),
+        plan.display_id,
+        0x600,
+        false,
+        &mut [1],
+    )?;
     let powered = ctx.time_us()?.saturating_add(1000).min(deadline);
     ctx.sleep_until(powered)?;
     sel4::debug_println!(
@@ -282,6 +320,92 @@ pub(super) fn luts<M: Memory>(
     })
 }
 
+/// Read-only method shadows, following nouveau gv100_disp_{core,wndw}_mthd.
+/// These are latched method values, not proof that the fetch/color path works.
+/// Never write shadows, clear errors, re-submit UPDATE or reuse a notifier here.
+fn snapshot(ctx: &mut Ad106<Native>, deadline: u64) -> Result<()> {
+    let head = [
+        ("raster", raw::HORN_HEAD_RASTER_SIZE),
+        ("clock", raw::HORN_HEAD_PIXEL_CLOCK_FREQUENCY),
+        ("view-point", raw::HORN_HEAD_VIEWPORT_POINT_IN),
+        ("view-in", raw::HORN_HEAD_VIEWPORT_SIZE_IN),
+        ("view-out", raw::HORN_HEAD_VIEWPORT_SIZE_OUT),
+        ("view-adjust", raw::HORN_HEAD_VIEWPORT_POINT_OUT_ADJUST),
+        ("scaler", raw::HORN_HEAD_OUTPUT_SCALER),
+        ("output", raw::HORN_HEAD_CONTROL_OUTPUT_RESOURCE),
+        ("sor0", raw::HORN_SOR_CONTROL),
+        ("owner0", raw::HORN_WINDOW_CONTROL),
+        ("olut", raw::HORN_HEAD_OLUT_CONTROL),
+        ("olut-scale", raw::HORN_HEAD_OLUT_FP_NORM_SCALE),
+        ("olut-dma", raw::HORN_HEAD_CONTEXT_DMA_OLUT),
+        ("olut-offset", raw::HORN_HEAD_OFFSET_OLUT),
+        ("ocsc0", raw::HORN_HEAD_OCSC0CONTROL),
+        ("ocsc1", raw::HORN_HEAD_OCSC1CONTROL),
+    ];
+    let window = [
+        ("size", raw::NVC57E_SET_SIZE),
+        ("params", raw::NVC57E_SET_PARAMS),
+        ("pitch", raw::HORN_WINDOW_PLANAR_STORAGE),
+        ("image-dma", raw::HORN_WINDOW_ISO),
+        ("image-offset", raw::HORN_WINDOW_OFFSET),
+        ("point-in", raw::HORN_WINDOW_POINT_IN),
+        ("size-in", raw::NVC57E_SET_SIZE_IN),
+        ("size-out", raw::NVC57E_SET_SIZE_OUT),
+        ("blend", raw::NVC57E_SET_COMPOSITION_CONTROL),
+        ("alpha", raw::NVC57E_SET_COMPOSITION_CONSTANT_ALPHA),
+        ("factors", raw::NVC57E_SET_COMPOSITION_FACTOR_SELECT),
+        ("csc-c00", raw::NVC57E_SET_FMT_COEFFICIENT_C00),
+        ("ilut", raw::NVC57E_SET_ILUT_CONTROL),
+        ("ilut-dma", raw::NVC57E_SET_CONTEXT_DMA_ILUT),
+        ("ilut-offset", raw::NVC57E_SET_OFFSET_ILUT),
+    ];
+    for (channel, assembly, armed, methods) in [
+        (
+            "core",
+            gsp_disp::CORE_USER,
+            raw::HORN_CORE_ARMED,
+            head.as_slice(),
+        ),
+        (
+            "window0",
+            raw::HORN_WINDOW_USER,
+            raw::HORN_WINDOW_ARMED,
+            window.as_slice(),
+        ),
+    ] {
+        for &(name, method) in methods {
+            if ctx.time_us()? >= deadline {
+                return Err(Error::Timeout);
+            }
+            let (assy, arm) = ctx
+                .with_platform(|p| Ok((p.read32(assembly + method)?, p.read32(armed + method)?)))?;
+            sel4::debug_println!(
+                "NVIDIA_DISPLAY_STATE channel={} field={} method={:#x} assy={:#x} armed={:#x}",
+                channel,
+                name,
+                method,
+                assy,
+                arm
+            );
+        }
+    }
+    // Published DPCA contains a frame/line counter. Two samples separated by
+    // >2 preferred-mode frames distinguish a running raster from a static shadow.
+    let first = ctx.with_platform(|p| p.read32(raw::HORN_HEAD_RASTER_COUNTER))?;
+    let wake = ctx.time_us()?.checked_add(25_000).ok_or(Error::Range)?;
+    if wake >= deadline {
+        return Err(Error::Timeout);
+    }
+    ctx.sleep_until(wake)?;
+    let second = ctx.with_platform(|p| p.read32(raw::HORN_HEAD_RASTER_COUNTER))?;
+    sel4::debug_println!(
+        "NVIDIA_DISPLAY_RASTER head=0 first={:#x} second={:#x} interval_us=25000 visible=operator-unconfirmed",
+        first,
+        second
+    );
+    Ok(())
+}
+
 pub(super) fn commit<M: Memory>(
     ctx: &mut Ad106<Native>,
     queue: &mut Queue<M>,
@@ -364,6 +488,7 @@ pub(super) fn commit<M: Memory>(
                 core_status,
                 window_status
             );
+            snapshot(ctx, deadline)?;
             return Ok(());
         }
         let now = ctx.time_us()?;

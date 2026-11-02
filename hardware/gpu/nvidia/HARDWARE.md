@@ -229,3 +229,59 @@ terminated by host signal 15 (btop), not graceful STOP/unload.
 Kind 6 is now actually observed for pitch-layout memory. CPU PRAMIN per-DWORD
 write/readback is intentionally slow (~5.3 seconds for 1408 active rows);
 it is diagnostic upload, not scanout throughput.
+
+
+## First preferred modeset — trained link and completion, operator sees black
+
+First attempt: `work/nvidia-vfio-20261102-040205/serial.log`.
+RM connector correlation selected display ID 0x100 (not DCB bit zero),
+connector 0, SOR 0, link A. Source caps HBR3; DCB HBR3/four lanes with override
+enabled; chosen sink link HBR2/four lanes. Watermark 23, HBlankSym 144,
+VBlankSym 2720. Surface and identity LUT upload/readback, ownership and window
+assembly succeeded. A direct native AUX D0 write failed the local aux-reply
+check before DP training or final UPDATE; raw AUX status was not logged.
+This does not establish that the sink rejected the write. No retry in epoch.
+
+Follow-up: `work/nvidia-vfio-20261102-040717/serial.log`.
+Post-acquisition AUX now uses typed RM DP_AUXCH_CTRL (pinned-header generated
+layout, field-wise codec, ACK and actual returned length checked).
+Native Nix build succeeded as part of the authorized run; no unit tests run.
+
+```
+NVIDIA_DISPLAY_RM_AUX_REPLY addr=0x600 reply=0x0 bytes=1 retry_ms=0
+NVIDIA_DISPLAY_DP_TRAIN_REPLY id=0x100 cmd=0x2083 data=0x1404 err=0x0 retry_ms=0
+NVIDIA_DISPLAY_DP_LINK_STATUS config=[14, 84] status=[77, 77, 01, 03, 66, 66]
+NVIDIA_DISPLAY_DP_TRAINED id=0x100 sor=0 rate=0x14 lanes=4 tu=64 watermark=23
+NVIDIA_DISPLAY_MODESET_SUBMIT head=0 window=0 core_put=139 window_put=60 core_slot=32 window_slot=64
+NVIDIA_DISPLAY_MODESET_COMPLETE head=0 window=0 core_status=0x80000000 window_status=0x40000000 visible=operator-unconfirmed
+```
+
+All four lanes report CR_DONE/CHANNEL_EQ_DONE/SYMBOL_LOCKED and interlane
+alignment. Core FINISHED and window BEGUN establish the interlocked commit,
+not visible pixels or buffer retirement. Operator explicitly reports a black
+screen; monitor recognized DP. **No successful visible-image claim.** Initial
+DPCD/EDID discovery still uses native AUX; post-SOR traffic is exclusively RM.
+Both runs ended via the new script-internal 30s timeout, exit 124, without
+graceful driver STOP/unload. Do not infer safe resource reclamation from that.
+
+### Read-only method shadows and running raster
+
+`work/nvidia-vfio-20261102-041727/serial.log`: same immutable modeset, plus
+read-only assembly/armed method snapshots using the pinned SDK core bases and
+nouveau `gv100_disp_wndw_mthd.prev` (+0x800). All sampled pairs match: raster
+2720x1525, viewport/image 2560x1440, clock 497750000 Hz, SOR0=0x801,
+image DMA=0x2000, offset=0, pitch=160 units of 64 bytes, format=0xcf,
+alpha=255 and factors=0x22; CSC C00=0x10000. ILUT/OLUT handles=0x3000,
+relative offsets=0, controls=0x40508/0x40509, OCSC0/1 both disabled.
+DPCA changed 0x000804ad -> 0x000b04fa over 25 ms: three frames, consistent
+with the preferred ~120 Hz **internal** raster. This does not prove output
+MSA/M/N, stream validity at the sink, or pixel fetch correctness.
+
+Operator reports DP detected, OSD **0 Hz**, then monitor went dark after a few
+seconds. Earlier report of a received signal is not evidence of a recognized
+valid preferred mode; investigate DP stream as well as pixels. QEMU limit is
+now 60s (+3s kill grace), build excluded. This invocation ended with shell
+`Killed`/aborted rather than a normal exit-124 report; a subsequent process
+query found no remaining QEMU/timeout/run-vfio process. The cause/timing of the
+monitor darkening is not established. Native Nix build passed, no unit tests
+run. No retry/reset or active-buffer changes made during the snapshot.
