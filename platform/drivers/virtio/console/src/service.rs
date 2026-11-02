@@ -64,9 +64,7 @@ impl c::ConsoleInterface for Service {
                     .cap::<sel4::cap_type::Notification>(note.as_ref())
                     .map_err(|_| c::ConsoleError::Denied)?;
                 let slot = space.reserve_slot().map_err(|_| c::ConsoleError::Busy)?;
-                let root = sel4::cap::CNode::from_bits(
-                    horn_devmgr::protocol::DEVICE_DRIVER_CAPS_SELF_SLOT as _,
-                );
+                let root = space.root;
                 if slot
                     .copy(
                         &root.absolute_cptr(sel4::CPtr::from_bits(source.bits())),

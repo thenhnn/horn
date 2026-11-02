@@ -11,6 +11,10 @@ use horn_virtio::{BufferDirection, Hal, PhysAddr};
 
 pub struct State {
     pub session: DeviceSession,
+    #[cfg(feature = "lifecycle-test")]
+    supervisor: Cap<Endpoint>,
+    #[cfg(feature = "lifecycle-test")]
+    lifecycle: Cap<Endpoint>,
     #[cfg(feature = "dma-probe")]
     stale: Option<u64>,
     #[cfg(feature = "dma-probe")]
@@ -18,16 +22,18 @@ pub struct State {
     #[cfg(feature = "dma-probe")]
     pub fault_wait: Option<sel4::cap::Notification>,
 }
-pub fn target<T: CapType>(slot: u32) -> Cap<T> {
-    horn_runtime::bootstrap_cap(
-        sel4::cap::CNode::from_bits(DEVICE_DRIVER_CAPS_SELF_SLOT as _),
-        slot,
-    )
-}
 impl State {
-    pub fn new(session: DeviceSession) -> Self {
+    pub fn new(
+        session: DeviceSession,
+        _supervisor: Cap<Endpoint>,
+        _lifecycle: Cap<Endpoint>,
+    ) -> Self {
         Self {
             session,
+            #[cfg(feature = "lifecycle-test")]
+            supervisor: _supervisor,
+            #[cfg(feature = "lifecycle-test")]
+            lifecycle: _lifecycle,
             #[cfg(feature = "dma-probe")]
             stale: None,
             #[cfg(feature = "dma-probe")]
@@ -82,7 +88,7 @@ pub fn probe_for_test() {
         assert!(matches!(
             SupervisorJobClient::new(
                 state.session.transport(),
-                target(DEVICE_DRIVER_CAPS_SUPERVISOR_SLOT)
+                Cap::from_ref(state.supervisor.as_ref())
             )
             .cleanup_done(),
             Err(CallError::Remote(SupervisorError::Denied))
@@ -95,7 +101,7 @@ pub fn stop_for_test(force: bool) {
     with(|state| {
         let mut client = SupervisorRuntimeClient::new(
             state.session.transport(),
-            target(DEVICE_DRIVER_CAPS_SUPERVISOR_SLOT),
+            Cap::from_ref(state.supervisor.as_ref()),
         );
         // READY is asynchronous; request_stop is legal during startup as well.
         assert!(matches!(
@@ -116,7 +122,7 @@ pub fn exit_for_test() -> ! {
     with(|state| {
         let _ = horn_procd::protocol::ProcessLifecycleClient::new(
             state.session.transport(),
-            target(DEVICE_DRIVER_CAPS_LIFECYCLE_SLOT),
+            Cap::from_ref(state.lifecycle.as_ref()),
         )
         .exit(0);
         panic!("exit unexpectedly returned");

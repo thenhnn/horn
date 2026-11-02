@@ -19,42 +19,35 @@ use horn_virtio::{
         },
     },
 };
-const SLOTS: horn_runtime::TaskSlots = horn_runtime::TaskSlots::new(
-    DEVICE_DRIVER_CAPS_FIRST_FREE_SLOT,
-    DEVICE_DRIVER_CAPS_SIZE_BITS,
-);
-horn_runtime::task!(main, vm: horn_runtime::VmBootstrap {
-    cnode: DEVICE_DRIVER_CAPS_SELF_SLOT,
-    factory: DEVICE_DRIVER_CAPS_VM_SLOT,
-    address_space: DEVICE_DRIVER_CAPS_ADDRESS_SPACE_SLOT,
-    slots: SLOTS,
-});
+horn_runtime::task!(main);
 
-fn main() -> ! {
-    let root = sel4::cap::CNode::from_bits(DEVICE_DRIVER_CAPS_SELF_SLOT as _);
-    let transport = horn_runtime::transport(root, SLOTS.application()).expect("driver transport");
+fn main(mut ctx: horn_runtime::Context) -> ! {
+    let transport = ctx.transport().expect("driver transport");
+    let mut inbox = ctx.inbox("devmgr.service").unwrap();
     let session = horn_driver::DeviceSession::new(
         transport,
-        hal::target(DEVICE_DRIVER_CAPS_VM_SLOT),
-        hal::target(DEVICE_DRIVER_CAPS_ADDRESS_SPACE_SLOT),
-        hal::target(DEVICE_DRIVER_CAPS_DEVICE_SLOT),
+        ctx.cap("horn.vm").unwrap(),
+        ctx.cap("horn.address-space").unwrap(),
+        ctx.cap("devmgr.device").unwrap(),
     );
-    hal::install(hal::State::new(session));
+    hal::install(hal::State::new(
+        session,
+        ctx.cap("devmgr.supervisor").unwrap(),
+        ctx.cap("horn.lifecycle").unwrap(),
+    ));
     #[cfg(feature = "dma-probe")]
     hal::with(|state| {
-        let _now = ClockInterfaceClient::new(
-            state.session.transport(),
-            hal::target(DEVICE_DRIVER_CAPS_CLOCK_SLOT),
-        )
-        .now()
-        .expect("named monotonic clock");
+        let _now =
+            ClockInterfaceClient::new(state.session.transport(), ctx.cap("devmgr.clock").unwrap())
+                .now()
+                .expect("named monotonic clock");
         // Kernel-unwrapped caps for devmgr's endpoint are NOT VM capabilities.
-        let wrong_memory = hal::target::<VmMemoryObjectTag>(DEVICE_DRIVER_CAPS_DEVICE_SLOT);
+        let wrong_memory = ctx.cap::<VmMemoryObjectTag>("devmgr.device").unwrap();
         assert!(matches!(
             state.session.control().map(&wrong_memory, 0, 4096, 3),
             Err(CallError::Remote(DeviceError::Denied))
         ));
-        let wrong_space = hal::target::<VmAddressSpaceObjectTag>(DEVICE_DRIVER_CAPS_DEVICE_SLOT);
+        let wrong_space = ctx.cap::<VmAddressSpaceObjectTag>("devmgr.device").unwrap();
         assert!(matches!(
             state.session.control().bar(4, &wrong_space),
             Err(CallError::Remote(DeviceError::Denied))
@@ -76,14 +69,12 @@ fn main() -> ! {
                 .iter()
                 .position(|n| *n >= 4096)
                 .expect("test memory BAR") as u32;
-            let space =
-                hal::target::<VmAddressSpaceObjectTag>(DEVICE_DRIVER_CAPS_ADDRESS_SPACE_SLOT);
+            let space = ctx
+                .cap::<VmAddressSpaceObjectTag>("horn.address-space")
+                .unwrap();
             assert!(matches!(
-                DeviceMmioClient::new(
-                    state.session.transport(),
-                    hal::target(DEVICE_DRIVER_CAPS_DEVICE_SLOT)
-                )
-                .close(),
+                DeviceMmioClient::new(state.session.transport(), ctx.cap("devmgr.device").unwrap())
+                    .close(),
                 Err(CallError::Remote(DeviceError::Denied))
             ));
             // Closing an unopened lease must also retire its server-held memory.
@@ -197,8 +188,8 @@ fn main() -> ! {
         .expect("IOMMU virtio transport");
     hal::with(|state| {
         let notification = state.session.interrupt_on(
-            &hal::target(DEVICE_DRIVER_CAPS_IRQ_SIGNAL_SLOT),
-            hal::target(DEVICE_DRIVER_CAPS_WAKE_SLOT),
+            &ctx.cap("devmgr.irq_signal").unwrap(),
+            ctx.cap("devmgr.wake").unwrap(),
         );
         #[cfg(feature = "dma-probe")]
         {
@@ -215,8 +206,8 @@ fn main() -> ! {
     #[cfg(feature = "lifecycle-test")]
     hal::probe_for_test(); // Must pass before the host sees a readiness banner.
 
-    sel4::debug_println!("Console ready");
-    horn_runtime::notify_ready(DEVICE_DRIVER_CAPS_READY_SLOT);
+    horn_runtime::logging::info!("Console ready");
+    ctx.notify_ready().unwrap();
     #[cfg(feature = "lifecycle-test")]
     match option_env!("HORN_DRIVER_TEST") {
         Some("fault") => unsafe {
@@ -230,21 +221,17 @@ fn main() -> ! {
         }
         _ => {}
     }
-    let endpoint = sel4::cap::Endpoint::from_bits(DEVICE_DRIVER_CAPS_SERVICE_SLOT as _);
-    let reply = sel4::cap::Reply::from_bits(DEVICE_DRIVER_CAPS_REPLY_SLOT as _);
-    let receive = root.absolute_cptr(sel4::CPtr::from_bits(SLOTS.public_receive() as _));
     let mut irq_reported = false;
     loop {
         if let Some(hw) = &mut console {
             pump(hw, &mut service);
         }
         service.notify();
-        sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&receive));
-        let (info, badge) = endpoint.recv(reply);
+        let mut received = inbox.receive();
+        let badge = received.badge();
         if badge & (horn_supervisor::IRQ | horn_supervisor::STOP) != 0
             && badge < horn_console::CLIENT_BADGE
         {
-            receive.delete().unwrap();
             let ignore = cfg!(feature = "lifecycle-test")
                 && option_env!("HORN_DRIVER_TEST") == Some("ignore");
             if badge & horn_supervisor::STOP != 0 && !ignore {
@@ -254,32 +241,27 @@ fn main() -> ! {
                     unsafe {
                         hw.shutdown(|| hal::with(|s| s.session.discard_shared()));
                     }
-                    sel4::debug_println!("Console stopped");
-                    sel4::cap::Notification::from_bits(DEVICE_DRIVER_CAPS_STOPPED_SLOT as _)
-                        .signal();
+                    horn_runtime::logging::info!("Console stopped");
+                    let stopped = ctx.cap::<Notification>("devmgr.stopped").unwrap();
+                    sel4::cap::Notification::from_bits(stopped.as_ref().slot as _).signal();
                 }
             }
             if badge & horn_supervisor::IRQ != 0 && console.is_some() {
                 console.as_mut().unwrap().interrupt().expect("console IRQ");
                 hal::with(|s| s.session.ack_interrupt());
                 if !irq_reported {
-                    sel4::debug_println!("Console interrupt received");
+                    horn_runtime::logging::debug!("Console interrupt received");
                     irq_reported = true;
                 }
             }
             continue;
         }
         if badge != horn_console::CLIENT_BADGE {
-            receive.delete().unwrap();
             continue;
         }
         let request = hal::with(|s| {
-            let mut server =
-                Sel4Server::new(root, endpoint, receive, &mut s.session.transport().space);
-            server.decode_received_dynamic(
-                info,
-                badge,
-                reply,
+            received.decode(
+                &mut s.session.transport().space,
                 c::console_object_request_layout,
                 c::ConsoleObjectRequest::decode,
             )
@@ -290,7 +272,6 @@ fn main() -> ! {
                 c::console_object_reply(reply, &mut s.session.transport().space, &response).unwrap()
             });
         }
-        receive.delete().unwrap();
     }
 }
 fn pump(

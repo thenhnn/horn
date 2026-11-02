@@ -215,6 +215,7 @@ in {
     devmgr.drivers =
       (lib.optional config.devmgr-demo.console {
         name = "virtio-console";
+        abi = 2;
         clock = config.devmgr-demo.dma-probe != "none";
         elf = runtimeElf console "virtio_console";
         ram = 32 * 1024 * 1024;
