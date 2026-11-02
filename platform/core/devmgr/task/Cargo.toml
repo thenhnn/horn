@@ -11,6 +11,7 @@ path = "src/main.rs"
 boot-tests = []
 
 [dependencies]
+libhorn = { path = "../../../libhorn" }
 acpi = { version = "=5.2.0", default-features = false }
 horn-devmgr = { path = ".." }
 horn-registry = { path = "../../registry" }

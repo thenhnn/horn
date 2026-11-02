@@ -9,8 +9,9 @@ logger failures and critical contexts that cannot safely perform RPC.
 | logd | ABI2, shared named-sink factory; no recursive logging grant |
 | timerd | ABI2 and shared logger; user boot-confirmed |
 | HTTP demo, shell | ABI2 and shared logger; user confirmed shell commands and HTTP |
-| netd | ABI2, named caps, Inbox receive cleanup, DHCP logs; deployment builds, awaiting boot confirmation |
-| virtio console/net drivers | Pending: devmgr owns dynamic driver startup, IRQ/stop and DMA cleanup |
+| netd | ABI2, named caps, Inbox receive cleanup, DHCP logs; user boot-confirmed |
+| virtio-net | Dynamic ABI2 context and shared logger; deployment builds, awaiting boot confirmation |
+| virtio-console | Pending source migration; retains ABI1 until converted |
 | devmgr, supervisor | Pending: boot-critical startup and logger dependency ordering |
 | NVIDIA | Pending source migration only; hardware launches remain separately authorized |
 | legacy examples, probe fixtures | Pending inventory and migration |
@@ -21,8 +22,13 @@ root-CNode accessor. Context revoke preserves the existing per-connection
 anchor revocation before deletion. Notification badge conventions, coalescing,
 alarm scheduling and TCP limits are unchanged.
 
-The driver step must update the **launch path**, not merely change task entry
-macros: devmgr currently installs DeviceDriverCaps and starts processes directly.
+The driver step updates the **launch path**, not merely task entry macros.
+Driver configuration explicitly selects ABI1/ABI2 during migration. Devmgr
+installs a sealed named descriptor for ABI2; driver-specific names use the
+`devmgr.` prefix, while runtime names retain `horn.`. Numeric deployment slots
+remain in the launcher, never in converted driver code. Supervisor's owner-only
+log_sink() binds the child's actual process name, not a caller-supplied label.
+Dependency-free logd is activated before handling dynamic prepare requests.
 Do not introduce a boot cycle by synchronously waiting for logd inside devmgr's
 initial driver launch. Preserve IRQ/stop acknowledgement and DMA teardown order.
 

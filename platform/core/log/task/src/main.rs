@@ -12,7 +12,7 @@ const FACTORY: u64 = 16;
 const FIRST_SINK: u64 = 32;
 
 struct Binding {
-    name: List<u8, 32>,
+    name: List<u8, 64>,
     _anchor: Cap<Endpoint>,
 }
 struct Service {
@@ -25,7 +25,7 @@ struct Request<'a> {
     badge: u64,
 }
 impl LogFactory for Request<'_> {
-    fn create_sink(&mut self, name: List<u8, 32>) -> Result<Cap<LogSinkObjectTag>, LogError> {
+    fn create_sink(&mut self, name: List<u8, 64>) -> Result<Cap<LogSinkObjectTag>, LogError> {
         if self.badge != FACTORY {
             return Err(LogError::Denied);
         }

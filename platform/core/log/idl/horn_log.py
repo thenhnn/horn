@@ -44,7 +44,7 @@ class LogSinkObject:
 class LogFactory:
     @method
     def create_sink(
-        self, name: List[U8, 32]
+        self, name: List[U8, 64]
     ) -> Result[Cap[LogSinkObject, Move], LogError]: ...
 
 

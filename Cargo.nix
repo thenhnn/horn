@@ -1212,6 +1212,10 @@ rec {
             features = [ "client" ];
           }
           {
+            name = "libhorn";
+            packageId = "libhorn";
+          }
+          {
             name = "sel4";
             packageId = "sel4";
           }
@@ -1811,6 +1815,10 @@ rec {
           {
             name = "horn-ipc";
             packageId = "horn-ipc";
+          }
+          {
+            name = "horn-log";
+            packageId = "horn-log";
           }
           {
             name = "sel4";

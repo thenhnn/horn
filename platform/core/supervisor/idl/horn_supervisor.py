@@ -18,6 +18,7 @@ from horn_idl import (
     object,
     sel4,
 )
+from horn_log import *
 from horn_process import *
 from horn_registry import *
 from horn_vm import *
@@ -120,6 +121,9 @@ class SupervisorJob:
     def stop_signal(
         self, stop: Cap[sel4.Notification, Borrow]
     ) -> Result[None, SupervisorError]: ...
+
+    @method
+    def log_sink(self) -> Result[Cap[LogSinkObject, Move], SupervisorError]: ...
 
     @method
     def start(self) -> Result[None, SupervisorError]: ...

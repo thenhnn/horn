@@ -15,6 +15,7 @@ const BOOT: Bootstrap = Bootstrap {
     space: d::DEVICE_CAPS_ADDRESS_SPACE_SLOT,
 };
 struct DriverConfig {
+    abi: u8,
     clock: bool,
     name: &'static str,
     rule: horn_devmgr::matching::PciMatch,
@@ -322,6 +323,90 @@ impl Drivers {
         );
         io.space.delete(runtime.as_ref()).unwrap();
         io.space.delete(ready.as_ref()).unwrap();
+        if cfg.abi == 2 {
+            const LOG: u32 = 30;
+            let sink = s::SupervisorJobClient::new(&mut *io, Cap::from_ref(managed.as_ref()))
+                .log_sink()
+                .unwrap();
+            BOOT.install(
+                io,
+                process,
+                LOG,
+                sink,
+                None,
+                Rights(Rights::WRITE.0 | Rights::GRANT_REPLY.0),
+            );
+            io.space.delete(sink.as_ref()).unwrap();
+            let mut entries = alloc::vec![
+                libhorn::startup::Entry {
+                    name: "horn.vm",
+                    selector: slots.vm as u64
+                },
+                libhorn::startup::Entry {
+                    name: "horn.address-space",
+                    selector: slots.address_space as u64
+                },
+                libhorn::startup::Entry {
+                    name: "horn.lifecycle",
+                    selector: slots.lifecycle as u64
+                },
+                libhorn::startup::Entry {
+                    name: "horn.reply",
+                    selector: slots.reply as u64
+                },
+                libhorn::startup::Entry {
+                    name: "horn.ready",
+                    selector: d::DEVICE_DRIVER_CAPS_READY_SLOT as u64
+                },
+                libhorn::startup::Entry {
+                    name: "horn.log",
+                    selector: LOG as u64
+                },
+                libhorn::startup::Entry {
+                    name: "devmgr.device",
+                    selector: d::DEVICE_DRIVER_CAPS_DEVICE_SLOT as u64
+                },
+                libhorn::startup::Entry {
+                    name: "devmgr.service",
+                    selector: d::DEVICE_DRIVER_CAPS_SERVICE_SLOT as u64
+                },
+                libhorn::startup::Entry {
+                    name: "devmgr.wake",
+                    selector: d::DEVICE_DRIVER_CAPS_WAKE_SLOT as u64
+                },
+                libhorn::startup::Entry {
+                    name: "devmgr.irq_signal",
+                    selector: d::DEVICE_DRIVER_CAPS_IRQ_SIGNAL_SLOT as u64
+                },
+                libhorn::startup::Entry {
+                    name: "devmgr.stopped",
+                    selector: d::DEVICE_DRIVER_CAPS_STOPPED_SLOT as u64
+                },
+                libhorn::startup::Entry {
+                    name: "devmgr.supervisor",
+                    selector: d::DEVICE_DRIVER_CAPS_SUPERVISOR_SLOT as u64
+                },
+            ];
+            if cfg.clock {
+                entries.push(libhorn::startup::Entry {
+                    name: "devmgr.clock",
+                    selector: d::DEVICE_DRIVER_CAPS_CLOCK_SLOT as u64,
+                });
+                entries.push(libhorn::startup::Entry {
+                    name: "devmgr.alarm_signal",
+                    selector: d::DEVICE_DRIVER_CAPS_ALARM_SIGNAL_SLOT as u64,
+                });
+            }
+            entries.sort_unstable_by_key(|e| e.name);
+            let size = 8 + entries.iter().map(|e| 16 + e.name.len()).sum::<usize>();
+            let mut bytes = alloc::vec![0; size];
+            libhorn::bindings::encode(&entries, &mut bytes).unwrap();
+            let descriptor = BOOT.upload(io, &bytes);
+            s::ProcessControlClient::new(&mut *io, Cap::from_ref(process.as_ref()))
+                .startup_context(&descriptor, size as u64)
+                .unwrap();
+            close_image(io, descriptor);
+        }
         s::SupervisorJobClient::new(&mut *io, Cap::from_ref(managed.as_ref()))
             .start()
             .unwrap();

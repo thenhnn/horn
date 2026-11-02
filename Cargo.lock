@@ -283,6 +283,7 @@ dependencies = [
  "horn-registry",
  "horn-runtime",
  "horn-supervisor",
+ "libhorn",
  "sel4",
 ]
 
@@ -465,6 +466,7 @@ version = "0.1.0"
 dependencies = [
  "horn-idl-build",
  "horn-ipc",
+ "horn-log",
  "sel4",
 ]
 

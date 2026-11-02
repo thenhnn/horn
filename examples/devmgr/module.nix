@@ -20,6 +20,7 @@
         else "Some(${toString v})";
     in ''
       DriverConfig {
+        abi: ${toString d.abi},
         clock: ${lib.boolToString d.clock},
         name: ${builtins.toJSON d.name},
         ram: ${toString d.ram},
@@ -122,6 +123,7 @@ in {
     type = lib.types.listOf (lib.types.submodule {
       options = {
         name = lib.mkOption {type = lib.types.str;};
+        abi = lib.mkOption { type = lib.types.enum [1 2]; default = 1; };
         clock = lib.mkOption {
           type = lib.types.bool;
           default = false;
@@ -228,6 +230,7 @@ in {
       })
       ++ (lib.optional config.devmgr-demo.net {
         name = "virtio-net";
+        abi = 2;
         elf = runtimeElf childWorkspace.members.horn-virtio-net "virtio_net";
         ram = 32 * 1024 * 1024;
         pci = {

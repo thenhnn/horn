@@ -429,6 +429,40 @@ impl SupervisorJob for Caller<'_> {
         self.manager.jobs[i].stop = Some(self.retain(stop)?);
         Ok(())
     }
+    fn log_sink(&mut self) -> Result<Cap<LogSinkObjectTag>, SupervisorError> {
+        let i = self.owner()?;
+        if self.manager.jobs[i].lifecycle.state != ServiceStatus::Created {
+            return Err(SupervisorError::Busy);
+        }
+        let node = self
+            .manager
+            .namespace
+            .tree
+            .resolve(0, "services/log")
+            .map_err(|_| SupervisorError::Busy)?;
+        if !self.manager.namespace.is_hidden(node) {
+            return Err(SupervisorError::Denied);
+        }
+        let factory = *self
+            .manager
+            .namespace
+            .tree
+            .value(node)
+            .ok_or(SupervisorError::Busy)?;
+        let name = self
+            .manager
+            .process(i)
+            .info()
+            .map_err(|_| SupervisorError::Invalid)?
+            .name;
+        horn_log::protocol::LogFactoryClient::new(
+            &mut self.manager.io,
+            Cap::from_ref(factory.as_ref()),
+        )
+        .create_sink(name)
+        .map(|cap| Cap::from_ref(cap.as_ref()))
+        .map_err(|_| SupervisorError::Busy)
+    }
     fn start(&mut self) -> Result<(), SupervisorError> {
         let i = self.owner()?;
         if self.manager.jobs[i].owner.is_none() {
@@ -537,6 +571,9 @@ fn main() -> ! {
         wait_logged: [false; 8],
     };
     boot::start(&mut manager);
+    // Start dependency-free services (notably logd) before accepting dynamic
+    // driver prepare requests from devmgr. No wait for devmgr readiness.
+    manager.activate();
     let endpoint = sel4::cap::Endpoint::from_bits(SUPERVISOR_CAPS_SERVICE_SLOT as _);
     let reply = sel4::cap::Reply::from_bits(SUPERVISOR_CAPS_REPLY_SLOT as _);
     let receive = root().absolute_cptr(sel4::CPtr::from_bits(SLOTS.public_receive() as _));
