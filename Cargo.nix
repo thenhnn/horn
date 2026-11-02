@@ -343,6 +343,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "libhorn" = rec {
+      packageId = "libhorn";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "libhorn";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "rtl-compiler" = rec {
       packageId = "rtl-compiler";
       build = internal.buildRustCrateWithFeatures {
@@ -2118,6 +2128,13 @@ rec {
           "use_std" = [ "std" ];
         };
         resolvedDefaultFeatures = [ "default" "std" ];
+      };
+      "libhorn" = rec {
+        crateName = "libhorn";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/libhorn; };
+
       };
       "libloading" = rec {
         crateName = "libloading";

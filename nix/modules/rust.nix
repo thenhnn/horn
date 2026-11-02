@@ -2,8 +2,17 @@
   config,
   lib,
   ...
-}: {
+}:
+{
   options.rust = {
+    libhornHeaders = lib.mkOption {
+      type = lib.types.package;
+      readOnly = true;
+      description = "libhorn C startup header generated and compile-checked on the build host.";
+      default = import ../../platform/libhorn {
+        pkgs = config.nixpkgs.pkgs.pkgsBuildBuild;
+      };
+    };
     release = lib.mkOption {
       type = lib.types.bool;
       default = false;
