@@ -5,17 +5,10 @@ extern crate alloc;
 use alloc::vec::Vec;
 use horn_ipc::*;
 use horn_net::protocol::*;
-const SLOTS: TaskSlots = TaskSlots::new(HTTP_CAPS_FIRST_FREE_SLOT, HTTP_CAPS_SIZE_BITS);
-horn_runtime::task!(main,vm:horn_runtime::VmBootstrap{cnode:HTTP_CAPS_SELF_SLOT,factory:HTTP_CAPS_VM_SLOT,address_space:HTTP_CAPS_ADDRESS_SPACE_SLOT,slots:SLOTS});
+horn_runtime::task!(main);
 type Io = Sel4Transport<Sel4CapSpace>;
 const MAX_CONNECTIONS: usize = 32;
 const RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 17\r\nConnection: close\r\n\r\nHello from Horn!\n";
-fn root() -> sel4::cap::CNode {
-    sel4::cap::CNode::from_bits(HTTP_CAPS_SELF_SLOT as _)
-}
-fn cap<T: CapType>(slot: u32) -> Cap<T> {
-    horn_runtime::bootstrap_cap(root(), slot)
-}
 enum Phase {
     Headers(usize),
     Response(usize),
@@ -27,7 +20,7 @@ struct Connection {
     phase: Phase,
 }
 impl Connection {
-    fn poll(&mut self, io: &mut Io) {
+    fn poll(&mut self, io: &mut Io, signal: Cap<Notification>) {
         // Bound RPC work per connection per turn. A partial request or
         // backpressured writer arms its own hint, never waits here.
         let mut budget = 8;
@@ -39,10 +32,7 @@ impl Connection {
                     Phase::Done => return,
                 };
                 TcpConnectionClient::new(io, Cap::from_ref(self.tcp.as_ref()))
-                    .watch(
-                        &cap(HTTP_CAPS_SIGNAL_SLOT),
-                        TcpEvents(events | TcpEvents::CLOSED.0),
-                    )
+                    .watch(&signal, TcpEvents(events | TcpEvents::CLOSED.0))
                     .unwrap();
                 return;
             }
@@ -105,10 +95,7 @@ impl Connection {
                 Phase::Done => return,
             };
             TcpConnectionClient::new(io, Cap::from_ref(self.tcp.as_ref()))
-                .watch(
-                    &cap(HTTP_CAPS_SIGNAL_SLOT),
-                    TcpEvents(interest | TcpEvents::CLOSED.0),
-                )
+                .watch(&signal, TcpEvents(interest | TcpEvents::CLOSED.0))
                 .unwrap();
             return;
         }
@@ -120,14 +107,15 @@ impl Connection {
         io.space.delete(self.tcp.as_ref()).unwrap();
     }
 }
-fn main() -> ! {
-    let mut io = horn_runtime::transport(root(), SLOTS.application()).unwrap();
-    let listener = TcpFactoryClient::new(&mut io, cap(HTTP_CAPS_TCP_SLOT))
+fn main(mut ctx: horn_runtime::Context) -> ! {
+    let mut io = ctx.transport().unwrap();
+    let signal = ctx.cap::<Notification>("signal").unwrap();
+    let listener = TcpFactoryClient::new(&mut io, ctx.cap("tcp").unwrap())
         .listen(80)
         .unwrap();
     let mut connections = Vec::<Connection>::new();
-    sel4::debug_println!("HTTP_DEMO_READY tcp_port=80 event_loop=true");
-    horn_runtime::notify_ready(HTTP_CAPS_READY_SLOT);
+    horn_runtime::logging::info!("listening on TCP port 80");
+    ctx.notify_ready().unwrap();
     loop {
         while connections.len() < MAX_CONNECTIONS {
             connections
@@ -145,7 +133,7 @@ fn main() -> ! {
         }
         let mut i = 0;
         while i < connections.len() {
-            connections[i].poll(&mut io);
+            connections[i].poll(&mut io, signal);
             if matches!(connections[i].phase, Phase::Done) {
                 connections.swap_remove(i).close(&mut io);
             } else {
@@ -154,11 +142,11 @@ fn main() -> ! {
         }
         if connections.len() < MAX_CONNECTIONS {
             TcpServerClient::new(&mut io, Cap::from_ref(listener.as_ref()))
-                .watch(&cap(HTTP_CAPS_SIGNAL_SLOT), TcpEvents::ACCEPT)
+                .watch(&signal, TcpEvents::ACCEPT)
                 .unwrap();
         }
         // All active streams were driven to WouldBlock and armed. Notifications
         // coalesce; re-scan conditions after waking instead of trusting a token.
-        sel4::cap::Notification::from_bits(HTTP_CAPS_EVENTS_SLOT as _).wait();
+        ctx.wait("events").unwrap();
     }
 }

@@ -1,5 +1,5 @@
 //! Bounded packet IPC adapter. smoltcp sees Ethernet, never device/DMA authority.
-use crate::{Io, cap};
+use crate::Io;
 use alloc::{collections::VecDeque, vec, vec::Vec};
 use horn_ipc::*;
 use horn_net::protocol::*;
@@ -8,14 +8,16 @@ use smoltcp::{
     time::Instant,
 };
 pub struct Device {
+    endpoint: Cap<EthernetInterfaceTag>,
     rx: VecDeque<Vec<u8>>,
     tx: VecDeque<Vec<u8>>,
     pub generation: u64,
     more_rx: bool,
 }
 impl Device {
-    pub fn new() -> Self {
+    pub fn new(endpoint: Cap<EthernetInterfaceTag>) -> Self {
         Self {
+            endpoint,
             rx: VecDeque::new(),
             tx: VecDeque::new(),
             generation: 0,
@@ -29,7 +31,7 @@ impl Device {
         !self.tx.is_empty()
     }
     pub fn receive_rpc(&mut self, io: &mut Io) {
-        let mut ethernet = EthernetInterfaceClient::new(&mut *io, cap(NETD_CAPS_ETHERNET_SLOT));
+        let mut ethernet = EthernetInterfaceClient::new(&mut *io, self.endpoint);
         self.generation = ethernet.info().unwrap().generation;
         self.more_rx = true; // A full work budget does not prove the driver queue is empty.
         for _ in 0..8 {
@@ -60,7 +62,7 @@ impl Device {
         }
     }
     pub fn transmit_rpc(&mut self, io: &mut Io) {
-        let mut ethernet = EthernetInterfaceClient::new(io, cap(NETD_CAPS_ETHERNET_SLOT));
+        let mut ethernet = EthernetInterfaceClient::new(io, self.endpoint);
         while let Some(packet) = self.tx.front() {
             match ethernet.begin(packet.len() as u32) {
                 Ok(()) => {}

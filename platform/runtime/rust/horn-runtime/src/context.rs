@@ -126,6 +126,18 @@ impl Context {
             sel4::cap::Unspecified::from_bits(slot.path().bits()),
         )?))
     }
+    /// Revoke descendants of a locally held anchor without deleting the anchor.
+    pub fn revoke<T: CapType>(&self, anchor: Cap<T>) -> Result<(), RpcError> {
+        if anchor.as_ref().cnode != self.root.bits() as u64
+            || anchor.as_ref().depth != sel4::WORD_SIZE as u8
+        {
+            return Err(RpcError::NotLocal);
+        }
+        self.root
+            .absolute_cptr(sel4::CPtr::from_bits(anchor.as_ref().slot as _))
+            .revoke()
+            .map_err(|_| RpcError::Transport)
+    }
     pub fn inbox(&mut self, name: &str) -> Result<Inbox, Error> {
         if !self.inbox_available {
             return Err(Error::Invalid);

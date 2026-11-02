@@ -68,9 +68,9 @@ def test_http_event_loop_and_growing_pool(system, cpus):
         ),
     )
     vm.start()
-    vm.serial.wait_for("HTTP_DEMO_READY", timeout=30)
+    vm.serial.wait_for("listening on TCP port 80", timeout=30)
     exercise_http(port)
     log = vm.serial.path.read_text()
     assert "panicked" not in log and "VTD_FAULT source=" not in log, log
     if cpus > 1:
-        assert "fast_tsc=false" in log, log
+        assert "hardware clock (via IPC)" in log, log

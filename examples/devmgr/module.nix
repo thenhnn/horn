@@ -362,8 +362,8 @@ in {
       };
       netd = lib.mkIf config.devmgr-demo.net {
         elf = runtimeElf childWorkspace.members.horn-netd "netd";
-        bootstrap = bootstrap "horn_net";
-        capset = "NetdCaps";
+        abi = 2;
+        logging = "/services/log";
         ram = 32 * 1024 * 1024;
         requires = {
           ethernet = {
@@ -404,8 +404,8 @@ in {
       };
       http-demo = lib.mkIf config.devmgr-demo.net {
         elf = runtimeElf childWorkspace.members.horn-http-demo "http_demo";
-        bootstrap = bootstrap "horn_net";
-        capset = "HttpCaps";
+        abi = 2;
+        logging = "/services/log";
         ram = 8 * 1024 * 1024;
         requires.tcp = {path = "/services/net/tcp";};
         objects.events = {
@@ -418,8 +418,8 @@ in {
       };
       horn-shell = lib.mkIf config.devmgr-demo.shell {
         elf = runtimeElf childWorkspace.members.horn-shell "shell";
-        bootstrap = bootstrap "horn_shell";
-        capset = "ShellCaps";
+        abi = 2;
+        logging = "/services/log";
         ram = 8 * 1024 * 1024;
         requires = {
           console = {

@@ -1,9 +1,10 @@
 //! On-demand TCP storage, bounded accept queues and capability-selected streams.
 //! Closing sockets retain buffers, not application handles, until TCP teardown.
-use crate::{Io, cap, root};
+use crate::Io;
 use alloc::vec::Vec;
 use horn_ipc::*;
 use horn_net::protocol::*;
+use horn_runtime::Context;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
     socket::tcp,
@@ -55,6 +56,7 @@ impl Watch {
     }
     fn arm(
         &mut self,
+        ctx: &Context,
         io: &mut Io,
         signal: Cap<Notification>,
         interests: u32,
@@ -62,7 +64,7 @@ impl Watch {
         if signal.as_ref().unwrapped_badge().is_some() {
             return Err(NetError::Denied);
         }
-        let next = horn_supervisor::client::copy(io, root(), signal);
+        let next = ctx.copy(io, signal).map_err(|_| NetError::Exhausted)?;
         if let Some(old) = self.note.replace(next) {
             io.space.delete(old.as_ref()).unwrap();
         }
@@ -107,6 +109,7 @@ struct Server {
     _anchor: Cap<Endpoint>,
 }
 pub struct Service {
+    pub ctx: Context,
     pub sockets: SocketSet<'static>,
     pub io: Io,
     servers: Vec<Server>,
@@ -117,8 +120,9 @@ pub struct Service {
     next_badge: u64,
 }
 impl Service {
-    pub fn new(io: Io, sockets: SocketSet<'static>) -> Self {
+    pub fn new(ctx: Context, io: Io, sockets: SocketSet<'static>) -> Self {
         Self {
+            ctx,
             sockets,
             io,
             servers: Vec::new(),
@@ -234,14 +238,16 @@ impl Service {
             .ok_or(NetError::Denied)
     }
     fn endpoint(&mut self, badge: u64) -> (Cap<Endpoint>, Cap<Endpoint>) {
-        let anchor = horn_supervisor::client::mint(
-            &mut self.io,
-            root(),
-            cap::<Endpoint>(NETD_CAPS_SERVICE_SLOT),
-            badge,
-            Rights(Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0),
-        );
-        let exported = horn_supervisor::client::copy(&mut self.io, root(), anchor);
+        let anchor = self
+            .ctx
+            .mint(
+                &mut self.io,
+                self.ctx.cap::<Endpoint>("service").unwrap(),
+                badge,
+                Rights(Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0),
+            )
+            .unwrap();
+        let exported = self.ctx.copy(&mut self.io, anchor).unwrap();
         (anchor, exported)
     }
 }
@@ -332,9 +338,12 @@ impl TcpServer for Caller<'_> {
         if interests.0 != TcpEvents::ACCEPT.0 {
             return Err(NetError::Invalid);
         }
-        self.service.servers[i]
-            .watch
-            .arm(&mut self.service.io, signal, interests.0)
+        self.service.servers[i].watch.arm(
+            &self.service.ctx,
+            &mut self.service.io,
+            signal,
+            interests.0,
+        )
     }
 }
 impl TcpConnection for Caller<'_> {
@@ -378,10 +387,7 @@ impl TcpConnection for Caller<'_> {
             .close();
         self.service.connections -= 1;
         connection.watch.release(&mut self.service.io);
-        root()
-            .absolute_cptr(sel4::CPtr::from_bits(connection.anchor.as_ref().slot as _))
-            .revoke()
-            .unwrap();
+        self.service.ctx.revoke(connection.anchor).unwrap();
         self.service
             .io
             .space
@@ -402,6 +408,6 @@ impl TcpConnection for Caller<'_> {
         };
         connection
             .watch
-            .arm(&mut self.service.io, signal, interests.0)
+            .arm(&self.service.ctx, &mut self.service.io, signal, interests.0)
     }
 }

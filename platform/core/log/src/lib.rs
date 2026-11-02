@@ -138,7 +138,7 @@ pub fn render(out: &mut impl Write, process: &str, record: &LogRecord) -> Result
         }
         writeln!(
             out,
-            "{} {}  {}",
+            "{} {} {}",
             Escaped(process).cyan().bold(),
             Escaped(target).dimmed(),
             Escaped(message)

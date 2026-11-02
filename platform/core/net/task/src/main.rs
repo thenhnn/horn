@@ -15,39 +15,35 @@ use smoltcp::{
     time::Instant,
     wire::{EthernetAddress, IpCidr},
 };
-const SLOTS: TaskSlots = TaskSlots::new(NETD_CAPS_FIRST_FREE_SLOT, NETD_CAPS_SIZE_BITS);
-horn_runtime::task!(main,vm:horn_runtime::VmBootstrap{cnode:NETD_CAPS_SELF_SLOT,factory:NETD_CAPS_VM_SLOT,address_space:NETD_CAPS_ADDRESS_SPACE_SLOT,slots:SLOTS});
+horn_runtime::task!(main);
 type Io = Sel4Transport<Sel4CapSpace>;
-fn root() -> sel4::cap::CNode {
-    sel4::cap::CNode::from_bits(NETD_CAPS_SELF_SLOT as _)
-}
-fn cap<T: CapType>(slot: u32) -> Cap<T> {
-    horn_runtime::bootstrap_cap(root(), slot)
-}
 struct Time {
     page: *const DefaultTimePage,
+    clock: Cap<c::ClockInterfaceTag>,
     _memory: Cap<v::VmMemoryObjectTag>,
     _region: Cap<v::VmRegionObjectTag>,
 }
 impl Time {
-    fn new(io: &mut Io) -> Self {
+    fn new(io: &mut Io, ctx: &horn_runtime::Context) -> Self {
+        let clock = ctx.cap("clock").unwrap();
         let page = DefaultTimePage::from(
-            c::ClockInterfaceClient::new(&mut *io, cap(NETD_CAPS_CLOCK_SLOT))
+            c::ClockInterfaceClient::new(&mut *io, clock)
                 .calibration()
                 .unwrap(),
         );
-        let memory = v::VmFactoryClient::new(&mut *io, cap(NETD_CAPS_VM_SLOT))
+        let memory = v::VmFactoryClient::new(&mut *io, ctx.cap("horn.vm").unwrap())
             .allocate(4096, v::VmBacking::Resident, v::VmProtection(3))
             .unwrap();
-        let writable = v::VmAddressSpaceClient::new(&mut *io, cap(NETD_CAPS_ADDRESS_SPACE_SLOT))
-            .reserve(v::VmRegionRequest {
-                address: 0,
-                length: 4096,
-                alignment: 4096,
-                placement: v::VmPlacement::Anywhere,
-                ceiling: v::VmProtection(3),
-            })
-            .unwrap();
+        let writable =
+            v::VmAddressSpaceClient::new(&mut *io, ctx.cap("horn.address-space").unwrap())
+                .reserve(v::VmRegionRequest {
+                    address: 0,
+                    length: 4096,
+                    alignment: 4096,
+                    placement: v::VmPlacement::Anywhere,
+                    ceiling: v::VmProtection(3),
+                })
+                .unwrap();
         let address = v::VmRegionClient::new(&mut *io, Cap::from_ref(writable.as_ref()))
             .info()
             .unwrap()
@@ -80,7 +76,7 @@ impl Time {
         v::VmMemoryClient::new(&mut *io, Cap::from_ref(memory.as_ref()))
             .add_seals(v::VmSeals(15))
             .unwrap();
-        let region = v::VmAddressSpaceClient::new(&mut *io, cap(NETD_CAPS_ADDRESS_SPACE_SLOT))
+        let region = v::VmAddressSpaceClient::new(&mut *io, ctx.cap("horn.address-space").unwrap())
             .reserve(v::VmRegionRequest {
                 address: 0,
                 length: 4096,
@@ -113,30 +109,32 @@ impl Time {
             .unwrap();
         Self {
             page: address as *const DefaultTimePage,
+            clock,
             _memory: memory,
             _region: region,
         }
     }
     fn now(&self, io: &mut Io) -> u64 {
-        DefaultTimeManager::now(unsafe { &*self.page }).unwrap_or_else(|| {
-            c::ClockInterfaceClient::new(io, cap(NETD_CAPS_CLOCK_SLOT))
-                .now()
-                .unwrap()
-        })
+        DefaultTimeManager::now(unsafe { &*self.page })
+            .unwrap_or_else(|| c::ClockInterfaceClient::new(io, self.clock).now().unwrap())
     }
 }
-fn main() -> ! {
-    let mut io = horn_runtime::transport(root(), SLOTS.application()).unwrap();
-    let time = Time::new(&mut io);
-    let alarm = c::ClockInterfaceClient::new(&mut io, cap(NETD_CAPS_CLOCK_SLOT))
+fn main(mut ctx: horn_runtime::Context) -> ! {
+    let mut io = ctx.transport().unwrap();
+    let mut inbox = ctx.inbox("service").unwrap();
+    let ethernet = ctx.cap("ethernet").unwrap();
+    let ethernet_signal = ctx.cap::<Notification>("ethernet_signal").unwrap();
+    let timer_signal = ctx.cap("timer_signal").unwrap();
+    let time = Time::new(&mut io, &ctx);
+    let alarm = c::ClockInterfaceClient::new(&mut io, ctx.cap("clock").unwrap())
         .alarm()
         .unwrap();
     let mut armed = None;
-    let info = EthernetInterfaceClient::new(&mut io, cap(NETD_CAPS_ETHERNET_SLOT))
+    let info = EthernetInterfaceClient::new(&mut io, ethernet)
         .info()
         .unwrap();
     assert!(info.mac.len == 6 && info.mtu == 1500);
-    let mut device = ethernet::Device::new();
+    let mut device = ethernet::Device::new(ethernet);
     let mut config = Config::new(EthernetAddress(info.mac.data).into());
     config.random_seed = time.now(&mut io)
         ^ u64::from_le_bytes([
@@ -156,11 +154,8 @@ fn main() -> ! {
     );
     let mut sockets = SocketSet::new(vec![]);
     let dhcp = sockets.add(dhcpv4::Socket::new());
-    let mut service = tcp::Service::new(io, sockets);
+    let mut service = tcp::Service::new(ctx, io, sockets);
     let mut ready = false;
-    let endpoint = sel4::cap::Endpoint::from_bits(NETD_CAPS_SERVICE_SLOT as _);
-    let reply = sel4::cap::Reply::from_bits(NETD_CAPS_REPLY_SLOT as _);
-    let receive = root().absolute_cptr(sel4::CPtr::from_bits(SLOTS.public_receive() as _));
     loop {
         device.receive_rpc(&mut service.io);
         let now = time.now(&mut service.io);
@@ -187,16 +182,16 @@ fn main() -> ! {
                 if let Some(router) = config.router {
                     iface.routes_mut().add_default_ipv4_route(router).unwrap();
                 }
-                sel4::debug_println!("NETD_IPV4 address={} source=dhcp", config.address);
+                horn_runtime::logging::info!("DHCP assigned {}", config.address);
                 if !ready {
                     ready = true;
-                    horn_runtime::notify_ready(NETD_CAPS_READY_SLOT);
+                    service.ctx.notify_ready().unwrap();
                 }
             }
             Some(dhcpv4::Event::Deconfigured) => {
                 iface.update_ip_addrs(|a| a.clear());
                 iface.routes_mut().remove_default_ipv4_route();
-                sel4::debug_println!("NETD_IPV4 deconfigured");
+                horn_runtime::logging::warn!("DHCP configuration lost");
             }
             None => {}
         }
@@ -207,10 +202,10 @@ fn main() -> ! {
         // needs a new device IRQ. A bounded-work hint drains them, and stops
         // once WouldBlock is observed or the local queues cannot make progress.
         if device.local_work() {
-            sel4::cap::Notification::from_bits(NETD_CAPS_ETHERNET_SIGNAL_SLOT as _).signal();
+            sel4::cap::Notification::from_bits(ethernet_signal.as_ref().slot as _).signal();
         }
-        EthernetInterfaceClient::new(&mut service.io, cap(NETD_CAPS_ETHERNET_SLOT))
-            .watch(&cap(NETD_CAPS_ETHERNET_SIGNAL_SLOT), device.generation)
+        EthernetInterfaceClient::new(&mut service.io, ethernet)
+            .watch(&ethernet_signal, device.generation)
             .unwrap();
         let deadline = iface.poll_delay(timestamp, &service.sockets).and_then(|d| {
             if d.total_micros() == 0 && device.pending_tx() {
@@ -223,31 +218,25 @@ fn main() -> ! {
             let mut timer =
                 c::AlarmInterfaceClient::new(&mut service.io, Cap::from_ref(alarm.as_ref()));
             if let Some(d) = deadline {
-                timer.arm(d, &cap(NETD_CAPS_TIMER_SIGNAL_SLOT)).unwrap();
+                timer.arm(d, &timer_signal).unwrap();
             } else {
                 timer.cancel().unwrap();
             }
             armed = deadline;
         }
-        sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&receive));
-        let (info, badge) = endpoint.recv(reply);
+        let mut received = inbox.receive();
+        let badge = received.badge();
         if badge < 16 && badge & 3 != 0 {
             if badge & 2 != 0 {
                 armed = None;
             }
-            receive.delete().unwrap();
             continue;
         }
-        let request = {
-            let mut server = Sel4Server::new(root(), endpoint, receive, &mut service.io.space);
-            server.decode_received_dynamic(
-                info,
-                badge,
-                reply,
-                tcp_host_request_layout,
-                TcpHostRequest::decode,
-            )
-        };
+        let request = received.decode(
+            &mut service.io.space,
+            tcp_host_request_layout,
+            TcpHostRequest::decode,
+        );
         if let Ok((_, request, reply)) = request {
             let response = tcp_host_dispatch(
                 request,
@@ -258,6 +247,5 @@ fn main() -> ! {
             );
             tcp_host_reply(reply, &mut service.io.space, &response).unwrap();
         }
-        receive.delete().unwrap();
     }
 }

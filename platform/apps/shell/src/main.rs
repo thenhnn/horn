@@ -7,21 +7,11 @@ use horn_console::protocol as c;
 use horn_devmgr::protocol as d;
 use horn_ipc::*;
 use horn_procd::protocol as p;
-use horn_shell::protocol as a;
 use owo_colors::OwoColorize;
 
-const SLOTS: TaskSlots = TaskSlots::new(a::SHELL_CAPS_FIRST_FREE_SLOT, a::SHELL_CAPS_SIZE_BITS);
-horn_runtime::task!(main,vm:horn_runtime::VmBootstrap{
-    cnode:a::SHELL_CAPS_SELF_SLOT,factory:a::SHELL_CAPS_VM_SLOT,
-    address_space:a::SHELL_CAPS_ADDRESS_SPACE_SLOT,slots:SLOTS,
-});
-fn cap<T: CapType>(slot: u32) -> Cap<T> {
-    horn_runtime::bootstrap_cap(
-        sel4::cap::CNode::from_bits(a::SHELL_CAPS_SELF_SLOT as _),
-        slot,
-    )
-}
+horn_runtime::task!(main);
 struct Shell {
+    ctx: horn_runtime::Context,
     io: Sel4Transport<Sel4CapSpace>,
     output: [u8; 256],
     output_len: usize,
@@ -29,7 +19,7 @@ struct Shell {
 impl Shell {
     fn wait(&mut self, events: c::ConsoleEvents) {
         let mut client =
-            c::ConsoleInterfaceClient::new(&mut self.io, cap(a::SHELL_CAPS_CONSOLE_SLOT));
+            c::ConsoleInterfaceClient::new(&mut self.io, self.ctx.cap("console").unwrap());
         let status = client.status().expect("console status");
         assert_eq!(
             status.events.0 & c::ConsoleEvents::CLOSED.0,
@@ -38,12 +28,12 @@ impl Shell {
         );
         client
             .watch(
-                Some(cap(a::SHELL_CAPS_SIGNAL_SLOT)),
+                Some(self.ctx.cap("signal").unwrap()),
                 events,
                 status.size_generation,
             )
             .expect("console watch");
-        sel4::cap::Notification::from_bits(a::SHELL_CAPS_EVENTS_SLOT as _).wait();
+        self.ctx.wait("events").unwrap();
     }
     fn bytes(&mut self, mut data: &[u8]) {
         while !data.is_empty() {
@@ -67,7 +57,7 @@ impl Shell {
             let mut bytes = List::default();
             bytes.len = count as _;
             bytes.data[..count].copy_from_slice(&self.output[offset..self.output_len]);
-            match c::ConsoleInterfaceClient::new(&mut self.io, cap(a::SHELL_CAPS_CONSOLE_SLOT))
+            match c::ConsoleInterfaceClient::new(&mut self.io, self.ctx.cap("console").unwrap())
                 .write(bytes)
             {
                 Ok(n) => {
@@ -87,7 +77,7 @@ impl Shell {
         // not recursively flush the same pending buffer.
         self.flush();
         loop {
-            match c::ConsoleInterfaceClient::new(&mut self.io, cap(a::SHELL_CAPS_CONSOLE_SLOT))
+            match c::ConsoleInterfaceClient::new(&mut self.io, self.ctx.cap("console").unwrap())
                 .read(256)
             {
                 Ok(bytes) => return bytes,
@@ -105,17 +95,17 @@ impl Shell {
             "help"=>self.bytes(b"help  show commands\r\npci   list PCIe devices\r\nps    list supervised processes\r\nregistry  list published endpoints\r\nconsoles  list consoles\r\n"),
             "pci"=>self.pci(),
             "ps"=>self.processes(),
-            "registry"=>self.namespace(a::SHELL_CAPS_REGISTRY_SLOT,"/"),
-            "consoles"=>self.namespace(a::SHELL_CAPS_CONSOLES_SLOT,"/consoles/"),
+            "registry"=>self.namespace("registry","/"),
+            "consoles"=>self.namespace("consoles","/consoles/"),
             _=>self.bytes(b"unknown command; try help\r\n"),
         }
     }
-    fn namespace(&mut self, slot: u32, prefix: &str) {
+    fn namespace(&mut self, name: &str, prefix: &str) {
         let mut cursor = 0;
         loop {
             let page = match horn_registry::protocol::RegistryDirectoryClient::new(
                 &mut self.io,
-                cap(slot),
+                self.ctx.cap(name).unwrap(),
             )
             .list(cursor, true)
             {
@@ -152,15 +142,16 @@ impl Shell {
         self.bytes(b"BDF          VENDOR:DEVICE CLASS\r\n");
         let mut cursor = 0;
         loop {
-            let page = match d::DeviceObserverClient::new(&mut self.io, cap(a::SHELL_CAPS_PCI_SLOT))
-                .list(cursor)
-            {
-                Ok(page) => page,
-                Err(error) => {
-                    writeln!(self, "PCI observer: {:?}\r", error).unwrap();
-                    return;
-                }
-            };
+            let page =
+                match d::DeviceObserverClient::new(&mut self.io, self.ctx.cap("pci").unwrap())
+                    .list(cursor)
+                {
+                    Ok(page) => page,
+                    Err(error) => {
+                        writeln!(self, "PCI observer: {:?}\r", error).unwrap();
+                        return;
+                    }
+                };
             for device in &page.entries.data[..page.entries.len as usize] {
                 let bdf = device.address;
                 write!(
@@ -192,7 +183,7 @@ impl Shell {
         loop {
             let page = match p::ProcessObserverClient::new(
                 &mut self.io,
-                cap(a::SHELL_CAPS_PROCESSES_SLOT),
+                self.ctx.cap("processes").unwrap(),
             )
             .list(cursor)
             {
@@ -233,17 +224,18 @@ impl Write for Shell {
         Ok(())
     }
 }
-fn main() -> ! {
-    let root = sel4::cap::CNode::from_bits(a::SHELL_CAPS_SELF_SLOT as _);
+fn main(mut ctx: horn_runtime::Context) -> ! {
     let mut shell = Shell {
-        io: horn_runtime::transport(root, SLOTS.application()).unwrap(),
+        io: ctx.transport().unwrap(),
+        ctx,
         output: [0; 256],
         output_len: 0,
     };
     write!(shell, "{}", "Horn development shell\r\n".blue());
     shell.bytes(b"$ ");
     shell.flush();
-    horn_runtime::notify_ready(a::SHELL_CAPS_READY_SLOT);
+    horn_runtime::logging::info!("ready");
+    shell.ctx.notify_ready().unwrap();
     let mut line = [0u8; 256];
     let mut length = 0;
     let mut overflow = false;
