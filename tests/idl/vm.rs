@@ -168,9 +168,10 @@ mod tests {
 
     #[test]
     fn unsupported_is_an_application_error_and_batch_errors_keep_progress() {
-        let mut client = VmFactoryClient::new(Unsupported, Cap::default());
+        let receiver = VmFactoryReceiver::from_cap(Cap::default());
+        let mut io = Unsupported;
         assert_eq!(
-            client.create_address_space(),
+            receiver.create_address_space(&mut io),
             Err(CallError::Remote(VmError::Unsupported))
         );
         round(

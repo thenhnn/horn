@@ -312,22 +312,24 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
     let target =
         Cap::<CounterTag>::from_ref(space.register(counter).unwrap().with_mode(CapMode::COPY));
     let recv = space.reserve_slot().unwrap();
-    let transport = Sel4Transport::new(root, recv, space);
-    let mut client = CounterClient::new(transport, target);
-    assert!(matches!(client.add(0).unwrap().state, CounterState::Empty));
-    let value = client.add(41).unwrap();
+    let mut transport = Sel4Transport::new(root, recv, space);
+    let client = CounterReceiver::from_cap(target);
+    assert!(matches!(
+        client.add(&mut transport, 0).unwrap().state,
+        CounterState::Empty
+    ));
+    let value = client.add(&mut transport, 41).unwrap();
     let CounterState::Ready(signal) = value.state else {
         panic!("missing notification")
     };
-    client
-        .transport
+    transport
         .space
         .cap::<::sel4::cap_type::Notification>(signal.as_ref())
         .unwrap()
         .signal();
     wake.wait();
     ::sel4::debug_println!("IDL_DEMO_PASS value={}", value.value);
-    let mut server = Sel4Server::new(root, system, recv, client.transport.space);
+    let mut server = Sel4Server::new(root, system, recv, transport.space);
     loop {
         // Compose generated dispatchers, without duplicating method tables.
         let (_, request, reply) = server

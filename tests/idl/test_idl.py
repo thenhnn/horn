@@ -58,6 +58,8 @@ def test_rust_and_c_glue_reference_runtime():
     assert "use horn_ipc::*;" in rust
     assert "pub const COUNTER_ADD_LABEL" in rust
     assert "pub struct CounterTag;" in rust
+    assert "pub struct CounterReceiver" in rust
+    assert "CounterClient" not in rust
     assert "pub struct CounterServiceTag;" in rust
     assert "pub fn counter_service_dispatch" in rust
     assert "pub fn counter_service_request_layout" in rust
@@ -98,9 +100,13 @@ class Sender:
     assert "borrowed: &Cap<Notification>" in view
     assert "copied: &Cap<Notification>" in view
     assert "Result<u64, CallError<u64>>" in view
-    assert ".call(transport, target, moved, borrowed, copied)" in view
-    assert ".notify(transport)" in view
-    assert "SenderClient::new(__horn_transport, self.target)" in view
+    assert "__horn_transport.call(self.target.as_ref(), SENDER_CALL_LABEL" in view
+    assert "__horn_transport.send(self.target.as_ref(), SENDER_NOTIFY_LABEL" in view
+    for name, mode in (("moved", "MOVE"), ("borrowed", "BORROW"), ("copied", "COPY")):
+        assert (
+            f"{name}: Cap::from_ref({name}.as_ref().with_mode(CapMode::{mode}))" in view
+        )
+    assert "SenderClient" not in rust
     assert "CapPacker" not in view
     assert "impl Drop for SenderReceiver" not in view
 

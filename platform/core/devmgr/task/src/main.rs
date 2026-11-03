@@ -16,17 +16,17 @@ use horn_devmgr::{Inventory, firmware, pci::ConfigRead, protocol::*};
 use horn_ipc::*;
 horn_runtime::task!(main);
 
-use native::PlatformClient;
-
 #[derive(Clone)]
-struct Firmware<'a>(&'a RefCell<PlatformClient>);
+struct Firmware<'a>(
+    DevicePlatformReceiver,
+    &'a RefCell<Sel4Transport<Sel4CapSpace>>,
+);
 impl Firmware<'_> {
     fn read(&self, mut address: u64, bytes: &mut [u8]) {
         for chunk in bytes.chunks_mut(256) {
             let data = self
                 .0
-                .borrow_mut()
-                .read(address, chunk.len() as u32)
+                .read(&mut *self.1.borrow_mut(), address, chunk.len() as u32)
                 .expect("physical read");
             assert_eq!(data.len as usize, chunk.len());
             chunk.copy_from_slice(&data.data[..chunk.len()]);
@@ -63,8 +63,7 @@ impl ConfigRead for Firmware<'_> {
     fn read(&mut self, address: u64) -> Result<u32, DeviceError> {
         let bytes = self
             .0
-            .borrow_mut()
-            .read(address, 4)
+            .read(&mut *self.1.borrow_mut(), address, 4)
             .map_err(|_| DeviceError::Backend)?;
         if bytes.len != 4 {
             return Err(DeviceError::Backend);
@@ -75,24 +74,22 @@ impl ConfigRead for Firmware<'_> {
 
 fn main(mut ctx: horn_runtime::Context) -> ! {
     let mut log_io = ctx.logging_transport().unwrap();
-    let sink = horn_supervisor::protocol::SupervisorFactoryClient::new(
-        &mut log_io,
-        ctx.cap("supervisor").unwrap(),
-    )
-    .core_log_sink()
-    .unwrap();
+    let sink = ctx
+        .interface::<horn_supervisor::protocol::SupervisorFactoryReceiver>("supervisor")
+        .unwrap()
+        .core_log_sink(&mut log_io)
+        .unwrap();
     // IPC/heap are initialized, and this transport is reserved exclusively for logging.
     unsafe {
         horn_runtime::logging::install(log_io, Cap::from_ref(sink.as_ref())).unwrap();
     }
-    let transport = ctx.transport().expect("devmgr transport");
+    let mut transport = ctx.transport().expect("devmgr transport");
     let mut inbox = ctx.inbox("service").unwrap();
-    let target = ctx.cap("platform").unwrap();
-    let mut platform = DevicePlatformClient::new(transport, target);
+    let platform = ctx.interface::<DevicePlatformReceiver>("platform").unwrap();
     #[cfg(feature = "boot-tests")]
     boot_tests::allocator();
-    let policy = platform.policy().expect("bootstrap policy");
-    let supplied = platform.rsdp().expect("bootstrap RSDP");
+    let policy = platform.policy(&mut transport).expect("bootstrap policy");
+    let supplied = platform.rsdp(&mut transport).expect("bootstrap RSDP");
     let mut bytes = [0u8; 36];
     assert!(supplied.len == 20 || supplied.len == 36);
     bytes[..supplied.len as usize].copy_from_slice(&supplied.data[..supplied.len as usize]);
@@ -111,8 +108,8 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     } else {
         rsdp.xsdt_address() as usize
     };
-    let platform = RefCell::new(platform);
-    let mut firmware = Firmware(&platform);
+    let transport = RefCell::new(transport);
+    let mut firmware = Firmware(platform, &transport);
     let tables = unsafe { AcpiTables::from_rsdt(firmware.clone(), rsdp.revision(), address) }
         .expect("ACPI root table");
     let regions = firmware::ecam_regions(&tables).expect("ACPI MCFG");
@@ -125,7 +122,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     let hpet = clock::discover(&tables);
     drop(tables);
     let count = inventory.status().unwrap().pci_devices;
-    let mut io = native::Io::new(platform.into_inner(), ctx);
+    let mut io = native::Io::new(transport.into_inner(), platform, ctx);
     let mut service = if let Some(dmar) = dmar {
         assert!(regions.iter().all(|r| r.segment == 0 && r.first_bus == 0));
         let mut cursor = 0;
@@ -161,7 +158,11 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     horn_runtime::logging::info!("PCI discovery complete: {} devices", count);
     let fault_irq = service.arm_fault_irq();
     service.init_clock(hpet);
-    service.io().platform.ready().expect("platform preparation");
+    {
+        let io = &mut *service.io();
+        io.platform.ready(&mut io.transport)
+    }
+    .expect("platform preparation");
     #[cfg(feature = "boot-tests")]
     boot_tests::before_start();
     let mut drivers = drivers::Drivers::start(&mut service);
@@ -205,7 +206,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
                 drivers.changed(&mut service);
                 #[cfg(feature = "boot-tests")]
                 if let Some(probe) = &mut observer {
-                    probe.changed(&mut service.io().platform.transport);
+                    probe.changed(&mut service.io().transport);
                 }
             }
             continue;

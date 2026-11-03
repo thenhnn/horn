@@ -14,8 +14,8 @@ impl Observer {
     pub fn start(parent: &mut crate::native::Io) -> Self {
         let ctx = &parent.ctx;
         let boot = parent.boot;
-        let root = parent.platform.transport.space.root;
-        let io = &mut parent.platform.transport;
+        let root = parent.transport.space.root;
+        let io = &mut parent.transport;
         let image = boot.upload(io, ELF);
         let mut request = s::ProcessLaunch::default();
         let name = b"devmgr-observer";
@@ -28,18 +28,20 @@ impl Observer {
             lifecycle: 3,
             reply: 4,
         };
-        let managed = s::SupervisorFactoryClient::new(&mut *io, ctx.cap("supervisor").unwrap())
-            .prepare(&image, request, slots)
+        let managed = ctx
+            .interface::<s::SupervisorFactoryReceiver>("supervisor")
+            .unwrap()
+            .prepare(&mut *io, &image, request, slots)
             .unwrap();
         close_image(io, image);
-        let process = s::SupervisorJobClient::new(&mut *io, Cap::from_ref(managed.as_ref()))
-            .process()
+        let process = s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+            .process(&mut *io)
             .unwrap();
-        s::SupervisorJobClient::new(&mut *io, Cap::from_ref(managed.as_ref()))
-            .watch(&ctx.cap("events").unwrap())
+        s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+            .watch(&mut *io, &ctx.cap("events").unwrap())
             .unwrap();
-        let ready = s::SupervisorJobClient::new(&mut *io, Cap::from_ref(managed.as_ref()))
-            .signal(s::ServiceSignal::Ready)
+        let ready = s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+            .signal(&mut *io, s::ServiceSignal::Ready)
             .unwrap();
         let observer = mint(
             io,
@@ -86,8 +88,8 @@ impl Observer {
             },
         ];
         boot.context(io, process, &mut entries);
-        s::SupervisorJobClient::new(&mut *io, Cap::from_ref(managed.as_ref()))
-            .start()
+        s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+            .start(&mut *io)
             .unwrap();
         Self {
             job: managed,
@@ -99,20 +101,20 @@ impl Observer {
         if self.finished {
             return;
         }
-        if s::SupervisorJobClient::new(&mut *io, Cap::from_ref(self.job.as_ref()))
-            .status()
+        if s::SupervisorJobReceiver::from_cap(Cap::from_ref(self.job.as_ref()))
+            .status(&mut *io)
             .unwrap()
             != s::ServiceStatus::AwaitingCleanup
         {
             return;
         }
-        let info = s::ProcessControlClient::new(&mut *io, Cap::from_ref(self.process.as_ref()))
-            .info()
+        let info = s::ProcessControlReceiver::from_cap(Cap::from_ref(self.process.as_ref()))
+            .info(&mut *io)
             .unwrap();
         assert_eq!(info.state, s::ProcessState::Stopping);
         assert!(matches!(info.exit, Some(s::ProcessExit::Code(0))));
-        s::SupervisorJobClient::new(&mut *io, Cap::from_ref(self.job.as_ref()))
-            .cleanup_done()
+        s::SupervisorJobReceiver::from_cap(Cap::from_ref(self.job.as_ref()))
+            .cleanup_done(&mut *io)
             .unwrap();
         io.space.delete(self.process.as_ref()).unwrap();
         io.space.delete(self.job.as_ref()).unwrap();

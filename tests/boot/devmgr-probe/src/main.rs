@@ -32,22 +32,24 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         ))
         .unwrap();
     assert!(matches!(
-        DeviceAssignmentClient::new(&mut io, ctx.cap("devmgr.observer").unwrap()).claim(33),
+        DeviceAssignmentReceiver::from_cap(ctx.cap("devmgr.observer").unwrap()).claim(&mut io, 33),
         Err(CallError::Remote(DeviceError::Denied))
     ));
     sel4::debug_println!("DEVMGR_AUTH_PASS observer_rebadge=false");
-    let mut client = DeviceObserverClient::new(&mut io, ctx.cap("devmgr.observer").unwrap());
-    let status = client.status().unwrap();
+    let client = ctx
+        .interface::<DeviceObserverReceiver>("devmgr.observer")
+        .unwrap();
+    let status = client.status(&mut io).unwrap();
     assert_eq!(status.iommu, IommuState::NotInitialized);
     assert!(status.pci_devices >= 5);
     let mut cursor = 0;
     let mut count = 0;
     let mut virtio = 0;
     loop {
-        let page = client.list(cursor).unwrap();
+        let page = client.list(&mut io, cursor).unwrap();
         for entry in &page.entries.data[..page.entries.len as usize] {
             assert!(entry.id > cursor);
-            let info = client.info(entry.id).unwrap();
+            let info = client.info(&mut io, entry.id).unwrap();
             assert_eq!(info.device, *entry);
             if entry.vendor_id == 0x1af4 {
                 virtio += 1;
@@ -64,21 +66,20 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     assert_eq!(count, status.pci_devices);
     assert!(virtio >= 2);
     assert!(matches!(
-        client.info(0),
+        client.info(&mut io, 0),
         Err(CallError::Remote(DeviceError::NotFound))
     ));
     assert!(matches!(
-        client.list(u64::MAX),
+        client.list(&mut io, u64::MAX),
         Err(CallError::Remote(DeviceError::Invalid))
     ));
     sel4::debug_println!(
         "DEVMGR_RPC_PASS ecam=true pagination=true info=true msi=true readonly=true"
     );
     ctx.notify_ready().unwrap();
-    let _ = horn_supervisor::protocol::ProcessLifecycleClient::new(
-        &mut io,
-        ctx.cap("horn.lifecycle").unwrap(),
-    )
-    .exit(0);
+    let _ = ctx
+        .interface::<horn_supervisor::protocol::ProcessLifecycleReceiver>("horn.lifecycle")
+        .unwrap()
+        .exit(&mut io, 0);
     panic!("exit returned");
 }

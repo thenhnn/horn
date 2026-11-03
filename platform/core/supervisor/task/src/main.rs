@@ -62,8 +62,8 @@ impl Manager {
         let name = &self.jobs[i].name;
         core::str::from_utf8(&name.data[..name.len as usize]).unwrap()
     }
-    fn process(&mut self, i: usize) -> ProcessControlClient<&mut Io> {
-        ProcessControlClient::new(&mut self.io, Cap::from_ref(self.jobs[i].process.as_ref()))
+    fn process(&self, i: usize) -> ProcessControlReceiver {
+        ProcessControlReceiver::from_cap(Cap::from_ref(self.jobs[i].process.as_ref()))
     }
     fn stopped(&mut self, i: usize) {
         if matches!(
@@ -72,10 +72,10 @@ impl Manager {
         ) {
             return;
         }
-        let info = self.process(i).info().unwrap();
+        let info = self.process(i).info(&mut self.io).unwrap();
         if info.state != ProcessState::Stopping {
             self.process(i)
-                .suspend()
+                .suspend(&mut self.io)
                 .expect("stop execution, retain VM");
         }
         self.jobs[i].lifecycle.cpu_stopped();
@@ -130,7 +130,7 @@ impl Manager {
                     ServiceStatus::Created | ServiceStatus::AwaitingCleanup | ServiceStatus::Exited
                 )
             {
-                if self.process(i).info().unwrap().state != ProcessState::Active {
+                if self.process(i).info(&mut self.io).unwrap().state != ProcessState::Active {
                     self.stopped(i);
                 }
             }
@@ -227,13 +227,10 @@ impl SupervisorFactory for Caller<'_> {
         let mut name = List::default();
         name.len = source.len() as _;
         name.data[..source.len()].copy_from_slice(source);
-        horn_log::protocol::LogFactoryClient::new(
-            &mut self.manager.io,
-            Cap::from_ref(factory.as_ref()),
-        )
-        .create_sink(name)
-        .map(|cap| Cap::from_ref(cap.as_ref()))
-        .map_err(|_| SupervisorError::Backend)
+        horn_log::protocol::LogFactoryReceiver::from_cap(Cap::from_ref(factory.as_ref()))
+            .create_sink(&mut self.manager.io, name)
+            .map(|cap| Cap::from_ref(cap.as_ref()))
+            .map_err(|_| SupervisorError::Backend)
     }
     fn prepare(
         &mut self,
@@ -252,21 +249,22 @@ impl SupervisorFactory for Caller<'_> {
             .try_reserve(1)
             .expect("bounded job metadata");
         let name = request.name.clone();
-        let process = ProcessFactoryClient::new(
-            &mut self.manager.io,
-            self.manager.ctx.cap("supervisor.factory").unwrap(),
-        )
-        .prepare(&elf, request, bootstrap)
-        .map_err(|e| match e {
-            CallError::Remote(ProcessError::Exhausted | ProcessError::QuotaExceeded) => {
-                SupervisorError::Exhausted
-            }
-            CallError::Remote(
-                ProcessError::Invalid | ProcessError::InvalidElf | ProcessError::InvalidAbi,
-            ) => SupervisorError::Invalid,
-            CallError::Remote(ProcessError::Denied) => SupervisorError::Denied,
-            _ => SupervisorError::Backend,
-        })?;
+        let process = self
+            .manager
+            .ctx
+            .interface::<ProcessFactoryReceiver>("supervisor.factory")
+            .unwrap()
+            .prepare(&mut self.manager.io, &elf, request, bootstrap)
+            .map_err(|e| match e {
+                CallError::Remote(ProcessError::Exhausted | ProcessError::QuotaExceeded) => {
+                    SupervisorError::Exhausted
+                }
+                CallError::Remote(
+                    ProcessError::Invalid | ProcessError::InvalidElf | ProcessError::InvalidAbi,
+                ) => SupervisorError::Invalid,
+                CallError::Remote(ProcessError::Denied) => SupervisorError::Denied,
+                _ => SupervisorError::Backend,
+            })?;
         let i = self.manager.jobs.len();
         let fault = mint(
             &mut self.manager.io,
@@ -278,8 +276,9 @@ impl SupervisorFactory for Caller<'_> {
             fault_badge(i),
             Rights::ALL,
         );
-        ProcessControlClient::new(&mut self.manager.io, Cap::from_ref(process.as_ref()))
+        ProcessControlReceiver::from_cap(Cap::from_ref(process.as_ref()))
             .fault_handler(
+                &mut self.manager.io,
                 &self.manager.boot.cap(self.manager.boot.cnode),
                 self.manager.boot.bits as _,
                 fault.as_ref().slot,
@@ -384,19 +383,17 @@ impl SupervisorJob for Caller<'_> {
                 .try_reserve(1)
                 .map_err(|_| SupervisorError::Exhausted)?;
         }
-        ProcessControlClient::new(
-            &mut self.manager.io,
-            Cap::from_ref(self.manager.jobs[i].process.as_ref()),
-        )
-        .install(
-            &self.manager.boot.cap(self.manager.boot.cnode),
-            self.manager.boot.bits as _,
-            endpoint.as_ref().slot,
-            slot,
-            None,
-            (Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0) as _,
-        )
-        .map_err(|_| SupervisorError::Backend)?;
+        ProcessControlReceiver::from_cap(Cap::from_ref(self.manager.jobs[i].process.as_ref()))
+            .install(
+                &mut self.manager.io,
+                &self.manager.boot.cap(self.manager.boot.cnode),
+                self.manager.boot.bits as _,
+                endpoint.as_ref().slot,
+                slot,
+                None,
+                (Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0) as _,
+            )
+            .map_err(|_| SupervisorError::Backend)?;
         if new_dependency {
             self.manager.jobs[i].dependencies.push(owner);
         }
@@ -488,16 +485,13 @@ impl SupervisorJob for Caller<'_> {
         let name = self
             .manager
             .process(i)
-            .info()
+            .info(&mut self.manager.io)
             .map_err(|_| SupervisorError::Invalid)?
             .name;
-        horn_log::protocol::LogFactoryClient::new(
-            &mut self.manager.io,
-            Cap::from_ref(factory.as_ref()),
-        )
-        .create_sink(name)
-        .map(|cap| Cap::from_ref(cap.as_ref()))
-        .map_err(|_| SupervisorError::Busy)
+        horn_log::protocol::LogFactoryReceiver::from_cap(Cap::from_ref(factory.as_ref()))
+            .create_sink(&mut self.manager.io, name)
+            .map(|cap| Cap::from_ref(cap.as_ref()))
+            .map_err(|_| SupervisorError::Busy)
     }
     fn start(&mut self) -> Result<(), SupervisorError> {
         let i = self.owner()?;
@@ -506,7 +500,10 @@ impl SupervisorJob for Caller<'_> {
         }
         self.manager.jobs[i].lifecycle.start()?;
         self.manager.jobs[i].deadline = now().wrapping_add(self.manager.ticks * ready_timeout_us());
-        self.manager.process(i).start().expect("start process");
+        self.manager
+            .process(i)
+            .start(&mut self.manager.io)
+            .expect("start process");
         Ok(())
     }
     fn status(&mut self) -> Result<ServiceStatus, SupervisorError> {
@@ -528,16 +525,16 @@ impl SupervisorJob for Caller<'_> {
         }
         self.manager
             .process(i)
-            .terminate()
+            .terminate(&mut self.manager.io)
             .expect("owner ACK before backing release");
         #[cfg(feature = "boot-tests")]
         {
-            let info = self.manager.process(i).info().unwrap();
+            let info = self.manager.process(i).info(&mut self.manager.io).unwrap();
             assert_eq!(info.state, ProcessState::Exited);
             assert_eq!(info.ram.charged_bytes, 0);
             assert_eq!(info.ram.quarantined_bytes, 0);
         }
-        self.manager.process(i).close().unwrap();
+        self.manager.process(i).close(&mut self.manager.io).unwrap();
         self.manager
             .io
             .space
@@ -594,8 +591,10 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
             .as_ref()
             .slot,
     };
-    let ticks = SystemControlClient::new(&mut io, ctx.cap("supervisor.system").unwrap())
-        .ticks_per_us()
+    let ticks = ctx
+        .interface::<SystemControlReceiver>("supervisor.system")
+        .unwrap()
+        .ticks_per_us(&mut io)
         .unwrap();
     assert!(ticks != 0);
     let exits = mint(
@@ -605,8 +604,9 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         CHILD_EXIT,
         Rights::WRITE,
     );
-    ProcessFactoryClient::new(&mut io, ctx.cap("supervisor.factory").unwrap())
-        .watch(&exits)
+    ctx.interface::<ProcessFactoryReceiver>("supervisor.factory")
+        .unwrap()
+        .watch(&mut io, &exits)
         .unwrap();
     io.space.delete(exits.as_ref()).unwrap();
     let namespace = namespace::Namespace::new(
@@ -635,10 +635,9 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     let mut name = List::default();
     name.len = 10;
     name.data[..10].copy_from_slice(b"supervisor");
-    let sink =
-        horn_log::protocol::LogFactoryClient::new(&mut log_io, Cap::from_ref(factory.as_ref()))
-            .create_sink(name)
-            .unwrap();
+    let sink = horn_log::protocol::LogFactoryReceiver::from_cap(Cap::from_ref(factory.as_ref()))
+        .create_sink(&mut log_io, name)
+        .unwrap();
     // Dedicated logger transport, initialized IPC/heap, process-lifetime sink.
     unsafe {
         horn_log::install(log_io, Cap::from_ref(sink.as_ref())).unwrap();
@@ -664,12 +663,12 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         }
         if badge & CORE_READY != 0 {
             manager.namespace.tree.ready(0);
-            SystemControlClient::new(
-                &mut manager.io,
-                manager.ctx.cap("supervisor.system").unwrap(),
-            )
-            .ready()
-            .unwrap();
+            manager
+                .ctx
+                .interface::<SystemControlReceiver>("supervisor.system")
+                .unwrap()
+                .ready(&mut manager.io)
+                .unwrap();
             horn_runtime::logging::info!("{} ready", catalog::core().name.bold());
         }
         if manager.namespace.recognizes(badge) {

@@ -139,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn receivers_use_the_existing_client_wire_and_error_paths() {
+    fn receivers_use_the_wire_and_error_paths() {
         let target = cap::<ProbeTag>(CapMode::COPY, Rights::WRITE);
         let receiver = ProbeReceiver::from_cap(target);
         assert_eq!(receiver.as_cap(), target);
@@ -159,14 +159,12 @@ mod tests {
         assert_eq!(io.request_caps.0.front().unwrap().mode, CapMode::MOVE);
 
         for value in [Ok(Event::Number(9)), Err(Event::Number(7))] {
-            let mut receiver_io = ReplyTransport::new(ProbeTryEchoReply { value });
-            let mut client =
-                ProbeClient::new(ReplyTransport::new(ProbeTryEchoReply { value }), target);
+            let mut io = ReplyTransport::new(ProbeTryEchoReply { value });
             assert_eq!(
-                receiver.try_echo(&mut receiver_io, Event::Empty),
-                client.try_echo(Event::Empty)
+                receiver.try_echo(&mut io, Event::Empty),
+                value.map_err(CallError::Remote)
             );
-            assert_eq!(receiver_io.seen, client.transport.seen);
+            assert_eq!(io.seen, Some((target.as_ref(), PROBE_TRY_ECHO_LABEL)));
         }
         let mut io = ReplyTransport::new(ProbeCheckReply { value: Ok(()) });
         io.error = Some(RpcError::Transport);
@@ -183,52 +181,58 @@ mod tests {
     }
 
     #[test]
-    fn result_clients_separate_application_and_rpc_errors() {
+    fn result_receivers_separate_application_and_rpc_errors() {
+        let receiver = ProbeReceiver::from_cap(Cap::default());
         for value in [
             Ok(Event::Data(payload())),
             Err(Event::Number(7)),
             Err(Event::Signal(cap(CapMode::COPY, Rights::ALL))),
         ] {
-            let mut client = ProbeClient::new(
-                ReplyTransport::new(ProbeTryEchoReply { value }),
-                Cap::default(),
-            );
+            let mut io = ReplyTransport::new(ProbeTryEchoReply { value });
             assert_eq!(
-                client.try_echo(Event::Empty),
+                receiver.try_echo(&mut io, Event::Empty),
                 value.map_err(CallError::Remote)
             );
         }
-        let mut transport = ReplyTransport::new(ProbeHandoffReply {
+        let mut io = ReplyTransport::new(ProbeHandoffReply {
             value: Err(cap(CapMode::COPY, Rights::ALL)),
         });
-        transport.caps.0.front_mut().unwrap().mode = CapMode::MOVE;
-        let mut client = ProbeClient::new(transport, Cap::default());
+        io.caps.0.front_mut().unwrap().mode = CapMode::MOVE;
         assert_eq!(
-            client.handoff(),
+            receiver.handoff(&mut io),
             Err(CallError::Remote(cap(CapMode::COPY, Rights::ALL)))
         );
-        let mut client = ProbeClient::new(
-            ReplyTransport::new(ProbeCheckReply { value: Ok(()) }),
-            Cap::default(),
-        );
-        assert_eq!(client.check(), Ok(()));
+        io = ReplyTransport::new(ProbeCheckReply { value: Ok(()) });
+        assert_eq!(receiver.check(&mut io), Ok(()));
         for error in [RpcError::Transport, RpcError::Server(123)] {
-            client.transport.error = Some(error);
-            assert_eq!(client.check(), Err(CallError::Rpc(error)));
+            io.error = Some(error);
+            assert_eq!(receiver.check(&mut io), Err(CallError::Rpc(error)));
         }
-        client.transport.error = None;
-        client.transport.bytes[0] = 255;
-        assert_eq!(client.check(), Err(CallError::Rpc(RpcError::InvalidValue)));
-        client.transport.bytes[0] = 0;
-        *client.transport.bytes.last_mut().unwrap() = 1;
-        assert_eq!(client.check(), Err(CallError::Rpc(RpcError::InvalidValue)));
-        client.transport = ReplyTransport::new(ProbeCheckReply {
+        io.error = None;
+        io.bytes[0] = 255;
+        assert_eq!(
+            receiver.check(&mut io),
+            Err(CallError::Rpc(RpcError::InvalidValue))
+        );
+        io.bytes[0] = 0;
+        *io.bytes.last_mut().unwrap() = 1;
+        assert_eq!(
+            receiver.check(&mut io),
+            Err(CallError::Rpc(RpcError::InvalidValue))
+        );
+        io = ReplyTransport::new(ProbeCheckReply {
             value: Err(Event::Empty),
         });
-        client.transport.bytes[8] = 255;
-        assert_eq!(client.check(), Err(CallError::Rpc(RpcError::InvalidValue)));
-        client.transport.bytes.pop();
-        assert_eq!(client.check(), Err(CallError::Rpc(RpcError::Truncated)));
+        io.bytes[8] = 255;
+        assert_eq!(
+            receiver.check(&mut io),
+            Err(CallError::Rpc(RpcError::InvalidValue))
+        );
+        io.bytes.pop();
+        assert_eq!(
+            receiver.check(&mut io),
+            Err(CallError::Rpc(RpcError::Truncated))
+        );
     }
 
     #[test]
@@ -243,11 +247,16 @@ mod tests {
                 data: [Err(Event::Number(4)), Ok(0)],
             },
         };
-        let transport = ReplyTransport::new(ProbeOutcomesReply { value });
+        let mut transport = ReplyTransport::new(ProbeOutcomesReply { value });
         assert_eq!(&transport.bytes[..4], &1u32.to_le_bytes());
         assert_eq!(transport.caps.0.len(), 2);
-        let mut client = ProbeClient::new(transport, Cap::default());
-        assert_eq!(client.outcomes(Outcomes::default()).unwrap(), value);
+        let receiver = ProbeReceiver::from_cap(Cap::default());
+        assert_eq!(
+            receiver
+                .outcomes(&mut transport, Outcomes::default())
+                .unwrap(),
+            value
+        );
     }
 
     #[test]

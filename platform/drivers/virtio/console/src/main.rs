@@ -37,19 +37,26 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     ));
     #[cfg(feature = "dma-probe")]
     hal::with(|state| {
-        let _now =
-            ClockInterfaceClient::new(state.session.transport(), ctx.cap("devmgr.clock").unwrap())
-                .now()
-                .expect("named monotonic clock");
+        let _now = ctx
+            .interface::<ClockInterfaceReceiver>("devmgr.clock")
+            .unwrap()
+            .now(state.session.transport())
+            .expect("named monotonic clock");
         // Kernel-unwrapped caps for devmgr's endpoint are NOT VM capabilities.
         let wrong_memory = ctx.cap::<VmMemoryObjectTag>("devmgr.device").unwrap();
         assert!(matches!(
-            state.session.control().map(&wrong_memory, 0, 4096, 3),
+            state
+                .session
+                .control()
+                .map(state.session.transport(), &wrong_memory, 0, 4096, 3),
             Err(CallError::Remote(DeviceError::Denied))
         ));
         let wrong_space = ctx.cap::<VmAddressSpaceObjectTag>("devmgr.device").unwrap();
         assert!(matches!(
-            state.session.control().bar(4, &wrong_space),
+            state
+                .session
+                .control()
+                .bar(state.session.transport(), 4, &wrong_space),
             Err(CallError::Remote(DeviceError::Denied))
         ));
         sel4::debug_println!("DEVICE_CAP_CHECK_PASS wrong_vm_object=denied");
@@ -58,7 +65,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         let resources = state
             .session
             .control()
-            .resources()
+            .resources(state.session.transport())
             .expect("assigned PCI resources");
         #[cfg(feature = "dma-probe")]
         {
@@ -73,18 +80,18 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
                 .cap::<VmAddressSpaceObjectTag>("horn.address-space")
                 .unwrap();
             assert!(matches!(
-                DeviceMmioClient::new(state.session.transport(), ctx.cap("devmgr.device").unwrap())
-                    .close(),
+                DeviceMmioReceiver::from_cap(ctx.cap("devmgr.device").unwrap())
+                    .close(state.session.transport(),),
                 Err(CallError::Remote(DeviceError::Denied))
             ));
             // Closing an unopened lease must also retire its server-held memory.
             let unopened = state
                 .session
                 .control()
-                .map_bar_window(bar, 0, 4096, &space)
+                .map_bar_window(state.session.transport(), bar, 0, 4096, &space)
                 .unwrap();
-            DeviceMmioClient::new(state.session.transport(), Cap::from_ref(unopened.as_ref()))
-                .close()
+            DeviceMmioReceiver::from_cap(Cap::from_ref(unopened.as_ref()))
+                .close(state.session.transport())
                 .unwrap();
             state
                 .session
@@ -95,19 +102,18 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
             let lease = state
                 .session
                 .control()
-                .map_bar_window(bar, 0, 4096, &space)
+                .map_bar_window(state.session.transport(), bar, 0, 4096, &space)
                 .unwrap();
-            let memory =
-                DeviceMmioClient::new(state.session.transport(), Cap::from_ref(lease.as_ref()))
-                    .memory()
-                    .unwrap();
+            let memory = DeviceMmioReceiver::from_cap(Cap::from_ref(lease.as_ref()))
+                .memory(state.session.transport())
+                .unwrap();
             assert!(matches!(
-                DeviceMmioClient::new(state.session.transport(), Cap::from_ref(lease.as_ref()))
-                    .memory(),
+                DeviceMmioReceiver::from_cap(Cap::from_ref(lease.as_ref()))
+                    .memory(state.session.transport(),),
                 Err(CallError::Remote(DeviceError::NotFound))
             ));
-            DeviceMmioClient::new(state.session.transport(), Cap::from_ref(lease.as_ref()))
-                .close()
+            DeviceMmioReceiver::from_cap(Cap::from_ref(lease.as_ref()))
+                .close(state.session.transport())
                 .unwrap();
             state
                 .session
@@ -126,7 +132,13 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
                 windows.push(state.session.mmio_window(bar, 0, 4096));
             }
             assert!(matches!(
-                state.session.control().map_bar_window(bar, 0, 4096, &space),
+                state.session.control().map_bar_window(
+                    state.session.transport(),
+                    bar,
+                    0,
+                    4096,
+                    &space
+                ),
                 Err(CallError::Remote(DeviceError::Exhausted))
             ));
             for window in windows {

@@ -11,17 +11,17 @@ horn_runtime::task!(main);
 fn main(mut ctx: horn_runtime::Context) -> ! {
     let mut io = ctx.transport().unwrap();
     let target = ctx.cap("horn.lifecycle").unwrap();
-    let mut task = ProcessLifecycleClient::new(&mut io, target);
-    let placement = task.placement().unwrap();
+    let task = ProcessLifecycleReceiver::from_cap(target);
+    let placement = task.placement(&mut io).unwrap();
     assert!(placement.cpu_count >= 2);
-    let before = task.info().unwrap().charged_bytes;
+    let before = task.info(&mut io).unwrap().charged_bytes;
     // Ordinary VM-backed heap: these RPCs cross CPUs for the remote worker.
     let mut bytes = vec![0u8; 128 * 1024];
     for (i, b) in bytes.iter_mut().enumerate() {
         *b = i as u8;
     }
     assert!(bytes.iter().enumerate().all(|(i, b)| *b == i as u8));
-    assert!(task.info().unwrap().charged_bytes > before);
+    assert!(task.info(&mut io).unwrap().charged_bytes > before);
     drop(bytes);
     let shared = unsafe { &*(ADDRESS as *const Shared) };
     let role = shared
@@ -41,7 +41,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         shared.progress[role].fetch_add(1, Ordering::Relaxed);
     }
     assert_eq!(core::arch::x86_64::__cpuid(1).ebx >> 24, apic);
-    assert_eq!(task.placement().unwrap(), placement);
-    task.exit(0).unwrap();
+    assert_eq!(task.placement(&mut io).unwrap(), placement);
+    task.exit(&mut io, 0).unwrap();
     unreachable!()
 }

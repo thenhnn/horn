@@ -91,7 +91,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     );
     let resources = session
         .control()
-        .resources()
+        .resources(session.transport())
         .expect("assigned NVIDIA resources");
     let config = &resources.configuration.data;
     let actual = PciIdentity {
@@ -219,7 +219,10 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
                 // No DMA was started. Broker close revokes and acknowledges
                 // all CPU aliases before detaching. Never reuse raw BAR views.
                 time.cancel(&mut session).expect("probe alarm cancel");
-                session.control().close().expect("probe assignment close");
+                session
+                    .control()
+                    .close(session.transport())
+                    .expect("probe assignment close");
                 stopped = true;
                 sel4::debug_println!("NVIDIA_PROBE_STOPPED dma_started=false");
                 sel4::cap::Notification::from_bits(

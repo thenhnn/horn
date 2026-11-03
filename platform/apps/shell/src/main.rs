@@ -18,9 +18,11 @@ struct Shell {
 }
 impl Shell {
     fn wait(&mut self, events: c::ConsoleEvents) {
-        let mut client =
-            c::ConsoleInterfaceClient::new(&mut self.io, self.ctx.cap("console").unwrap());
-        let status = client.status().expect("console status");
+        let client = self
+            .ctx
+            .interface::<c::ConsoleInterfaceReceiver>("console")
+            .unwrap();
+        let status = client.status(&mut self.io).expect("console status");
         assert_eq!(
             status.events.0 & c::ConsoleEvents::CLOSED.0,
             0,
@@ -28,6 +30,7 @@ impl Shell {
         );
         client
             .watch(
+                &mut self.io,
                 Some(self.ctx.cap("signal").unwrap()),
                 events,
                 status.size_generation,
@@ -57,8 +60,11 @@ impl Shell {
             let mut bytes = List::default();
             bytes.len = count as _;
             bytes.data[..count].copy_from_slice(&self.output[offset..self.output_len]);
-            match c::ConsoleInterfaceClient::new(&mut self.io, self.ctx.cap("console").unwrap())
-                .write(bytes)
+            match self
+                .ctx
+                .interface::<c::ConsoleInterfaceReceiver>("console")
+                .unwrap()
+                .write(&mut self.io, bytes)
             {
                 Ok(n) => {
                     assert!(n > 0 && n as usize <= count);
@@ -77,8 +83,11 @@ impl Shell {
         // not recursively flush the same pending buffer.
         self.flush();
         loop {
-            match c::ConsoleInterfaceClient::new(&mut self.io, self.ctx.cap("console").unwrap())
-                .read(256)
+            match self
+                .ctx
+                .interface::<c::ConsoleInterfaceReceiver>("console")
+                .unwrap()
+                .read(&mut self.io, 256)
             {
                 Ok(bytes) => return bytes,
                 Err(CallError::Remote(c::ConsoleError::WouldBlock)) => {
@@ -103,11 +112,11 @@ impl Shell {
     fn namespace(&mut self, name: &str, prefix: &str) {
         let mut cursor = 0;
         loop {
-            let page = match horn_registry::protocol::RegistryDirectoryClient::new(
-                &mut self.io,
-                self.ctx.cap(name).unwrap(),
-            )
-            .list(cursor, true)
+            let page = match self
+                .ctx
+                .interface::<horn_registry::protocol::RegistryDirectoryReceiver>(name)
+                .unwrap()
+                .list(&mut self.io, cursor, true)
             {
                 Ok(page) => page,
                 Err(error) => {
@@ -142,16 +151,18 @@ impl Shell {
         self.bytes(b"BDF          VENDOR:DEVICE CLASS\r\n");
         let mut cursor = 0;
         loop {
-            let page =
-                match d::DeviceObserverClient::new(&mut self.io, self.ctx.cap("pci").unwrap())
-                    .list(cursor)
-                {
-                    Ok(page) => page,
-                    Err(error) => {
-                        writeln!(self, "PCI observer: {:?}\r", error).unwrap();
-                        return;
-                    }
-                };
+            let page = match self
+                .ctx
+                .interface::<d::DeviceObserverReceiver>("pci")
+                .unwrap()
+                .list(&mut self.io, cursor)
+            {
+                Ok(page) => page,
+                Err(error) => {
+                    writeln!(self, "PCI observer: {:?}\r", error).unwrap();
+                    return;
+                }
+            };
             for device in &page.entries.data[..page.entries.len as usize] {
                 let bdf = device.address;
                 write!(
@@ -181,11 +192,11 @@ impl Shell {
         self.bytes(b"Processes (supervisor scope)\r\nPID STATE RAM NAME\r\n");
         let mut cursor = 0;
         loop {
-            let page = match p::ProcessObserverClient::new(
-                &mut self.io,
-                self.ctx.cap("processes").unwrap(),
-            )
-            .list(cursor)
+            let page = match self
+                .ctx
+                .interface::<p::ProcessObserverReceiver>("processes")
+                .unwrap()
+                .list(&mut self.io, cursor)
             {
                 Ok(page) => page,
                 Err(error) => {

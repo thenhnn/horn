@@ -37,7 +37,7 @@ from ..types import (
 )
 
 
-def client_parameters(method: Method) -> list[str]:
+def receiver_parameters(method: Method) -> list[str]:
     return [
         f"{snake(param.name)}: "
         + (
@@ -51,7 +51,7 @@ def client_parameters(method: Method) -> list[str]:
     ]
 
 
-def client_result(method: Method) -> tuple[str, str]:
+def receiver_result(method: Method) -> tuple[str, str]:
     if isinstance(method.result, ResultType):
         return rust_type(
             method.result.ok
@@ -647,7 +647,6 @@ class RustEmitter:
             result = "()" if method.result is None else rust_type(method.result)
             self.add(f"    fn {snake(method.name)}(&mut self, {params}) -> {result};")
         self.add("}")
-        self.emit_client(interface)
         self.emit_receiver(interface)
 
     def emit_method_types(self, interface: Interface, method: Method) -> None:
@@ -812,64 +811,6 @@ class RustEmitter:
             )
             self.add("}")
 
-    def emit_client(self, interface: Interface) -> None:
-        name = f"{interface.python_name}Client"
-        self.add("")
-        self.add(f"pub struct {name}<T: Transport> {{")
-        self.add("    pub transport: T,")
-        self.add(f"    pub target: Cap<{interface.python_name}Tag>,")
-        self.add("}")
-        self.add("")
-        self.add(f"impl<T: Transport> {name}<T> {{")
-        self.add(
-            "    pub fn new(transport: T, target: Cap<"
-            + interface.python_name
-            + "Tag>) -> Self {"
-        )
-        self.add("        Self { transport, target }")
-        self.add("    }")
-        for method in interface.all_methods():
-            signature = ", ".join(client_parameters(method))
-            result, error_type = client_result(method)
-            self.add(
-                f"    pub fn {snake(method.name)}(&mut self, {signature}) -> Result<{result}, {error_type}> {{"
-            )
-            self.add(f"        let args = {method_args_name(interface, method)} {{")
-            for param in method.params:
-                field = snake(param.name)
-                if isinstance(param.type, CapType):
-                    self.add(
-                        f"            {field}: Cap::from_ref({field}.as_ref().with_mode({cap_mode(param.type.mode)})),"
-                    )
-                else:
-                    self.add(f"            {field},")
-            self.add("        };")
-            label = method_label_name(interface, method)
-            if method.oneway:
-                self.add(
-                    f"        self.transport.send(self.target.as_ref(), {label}, &args, "
-                    f"&{upper(interface.python_name)}_{upper(method.name)}_REQ_LAYOUT)"
-                )
-            else:
-                call = (
-                    f"self.transport.call(self.target.as_ref(), {label}, &args, "
-                    f"&{upper(interface.python_name)}_{upper(method.name)}_REQ_LAYOUT, "
-                    f"&{upper(interface.python_name)}_{upper(method.name)}_RESULT_LAYOUT)"
-                )
-                if method.result is None:
-                    self.add(f"        {call}")
-                else:
-                    self.add(
-                        f"        let reply: {method_reply_name(interface, method)} = {call}?;"
-                    )
-                    self.add(
-                        "        reply.value.map_err(CallError::Remote)"
-                        if isinstance(method.result, ResultType)
-                        else "        Ok(reply.value)"
-                    )
-            self.add("    }")
-        self.add("}")
-
     def emit_receiver(self, interface: Interface) -> None:
         name = f"{interface.python_name}Receiver"
         marker = f"{interface.python_name}Tag"
@@ -891,17 +832,45 @@ class RustEmitter:
             transport = "__horn_transport"
             while transport in used:
                 transport += "_"
-            params = [f"{transport}: &mut T", *client_parameters(method)]
-            result, error_type = client_result(method)
+            params = [f"{transport}: &mut T", *receiver_parameters(method)]
+            result, error_type = receiver_result(method)
             self.add(
                 f"    pub fn {snake(method.name)}<T: Transport>(&self, {', '.join(params)})"
                 f" -> Result<{result}, {error_type}> {{"
             )
-            arguments = ", ".join(snake(p.name) for p in method.params)
-            self.add(
-                f"        {interface.python_name}Client::new({transport}, self.target)"
-                f".{snake(method.name)}({arguments})"
-            )
+            self.add(f"        let args = {method_args_name(interface, method)} {{")
+            for param in method.params:
+                field = snake(param.name)
+                if isinstance(param.type, CapType):
+                    self.add(
+                        f"            {field}: Cap::from_ref({field}.as_ref().with_mode({cap_mode(param.type.mode)})),"
+                    )
+                else:
+                    self.add(f"            {field},")
+            self.add("        };")
+            label = method_label_name(interface, method)
+            if method.oneway:
+                self.add(
+                    f"        {transport}.send(self.target.as_ref(), {label}, &args, "
+                    f"&{upper(interface.python_name)}_{upper(method.name)}_REQ_LAYOUT)"
+                )
+            else:
+                call = (
+                    f"{transport}.call(self.target.as_ref(), {label}, &args, "
+                    f"&{upper(interface.python_name)}_{upper(method.name)}_REQ_LAYOUT, "
+                    f"&{upper(interface.python_name)}_{upper(method.name)}_RESULT_LAYOUT)"
+                )
+                if method.result is None:
+                    self.add(f"        {call}")
+                else:
+                    self.add(
+                        f"        let reply: {method_reply_name(interface, method)} = {call}?;"
+                    )
+                    self.add(
+                        "        reply.value.map_err(CallError::Remote)"
+                        if isinstance(method.result, ResultType)
+                        else "        Ok(reply.value)"
+                    )
             self.add("    }")
         self.add("}")
 

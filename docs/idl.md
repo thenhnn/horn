@@ -54,8 +54,8 @@ class CounterService:
 
 ## Rust interface views
 
-Each interface emits a server trait, its existing `FooClient<T>`, and a
-non-owning `FooReceiver` implementing `horn_ipc::RpcInterface`. The receiver
+Each interface emits a server trait and a non-owning `FooReceiver`
+implementing `horn_ipc::RpcInterface`. The receiver
 keeps only a typed capability; each method takes an explicit `&mut transport`.
 Clock provides short public aliases `horn_clock::{Clock, Alarm}`:
 
@@ -69,15 +69,17 @@ let events = ctx.cap::<horn_ipc::Notification>("events")?;
 `interface(name)` views an existing immutable startup binding. It does not
 create an object, query the server's type, reduce authority, copy a kernel cap,
 or reserve a transport. The deployment supplies the interface contract.
-Several views can coexist; only the call borrows `io`. Receivers forward to
-the existing generated clients: labels, encoding, Copy/Move/Borrow, errors,
-one-way sends and synchronous blocking behavior are unchanged.
+Several views can coexist; only the call borrows `io`. Receivers directly
+invoke the transport using generated layouts and wire values: labels,
+encoding, Copy/Move/Borrow, errors, one-way sends and synchronous blocking
+behavior are unchanged.
 Neither constructing, copying nor dropping a receiver closes a remote object.
 
 For an explicitly obtained capability, `RpcInterface::from_cap` and
 `as_cap` bridge the receiver and `Cap<InterfaceTag>`; retain the capability's
-original ownership/cleanup discipline. Existing transport-bound clients and
-`ctx.cap::<InterfaceTag>` remain available. C wire bindings are unchanged.
+original ownership/cleanup discipline. `ctx.cap::<InterfaceTag>` remains
+available; there are no generated transport-bound `Client` types. C wire
+bindings are unchanged.
 
 ## Payload enums
 
@@ -476,7 +478,7 @@ the tag and ELF at runtime before launching the process.
   `ChildCaps` capset.
 - Root-hosted `procd` creates the child's accounted CNode/VSpace/TCB. `root`
   installs bootstrap capabilities in generated named slots, starts the child,
-  and calls the generated `CounterClient`.
+  and calls the generated `CounterReceiver`.
 - `child` serves counter requests, signals a wake notification, exercises VM
   and mimalloc, then exits through its lifecycle capability.
 - `root/build.rs` and `child/build.rs` run the Python IDL generator and

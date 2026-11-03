@@ -8,11 +8,12 @@ use horn_procd::protocol::*;
 horn_runtime::task!(main);
 
 fn main(mut ctx: horn_runtime::Context) -> ! {
-    let io = ctx.transport().unwrap();
-    let target = ctx.cap("horn.lifecycle").unwrap();
-    let mut lifecycle = ProcessLifecycleClient::new(io, target);
-    assert!(lifecycle.info().unwrap().charged_bytes > 0);
+    let mut io = ctx.transport().unwrap();
+    let lifecycle = ctx
+        .interface::<ProcessLifecycleReceiver>("horn.lifecycle")
+        .unwrap();
+    assert!(lifecycle.info(&mut io).unwrap().charged_bytes > 0);
     sel4::debug_println!("LAUNCH_CHILD_PASS bootstrap=true");
-    lifecycle.exit(7).unwrap();
+    lifecycle.exit(&mut io, 7).unwrap();
     unreachable!()
 }

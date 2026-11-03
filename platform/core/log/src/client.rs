@@ -4,7 +4,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 use horn_ipc::*;
-use protocol::{LogSinkClient, LogSinkTag};
+use protocol::{LogSinkReceiver, LogSinkTag};
 
 struct Client {
     io: Sel4Transport<Sel4CapSpace>,
@@ -64,8 +64,8 @@ pub fn emit(level: log::Level, target: &str, args: fmt::Arguments<'_>) -> Result
         .as_mut()
         .ok_or(Error::Unavailable)?;
     let record = record(level, target, args)?;
-    LogSinkClient::new(&mut client.io, Cap::from_ref(client.sink.as_ref()))
-        .write(record)
+    LogSinkReceiver::from_cap(Cap::from_ref(client.sink.as_ref()))
+        .write(&mut client.io, record)
         .map_err(Error::Rpc)
 }
 /// Direct output for bootstrap, panic, allocator/pager critical paths and sink

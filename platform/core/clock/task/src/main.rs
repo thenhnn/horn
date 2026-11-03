@@ -14,8 +14,9 @@ horn_runtime::task!(main);
 
 type Io = Sel4Transport<Sel4CapSpace>;
 fn hardware_now(io: &mut Io, ctx: &horn_runtime::Context) -> u64 {
-    ClockSourceClient::new(io, ctx.cap("source").unwrap())
-        .source_now()
+    ctx.interface::<ClockSourceReceiver>("source")
+        .unwrap()
+        .source_now(io)
         .unwrap()
 }
 
@@ -55,16 +56,17 @@ impl Service {
         if next != self.programmed {
             let hardware = hardware_now(&mut self.io, &self.ctx);
             let now = self.now();
-            let mut source = ClockSourceClient::new(&mut self.io, self.ctx.cap("source").unwrap());
+            let source = self.ctx.interface::<ClockSourceReceiver>("source").unwrap();
             if let Some(deadline) = next {
                 source
                     .source_arm(
+                        &mut self.io,
                         hardware.saturating_add(deadline.saturating_sub(now)),
                         &self.ctx.cap("signal").unwrap(),
                     )
                     .unwrap();
             } else {
-                source.source_cancel().unwrap();
+                source.source_cancel(&mut self.io).unwrap();
             }
             self.programmed = next;
         }
@@ -153,16 +155,16 @@ impl AlarmInterface for Caller<'_> {
 }
 fn main(mut ctx: horn_runtime::Context) -> ! {
     let mut io = ctx.transport().unwrap();
-    let placement = horn_supervisor::protocol::ProcessLifecycleClient::new(
-        &mut io,
-        ctx.cap("horn.lifecycle").unwrap(),
-    )
-    .placement()
-    .unwrap();
+    let placement = ctx
+        .interface::<horn_supervisor::protocol::ProcessLifecycleReceiver>("horn.lifecycle")
+        .unwrap()
+        .placement(&mut io)
+        .unwrap();
     let start = hardware_now(&mut io, &ctx);
     let t0 = cycles();
-    ClockSourceClient::new(&mut io, ctx.cap("source").unwrap())
-        .source_arm(start + 100_000, &ctx.cap("signal").unwrap())
+    ctx.interface::<ClockSourceReceiver>("source")
+        .unwrap()
+        .source_arm(&mut io, start + 100_000, &ctx.cap("signal").unwrap())
         .unwrap();
     ctx.wait("events").unwrap();
     let t1 = cycles();

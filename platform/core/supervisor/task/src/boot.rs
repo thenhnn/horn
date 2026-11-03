@@ -11,10 +11,12 @@ pub fn start(manager: &mut Manager) {
     launch.name.len = definition.name.len() as _;
     launch.name.data[..definition.name.len()].copy_from_slice(definition.name.as_bytes());
     launch.ram_limit = definition.ram;
-    let process =
-        ProcessFactoryClient::new(&mut *io, manager.ctx.cap("supervisor.factory").unwrap())
-            .prepare(&image, launch, definition.bootstrap.clone())
-            .unwrap();
+    let process = manager
+        .ctx
+        .interface::<ProcessFactoryReceiver>("supervisor.factory")
+        .unwrap()
+        .prepare(&mut *io, &image, launch, definition.bootstrap.clone())
+        .unwrap();
     horn_supervisor::client::close_image(io, image);
     manager.objects(process, definition, 0);
     for grant in definition.namespaces {
@@ -75,9 +77,10 @@ pub fn start(manager: &mut Manager) {
         })
         .collect();
     boot.context(io, process, &mut entries);
-    let mut control = ProcessControlClient::new(&mut *io, Cap::from_ref(process.as_ref()));
+    let control = ProcessControlReceiver::from_cap(Cap::from_ref(process.as_ref()));
     control
         .fault_handler(
+            io,
             &boot.cap(boot.cnode),
             boot.bits as _,
             manager
@@ -89,10 +92,10 @@ pub fn start(manager: &mut Manager) {
         )
         .unwrap();
     control
-        .exit_signal(&manager.ctx.cap("supervisor.critical_exit").unwrap())
+        .exit_signal(io, &manager.ctx.cap("supervisor.critical_exit").unwrap())
         .unwrap();
     if !(cfg!(feature = "boot-tests") && option_env!("SUPERVISOR_STALL") == Some("1")) {
-        control.start().unwrap();
+        control.start(io).unwrap();
     }
     io.space.delete(process.as_ref()).unwrap();
 }

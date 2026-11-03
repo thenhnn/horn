@@ -31,14 +31,14 @@ impl Device {
         !self.tx.is_empty()
     }
     pub fn receive_rpc(&mut self, io: &mut Io) {
-        let mut ethernet = EthernetInterfaceClient::new(&mut *io, self.endpoint);
-        self.generation = ethernet.info().unwrap().generation;
+        let ethernet = EthernetInterfaceReceiver::from_cap(self.endpoint);
+        self.generation = ethernet.info(io).unwrap().generation;
         self.more_rx = true; // A full work budget does not prove the driver queue is empty.
         for _ in 0..8 {
             if self.rx.len() == 16 {
                 break;
             }
-            let first = match ethernet.receive() {
+            let first = match ethernet.receive(io) {
                 Ok(chunk) => chunk,
                 Err(CallError::Remote(NetError::WouldBlock)) => {
                     self.more_rx = false;
@@ -55,16 +55,16 @@ impl Device {
                     break;
                 }
                 assert!(chunk.data.len != 0);
-                chunk = ethernet.receive().unwrap();
+                chunk = ethernet.receive(io).unwrap();
             }
             assert!((14..=1514).contains(&packet.len()));
             self.rx.push_back(packet);
         }
     }
     pub fn transmit_rpc(&mut self, io: &mut Io) {
-        let mut ethernet = EthernetInterfaceClient::new(io, self.endpoint);
+        let ethernet = EthernetInterfaceReceiver::from_cap(self.endpoint);
         while let Some(packet) = self.tx.front() {
-            match ethernet.begin(packet.len() as u32) {
+            match ethernet.begin(io, packet.len() as u32) {
                 Ok(()) => {}
                 Err(CallError::Remote(NetError::WouldBlock)) => break,
                 Err(e) => panic!("Ethernet TX: {:?}", e),
@@ -73,9 +73,9 @@ impl Device {
                 let mut data = List::default();
                 data.len = chunk.len() as _;
                 data.data[..chunk.len()].copy_from_slice(chunk);
-                ethernet.append(data).unwrap();
+                ethernet.append(io, data).unwrap();
             }
-            ethernet.commit().unwrap();
+            ethernet.commit(io).unwrap();
             self.tx.pop_front();
         }
     }

@@ -82,10 +82,10 @@ impl VmHeap {
         Ok(result)
     }
     fn info(&mut self) -> Result<VmInfo, Error> {
-        Ok(VmFactoryClient::new(&mut self.transport, self.factory).info()?)
+        Ok(VmFactoryReceiver::from_cap(self.factory).info(&mut self.transport)?)
     }
     fn close(&mut self, memory: Cap<VmMemoryObjectTag>) -> Result<(), Error> {
-        VmMemoryClient::new(&mut self.transport, Cap::from_ref(memory.as_ref())).close()?;
+        VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref())).close(&mut self.transport)?;
         self.transport.space.delete(memory.as_ref())?;
         Ok(())
     }
@@ -101,12 +101,14 @@ impl VmHeap {
             .position(Option::is_none)
             .ok_or(Error::Exhausted)?;
         let protection = VmProtection(VmProtection::READ.0 | VmProtection::WRITE.0);
-        let memory = VmFactoryClient::new(&mut self.transport, self.factory).allocate(
+        let memory = VmFactoryReceiver::from_cap(self.factory).allocate(
+            &mut self.transport,
             size as u64,
             VmBacking::Resident,
             protection,
         )?;
-        let region = match VmAddressSpaceClient::new(&mut self.transport, self.space).reserve(
+        let region = match VmAddressSpaceReceiver::from_cap(self.space).reserve(
+            &mut self.transport,
             VmRegionRequest {
                 address: 0,
                 length: size as u64,
@@ -129,8 +131,8 @@ impl VmHeap {
             memory: Some(memory),
         });
         let result = (|| {
-            let info =
-                VmRegionClient::new(&mut self.transport, Cap::from_ref(region.as_ref())).info()?;
+            let info = VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+                .info(&mut self.transport)?;
             let address = usize::try_from(info.address).map_err(|_| Error::Invalid)?;
             if address == 0
                 || (address as u64)
@@ -152,8 +154,11 @@ impl VmHeap {
                 memory_offset: 0,
                 protection,
             });
-            VmRegionClient::new(&mut self.transport, Cap::from_ref(region.as_ref()))
-                .apply(Some(memory), Parcel::inline(updates))?;
+            VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref())).apply(
+                &mut self.transport,
+                Some(memory),
+                Parcel::inline(updates),
+            )?;
             self.close(memory)?;
             self.allocations[index].as_mut().unwrap().memory = None;
             NonNull::new(address as *mut u8).ok_or(Error::Invalid)
@@ -165,11 +170,8 @@ impl VmHeap {
     }
     fn release(&mut self, index: usize) -> Result<(), Error> {
         let allocation = self.allocations[index].unwrap();
-        VmRegionClient::new(
-            &mut self.transport,
-            Cap::from_ref(allocation.region.as_ref()),
-        )
-        .destroy()?;
+        VmRegionReceiver::from_cap(Cap::from_ref(allocation.region.as_ref()))
+            .destroy(&mut self.transport)?;
         self.transport.space.delete(allocation.region.as_ref())?;
         // The region is gone, even if closing an unpublished backing later fails.
         self.allocations[index] = None;

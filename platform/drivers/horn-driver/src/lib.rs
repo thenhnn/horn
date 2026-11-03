@@ -100,22 +100,24 @@ impl DeviceSession {
         &mut self.transport
     }
     /// Scoped control only; never assignment, writable ECAM or RAM paddr access.
-    pub fn control(&mut self) -> DeviceControlClient<&mut Sel4Transport<Sel4CapSpace>> {
-        DeviceControlClient::new(&mut self.transport, Cap::from_ref(self.device.as_ref()))
+    pub fn control(&self) -> DeviceControlReceiver {
+        DeviceControlReceiver::from_cap(Cap::from_ref(self.device.as_ref()))
     }
     fn map_cpu(&mut self, memory: Cap<VmMemoryObjectTag>, length: usize) -> CpuMapping {
-        let region =
-            VmAddressSpaceClient::new(&mut self.transport, Cap::from_ref(self.space.as_ref()))
-                .reserve(VmRegionRequest {
+        let region = VmAddressSpaceReceiver::from_cap(Cap::from_ref(self.space.as_ref()))
+            .reserve(
+                &mut self.transport,
+                VmRegionRequest {
                     address: 0,
                     length: length as _,
                     alignment: PAGE as _,
                     placement: VmPlacement::Anywhere,
                     ceiling: VmProtection(3),
-                })
-                .expect("CPU region");
-        let address = VmRegionClient::new(&mut self.transport, Cap::from_ref(region.as_ref()))
-            .info()
+                },
+            )
+            .expect("CPU region");
+        let address = VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+            .info(&mut self.transport)
             .expect("CPU region info")
             .address
             .try_into()
@@ -132,8 +134,9 @@ impl DeviceSession {
             memory_offset: 0,
             protection: VmProtection(3),
         });
-        VmRegionClient::new(&mut self.transport, Cap::from_ref(region.as_ref()))
+        VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
             .apply(
+                &mut self.transport,
                 Some(Cap::from_ref(memory.as_ref())),
                 Parcel::inline(updates),
             )
@@ -165,7 +168,10 @@ impl DeviceSession {
             };
             let physical = ((high as u64) << 32) | (low as u64 & !15);
             let space = self.space;
-            let memory = self.control().bar(index as _, &space).expect("BAR grant");
+            let memory = self
+                .control()
+                .bar(self.transport(), index as _, &space)
+                .expect("BAR grant");
             let cpu = self.map_cpu(memory, length.try_into().expect("BAR size"));
             self.bars.push(Bar { physical, cpu });
         }
@@ -177,7 +183,7 @@ impl DeviceSession {
         let space = self.space;
         let memory = self
             .control()
-            .bar_window(index, offset, length as _, &space)
+            .bar_window(self.transport(), index, offset, length as _, &space)
             .expect("BAR window grant");
         let cpu = self.map_cpu(memory, length);
         let pointer = NonNull::new(cpu.address as *mut u8).expect("BAR window address");
@@ -195,10 +201,10 @@ impl DeviceSession {
         let space = self.space;
         let grant = self
             .control()
-            .map_bar_window(index, offset, length as _, &space)
+            .map_bar_window(self.transport(), index, offset, length as _, &space)
             .expect("scoped MMIO window");
-        let memory = DeviceMmioClient::new(&mut self.transport, Cap::from_ref(grant.as_ref()))
-            .memory()
+        let memory = DeviceMmioReceiver::from_cap(Cap::from_ref(grant.as_ref()))
+            .memory(&mut self.transport)
             .expect("MMIO memory grant");
         let cpu = self.map_cpu(memory, length);
         MmioWindow { cpu, lease: grant }
@@ -207,15 +213,12 @@ impl DeviceSession {
     /// local cap slots. Failure aborts; do not reuse raw pointers or the session.
     /// This does NOT reset hardware or establish DMA quiescence.
     pub fn close_window(&mut self, window: MmioWindow) {
-        DeviceMmioClient::new(&mut self.transport, Cap::from_ref(window.lease.as_ref()))
-            .close()
+        DeviceMmioReceiver::from_cap(Cap::from_ref(window.lease.as_ref()))
+            .close(&mut self.transport)
             .expect("MMIO window revoke acknowledgement");
-        VmRegionClient::new(
-            &mut self.transport,
-            Cap::from_ref(window.cpu.region.as_ref()),
-        )
-        .destroy()
-        .expect("MMIO virtual reservation release");
+        VmRegionReceiver::from_cap(Cap::from_ref(window.cpu.region.as_ref()))
+            .destroy(&mut self.transport)
+            .expect("MMIO virtual reservation release");
         self.transport
             .space
             .delete(window.cpu.region.as_ref())
@@ -246,7 +249,11 @@ impl DeviceSession {
     /// Retain the notification grant in this session; caller can wait, not signal.
     pub fn interrupt(&mut self) -> sel4::cap::Notification {
         if self.irq.is_none() {
-            self.irq = Some(self.control().interrupt().expect("remapped IRQ"));
+            self.irq = Some(
+                self.control()
+                    .interrupt(self.transport())
+                    .expect("remapped IRQ"),
+            );
         }
         self.transport
             .space
@@ -261,7 +268,7 @@ impl DeviceSession {
     ) -> sel4::cap::Notification {
         assert!(self.irq.is_none());
         self.control()
-            .interrupt_to(signal)
+            .interrupt_to(self.transport(), signal)
             .expect("remapped IRQ binding");
         self.irq = Some(receive);
         self.interrupt()
@@ -276,10 +283,12 @@ impl DeviceSession {
         assert!(self.buffers.is_empty(), "driver still owns DMA allocations");
     }
     pub fn activate(&mut self) {
-        self.control().activate().expect("bus mastering");
+        self.control()
+            .activate(self.transport())
+            .expect("bus mastering");
     }
     pub fn ack_interrupt(&mut self) {
-        self.control().ack().expect("IRQ rearm");
+        self.control().ack(self.transport()).expect("IRQ rearm");
     }
 
     fn allocate(
@@ -289,7 +298,10 @@ impl DeviceSession {
         source: Option<(usize, usize, DeviceAccess)>,
     ) -> (u64, NonNull<u8>) {
         let length = allocation_length(pages);
-        let limits = self.control().dma_limits().expect("DMA limits");
+        let limits = self
+            .control()
+            .dma_limits(self.transport())
+            .expect("DMA limits");
         assert!(
             length as u64 <= limits.bytes,
             "DMA allocation exceeds assignment budget"
@@ -301,8 +313,13 @@ impl DeviceSession {
         if trace {
             sel4::debug_println!("HORN_DMA_ALLOC begin pages={} bytes={}", pages, length);
         }
-        let memory = VmFactoryClient::new(&mut self.transport, self.factory)
-            .allocate(length as _, VmBacking::Resident, VmProtection(3))
+        let memory = VmFactoryReceiver::from_cap(self.factory)
+            .allocate(
+                &mut self.transport,
+                length as _,
+                VmBacking::Resident,
+                VmProtection(3),
+            )
             .expect("resident DMA backing");
         if trace {
             sel4::debug_println!("HORN_DMA_ALLOC backing=ok");
@@ -314,6 +331,7 @@ impl DeviceSession {
         let dma = if pages <= MAX_PAGES {
             self.control()
                 .map(
+                    self.transport(),
                     &Cap::from_ref(cpu.memory.as_ref()),
                     0,
                     length as _,
@@ -323,7 +341,7 @@ impl DeviceSession {
         } else {
             let dma = self
                 .control()
-                .reserve_dma(length as _, access as u32)
+                .reserve_dma(self.transport(), length as _, access as u32)
                 .expect("DMA reservation");
             if trace {
                 sel4::debug_println!("HORN_DMA_ALLOC reserved iova={:#x}", dma.iova);
@@ -332,27 +350,26 @@ impl DeviceSession {
                 let mut offset = 0;
                 while offset < length {
                     let chunk = (length - offset).min(MAX_PAGES * PAGE);
-                    let populated = DeviceMappingClient::new(
-                        &mut self.transport,
-                        Cap::from_ref(dma.mapping.as_ref()),
-                    )
-                    .append(
-                        &Cap::from_ref(cpu.memory.as_ref()),
-                        offset as _,
-                        chunk as _,
-                    )?;
+                    let populated =
+                        DeviceMappingReceiver::from_cap(Cap::from_ref(dma.mapping.as_ref()))
+                            .append(
+                                &mut self.transport,
+                                &Cap::from_ref(cpu.memory.as_ref()),
+                                offset as _,
+                                chunk as _,
+                            )?;
                     assert_eq!(populated, (offset + chunk) as u64);
                     offset += chunk;
                     if trace && offset % (MAX_PAGES * PAGE * 128) == 0 {
                         sel4::debug_println!("HORN_DMA_ALLOC appended={}", offset);
                     }
                 }
-                DeviceMappingClient::new(&mut self.transport, Cap::from_ref(dma.mapping.as_ref()))
-                    .finish()
+                DeviceMappingReceiver::from_cap(Cap::from_ref(dma.mapping.as_ref()))
+                    .finish(&mut self.transport)
             })();
             if result.is_err() {
-                DeviceMappingClient::new(&mut self.transport, Cap::from_ref(dma.mapping.as_ref()))
-                    .close()
+                DeviceMappingReceiver::from_cap(Cap::from_ref(dma.mapping.as_ref()))
+                    .close(&mut self.transport)
                     .expect("partial DMA rollback/drain");
                 self.transport.space.delete(dma.mapping.as_ref()).unwrap();
                 panic!("DMA population: {:?}", result);
@@ -425,8 +442,8 @@ impl DeviceSession {
     fn release(&mut self, index: usize, copy_back: bool) {
         let buffer = &self.buffers[index];
         // Leave the record and all CPU backing retained on uncertain close.
-        DeviceMappingClient::new(&mut self.transport, Cap::from_ref(buffer.mapping.as_ref()))
-            .close()
+        DeviceMappingReceiver::from_cap(Cap::from_ref(buffer.mapping.as_ref()))
+            .close(&mut self.transport)
             .expect("DMA invalidate/drain");
         self.transport
             .space
@@ -445,12 +462,12 @@ impl DeviceSession {
             }
         }
         let cpu = buffer.cpu;
-        VmRegionClient::new(&mut self.transport, Cap::from_ref(cpu.region.as_ref()))
-            .destroy()
+        VmRegionReceiver::from_cap(Cap::from_ref(cpu.region.as_ref()))
+            .destroy(&mut self.transport)
             .expect("CPU unmap");
         self.transport.space.delete(cpu.region.as_ref()).unwrap();
-        VmMemoryClient::new(&mut self.transport, Cap::from_ref(cpu.memory.as_ref()))
-            .close()
+        VmMemoryReceiver::from_cap(Cap::from_ref(cpu.memory.as_ref()))
+            .close(&mut self.transport)
             .expect("RAM authority close");
         self.transport.space.delete(cpu.memory.as_ref()).unwrap();
         self.buffers.swap_remove(index);

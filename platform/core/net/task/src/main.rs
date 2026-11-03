@@ -27,21 +27,27 @@ impl Time {
     fn new(io: &mut Io, ctx: &horn_runtime::Context) -> Self {
         let clock = ctx.interface::<Clock>("clock").unwrap();
         let page = DefaultTimePage::from(clock.calibration(io).unwrap());
-        let memory = v::VmFactoryClient::new(&mut *io, ctx.cap("horn.vm").unwrap())
-            .allocate(4096, v::VmBacking::Resident, v::VmProtection(3))
+        let memory = ctx
+            .interface::<v::VmFactoryReceiver>("horn.vm")
+            .unwrap()
+            .allocate(&mut *io, 4096, v::VmBacking::Resident, v::VmProtection(3))
             .unwrap();
-        let writable =
-            v::VmAddressSpaceClient::new(&mut *io, ctx.cap("horn.address-space").unwrap())
-                .reserve(v::VmRegionRequest {
+        let writable = ctx
+            .interface::<v::VmAddressSpaceReceiver>("horn.address-space")
+            .unwrap()
+            .reserve(
+                &mut *io,
+                v::VmRegionRequest {
                     address: 0,
                     length: 4096,
                     alignment: 4096,
                     placement: v::VmPlacement::Anywhere,
                     ceiling: v::VmProtection(3),
-                })
-                .unwrap();
-        let address = v::VmRegionClient::new(&mut *io, Cap::from_ref(writable.as_ref()))
-            .info()
+                },
+            )
+            .unwrap();
+        let address = v::VmRegionReceiver::from_cap(Cap::from_ref(writable.as_ref()))
+            .info(&mut *io)
             .unwrap()
             .address;
         let mut updates = List::default();
@@ -56,8 +62,9 @@ impl Time {
             memory_offset: 0,
             protection: v::VmProtection(3),
         });
-        v::VmRegionClient::new(&mut *io, Cap::from_ref(writable.as_ref()))
+        v::VmRegionReceiver::from_cap(Cap::from_ref(writable.as_ref()))
             .apply(
+                &mut *io,
                 Some(Cap::from_ref(memory.as_ref())),
                 Parcel::inline(updates),
             )
@@ -65,24 +72,29 @@ impl Time {
         unsafe {
             (address as *mut DefaultTimePage).write(page);
         }
-        v::VmRegionClient::new(&mut *io, Cap::from_ref(writable.as_ref()))
-            .destroy()
+        v::VmRegionReceiver::from_cap(Cap::from_ref(writable.as_ref()))
+            .destroy(&mut *io)
             .unwrap();
         io.space.delete(writable.as_ref()).unwrap();
-        v::VmMemoryClient::new(&mut *io, Cap::from_ref(memory.as_ref()))
-            .add_seals(v::VmSeals(15))
+        v::VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref()))
+            .add_seals(&mut *io, v::VmSeals(15))
             .unwrap();
-        let region = v::VmAddressSpaceClient::new(&mut *io, ctx.cap("horn.address-space").unwrap())
-            .reserve(v::VmRegionRequest {
-                address: 0,
-                length: 4096,
-                alignment: 4096,
-                placement: v::VmPlacement::Anywhere,
-                ceiling: v::VmProtection::READ,
-            })
+        let region = ctx
+            .interface::<v::VmAddressSpaceReceiver>("horn.address-space")
+            .unwrap()
+            .reserve(
+                &mut *io,
+                v::VmRegionRequest {
+                    address: 0,
+                    length: 4096,
+                    alignment: 4096,
+                    placement: v::VmPlacement::Anywhere,
+                    ceiling: v::VmProtection::READ,
+                },
+            )
             .unwrap();
-        let address = v::VmRegionClient::new(&mut *io, Cap::from_ref(region.as_ref()))
-            .info()
+        let address = v::VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+            .info(&mut *io)
             .unwrap()
             .address;
         let mut updates = List::default();
@@ -97,8 +109,9 @@ impl Time {
             memory_offset: 0,
             protection: v::VmProtection::READ,
         });
-        v::VmRegionClient::new(&mut *io, Cap::from_ref(region.as_ref()))
+        v::VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
             .apply(
+                &mut *io,
                 Some(Cap::from_ref(memory.as_ref())),
                 Parcel::inline(updates),
             )
@@ -125,8 +138,8 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     let alarm_cap = time.clock.alarm(&mut io).unwrap();
     let alarm = Alarm::from_cap(Cap::from_ref(alarm_cap.as_ref()));
     let mut armed = None;
-    let info = EthernetInterfaceClient::new(&mut io, ethernet)
-        .info()
+    let info = EthernetInterfaceReceiver::from_cap(ethernet)
+        .info(&mut io)
         .unwrap();
     assert!(info.mac.len == 6 && info.mtu == 1500);
     let mut device = ethernet::Device::new(ethernet);
@@ -199,8 +212,8 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         if device.local_work() {
             sel4::cap::Notification::from_bits(ethernet_signal.as_ref().slot as _).signal();
         }
-        EthernetInterfaceClient::new(&mut service.io, ethernet)
-            .watch(&ethernet_signal, device.generation)
+        EthernetInterfaceReceiver::from_cap(ethernet)
+            .watch(&mut service.io, &ethernet_signal, device.generation)
             .unwrap();
         let deadline = iface.poll_delay(timestamp, &service.sockets).and_then(|d| {
             if d.total_micros() == 0 && device.pending_tx() {

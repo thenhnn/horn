@@ -6,7 +6,6 @@ use horn_devmgr::{
     vtd::{self, Hardware, Page},
 };
 use horn_ipc::*;
-pub type PlatformClient = DevicePlatformClient<Sel4Transport<Sel4CapSpace>>;
 pub struct Mapping {
     pub address: usize,
     pub length: usize,
@@ -17,7 +16,8 @@ pub struct Mapping {
 pub struct Io {
     pub ctx: horn_runtime::Context,
     pub boot: horn_supervisor::client::Bootstrap,
-    pub platform: PlatformClient,
+    pub platform: DevicePlatformReceiver,
+    pub transport: Sel4Transport<Sel4CapSpace>,
     pub registers: Option<Mapping>,
     pub base: u64,
     pages: Vec<Mapping>,
@@ -29,9 +29,13 @@ fn vm_error(error: CallError<VmError>) -> vtd::Error {
     }
 }
 impl Io {
-    pub fn new(platform: PlatformClient, ctx: horn_runtime::Context) -> Self {
+    pub fn new(
+        transport: Sel4Transport<Sel4CapSpace>,
+        platform: DevicePlatformReceiver,
+        ctx: horn_runtime::Context,
+    ) -> Self {
         let boot = horn_supervisor::client::Bootstrap {
-            cnode: platform.transport.space.root.bits() as _,
+            cnode: transport.space.root.bits() as _,
             bits: ctx.cspace_bits(),
             vm: ctx.cap::<Endpoint>("horn.vm").unwrap().as_ref().slot,
             space: ctx
@@ -42,6 +46,7 @@ impl Io {
         };
         Self {
             platform,
+            transport,
             ctx,
             boot,
             registers: None,
@@ -50,7 +55,7 @@ impl Io {
         }
     }
     pub fn space(&mut self) -> &mut Sel4CapSpace {
-        &mut self.platform.transport.space
+        &mut self.transport.space
     }
     pub fn map_cpu(
         &mut self,
@@ -58,23 +63,25 @@ impl Io {
         length: usize,
         token: u64,
     ) -> vtd::Result<Mapping> {
-        let region = VmAddressSpaceClient::new(
-            &mut self.platform.transport,
-            self.ctx.cap("horn.address-space").unwrap(),
-        )
-        .reserve(VmRegionRequest {
-            address: 0,
-            length: length as u64,
-            alignment: 4096,
-            placement: VmPlacement::Anywhere,
-            ceiling: VmProtection(3),
-        })
-        .map_err(vm_error)?;
-        let address =
-            VmRegionClient::new(&mut self.platform.transport, Cap::from_ref(region.as_ref()))
-                .info()
-                .map_err(vm_error)?
-                .address as usize;
+        let region = self
+            .ctx
+            .interface::<VmAddressSpaceReceiver>("horn.address-space")
+            .unwrap()
+            .reserve(
+                &mut self.transport,
+                VmRegionRequest {
+                    address: 0,
+                    length: length as u64,
+                    alignment: 4096,
+                    placement: VmPlacement::Anywhere,
+                    ceiling: VmProtection(3),
+                },
+            )
+            .map_err(vm_error)?;
+        let address = VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+            .info(&mut self.transport)
+            .map_err(vm_error)?
+            .address as usize;
         let mut updates = List::default();
         updates.len = 2;
         updates.data[0] = VmUpdate::Prepare(VmRange {
@@ -87,8 +94,9 @@ impl Io {
             memory_offset: 0,
             protection: VmProtection(3),
         });
-        VmRegionClient::new(&mut self.platform.transport, Cap::from_ref(region.as_ref()))
+        VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
             .apply(
+                &mut self.transport,
                 Some(Cap::from_ref(memory.as_ref())),
                 Parcel::inline(updates),
             )
@@ -108,27 +116,31 @@ impl Io {
         memory: Cap<VmMemoryObjectTag>,
         token: u64,
     ) {
-        VmRegionClient::new(&mut self.platform.transport, Cap::from_ref(region.as_ref()))
-            .destroy()
+        VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+            .destroy(&mut self.transport)
             .expect("internal MMIO CPU unmap");
         self.space().delete(region.as_ref()).unwrap();
-        VmMemoryClient::new(&mut self.platform.transport, Cap::from_ref(memory.as_ref()))
-            .close()
+        VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref()))
+            .close(&mut self.transport)
             .expect("internal MMIO memory close");
         self.space().delete(memory.as_ref()).unwrap();
-        self.platform
-            .revoke_mmio(token)
-            .expect("internal MMIO lease revoke");
+        {
+            let io = &mut *self;
+            io.platform.revoke_mmio(&mut io.transport, token)
+        }
+        .expect("internal MMIO lease revoke");
     }
     pub fn mmio(&mut self, base: u64, length: usize) -> vtd::Result<Mapping> {
-        let grant = self
-            .platform
-            .mmio(
-                &self.ctx.cap("horn.address-space").unwrap(),
+        let grant = {
+            let io = &mut *self;
+            io.platform.mmio(
+                &mut io.transport,
+                &io.ctx.cap("horn.address-space").unwrap(),
                 base,
                 length as u64,
             )
-            .map_err(|_| vtd::Error::Backend)?;
+        }
+        .map_err(|_| vtd::Error::Backend)?;
         self.map_cpu(grant.memory, length, grant.token)
     }
     pub fn initialize(&mut self, base: u64) {
@@ -151,14 +163,20 @@ impl Io {
         Ok((map.address + offset) as *mut u8)
     }
     pub fn config(&mut self, address: u64) -> u32 {
-        let bytes = self.platform.read(address, 4).expect("PCI config read");
+        let bytes = {
+            let io = &mut *self;
+            io.platform.read(&mut io.transport, address, 4)
+        }
+        .expect("PCI config read");
         assert_eq!(bytes.len, 4);
         u32::from_le_bytes(bytes.data[..4].try_into().unwrap())
     }
     pub fn write(&mut self, address: u64, width: u32, value: u64) {
-        self.platform
-            .write(address, width, value)
-            .expect("PCI config write");
+        {
+            let io = &mut *self;
+            io.platform.write(&mut io.transport, address, width, value)
+        }
+        .expect("PCI config write");
     }
 }
 unsafe impl Hardware for Io {
@@ -190,19 +208,25 @@ unsafe impl Hardware for Io {
         self.pages
             .try_reserve(1)
             .map_err(|_| vtd::Error::Exhausted)?;
-        let memory = VmFactoryClient::new(
-            &mut self.platform.transport,
-            self.ctx.cap("horn.vm").unwrap(),
-        )
-        .allocate(4096, VmBacking::Resident, VmProtection(3))
-        .map_err(vm_error)?;
-        let grant = self
-            .platform
-            .pin(&memory, 0, 4096, 3)
-            .map_err(|e| match e {
-                CallError::Remote(DeviceError::Exhausted) => vtd::Error::Exhausted,
-                _ => vtd::Error::Backend,
-            })?;
+        let memory = self
+            .ctx
+            .interface::<VmFactoryReceiver>("horn.vm")
+            .unwrap()
+            .allocate(
+                &mut self.transport,
+                4096,
+                VmBacking::Resident,
+                VmProtection(3),
+            )
+            .map_err(vm_error)?;
+        let grant = {
+            let io = &mut *self;
+            io.platform.pin(&mut io.transport, &memory, 0, 4096, 3)
+        }
+        .map_err(|e| match e {
+            CallError::Remote(DeviceError::Exhausted) => vtd::Error::Exhausted,
+            _ => vtd::Error::Backend,
+        })?;
         if grant.pages.len != 1 {
             return Err(vtd::Error::Backend);
         }

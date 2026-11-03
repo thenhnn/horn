@@ -73,7 +73,7 @@ unsafe impl Hal for CapabilityHal {
 }
 pub fn transport(expected: DeviceType) -> (IommuPciTransport<PciTransport>, NonNull<u8>) {
     let resources = with(|s| {
-        let r = s.control().resources().unwrap();
+        let r = s.control().resources(s.transport()).unwrap();
         s.map_bars(&r);
         r
     });

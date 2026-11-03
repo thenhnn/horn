@@ -58,11 +58,10 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     sel4::cap::Notification::from_bits(wake.as_ref().slot as _).signal();
     launch_probe::run(&ctx, &mut io);
     vm_probe::run(&mut ctx, &mut io);
-    let mut process = horn_procd::protocol::ProcessLifecycleClient::new(
-        &mut io,
-        ctx.cap("horn.lifecycle").unwrap(),
-    );
-    assert!(process.info().unwrap().charged_bytes > 0);
-    process.exit(0).unwrap();
+    let process = ctx
+        .interface::<horn_procd::protocol::ProcessLifecycleReceiver>("horn.lifecycle")
+        .unwrap();
+    assert!(process.info(&mut io).unwrap().charged_bytes > 0);
+    process.exit(&mut io, 0).unwrap();
     unreachable!()
 }

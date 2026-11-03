@@ -31,16 +31,16 @@ impl Connection {
                     Phase::Response(_) => TcpEvents::WRITABLE.0,
                     Phase::Done => return,
                 };
-                TcpConnectionClient::new(io, Cap::from_ref(self.tcp.as_ref()))
-                    .watch(&signal, TcpEvents(events | TcpEvents::CLOSED.0))
+                TcpConnectionReceiver::from_cap(Cap::from_ref(self.tcp.as_ref()))
+                    .watch(io, &signal, TcpEvents(events | TcpEvents::CLOSED.0))
                     .unwrap();
                 return;
             }
             budget -= 1;
             let interest = match self.phase {
                 Phase::Headers(used) => {
-                    match TcpConnectionClient::new(&mut *io, Cap::from_ref(self.tcp.as_ref()))
-                        .read()
+                    match TcpConnectionReceiver::from_cap(Cap::from_ref(self.tcp.as_ref()))
+                        .read(&mut *io)
                     {
                         Ok(data) => {
                             let n = data.len as usize;
@@ -71,8 +71,8 @@ impl Connection {
                     let mut data = List::default();
                     data.len = n as _;
                     data.data[..n].copy_from_slice(&RESPONSE[offset..offset + n]);
-                    match TcpConnectionClient::new(&mut *io, Cap::from_ref(self.tcp.as_ref()))
-                        .write(data)
+                    match TcpConnectionReceiver::from_cap(Cap::from_ref(self.tcp.as_ref()))
+                        .write(&mut *io, data)
                     {
                         Ok(written) => {
                             assert!(written > 0 && written as usize <= n);
@@ -94,15 +94,15 @@ impl Connection {
                 }
                 Phase::Done => return,
             };
-            TcpConnectionClient::new(io, Cap::from_ref(self.tcp.as_ref()))
-                .watch(&signal, TcpEvents(interest | TcpEvents::CLOSED.0))
+            TcpConnectionReceiver::from_cap(Cap::from_ref(self.tcp.as_ref()))
+                .watch(io, &signal, TcpEvents(interest | TcpEvents::CLOSED.0))
                 .unwrap();
             return;
         }
     }
     fn close(self, io: &mut Io) {
-        TcpConnectionClient::new(&mut *io, Cap::from_ref(self.tcp.as_ref()))
-            .finish()
+        TcpConnectionReceiver::from_cap(Cap::from_ref(self.tcp.as_ref()))
+            .finish(&mut *io)
             .unwrap();
         io.space.delete(self.tcp.as_ref()).unwrap();
     }
@@ -110,8 +110,10 @@ impl Connection {
 fn main(mut ctx: horn_runtime::Context) -> ! {
     let mut io = ctx.transport().unwrap();
     let signal = ctx.cap::<Notification>("signal").unwrap();
-    let listener = TcpFactoryClient::new(&mut io, ctx.cap("tcp").unwrap())
-        .listen(80)
+    let listener = ctx
+        .interface::<TcpFactoryReceiver>("tcp")
+        .unwrap()
+        .listen(&mut io, 80)
         .unwrap();
     let mut connections = Vec::<Connection>::new();
     horn_runtime::logging::info!("listening on TCP port 80");
@@ -121,7 +123,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
             connections
                 .try_reserve(1)
                 .expect("HTTP connection metadata quota");
-            match TcpServerClient::new(&mut io, Cap::from_ref(listener.as_ref())).accept() {
+            match TcpServerReceiver::from_cap(Cap::from_ref(listener.as_ref())).accept(&mut io) {
                 Ok(tcp) => connections.push(Connection {
                     tcp,
                     header: [0; 1024],
@@ -141,8 +143,8 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
             }
         }
         if connections.len() < MAX_CONNECTIONS {
-            TcpServerClient::new(&mut io, Cap::from_ref(listener.as_ref()))
-                .watch(&signal, TcpEvents::ACCEPT)
+            TcpServerReceiver::from_cap(Cap::from_ref(listener.as_ref()))
+                .watch(&mut io, &signal, TcpEvents::ACCEPT)
                 .unwrap();
         }
         // All active streams were driven to WouldBlock and armed. Notifications

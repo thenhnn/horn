@@ -41,7 +41,7 @@ let events = ctx.cap::<horn_ipc::Notification>("events")?;
 
 This is a typed view, not object creation, a remote type query, or an authority
 restriction. Views do not retain a transport and never perform cleanup in Drop;
-calls borrow `&mut io` and use the existing generated client/wire machinery.
+calls borrow `&mut io` and invoke the transport with generated wire values.
 See `docs/idl.md` for generated receiver names and explicit capability bridges.
 
 Context hands out one application transport and one inbox, with private slot

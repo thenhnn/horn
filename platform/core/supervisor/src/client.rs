@@ -23,8 +23,8 @@ impl Bootstrap {
         let mut bytes = alloc::vec![0; size];
         libhorn::bindings::encode(entries, &mut bytes).unwrap();
         let descriptor = self.upload(io, &bytes);
-        ProcessControlClient::new(&mut *io, Cap::from_ref(process.as_ref()))
-            .startup_context(&descriptor, size as u64)
+        ProcessControlReceiver::from_cap(Cap::from_ref(process.as_ref()))
+            .startup_context(&mut *io, &descriptor, size as u64)
             .unwrap();
         close_image(io, descriptor);
     }
@@ -47,8 +47,9 @@ impl Bootstrap {
         badge: Option<u64>,
         rights: Rights,
     ) {
-        ProcessControlClient::new(io, Cap::from_ref(process.as_ref()))
+        ProcessControlReceiver::from_cap(Cap::from_ref(process.as_ref()))
             .install(
+                io,
                 &self.cap(self.cnode),
                 self.bits as _,
                 source.as_ref().slot,
@@ -61,20 +62,23 @@ impl Bootstrap {
     pub fn upload(self, io: &mut Io, bytes: &[u8]) -> Cap<VmMemoryObjectTag> {
         assert!(!bytes.is_empty());
         let length = bytes.len().next_multiple_of(4096);
-        let memory = VmFactoryClient::new(&mut *io, self.cap(self.vm))
-            .allocate(length as _, VmBacking::Resident, VmProtection(3))
+        let memory = VmFactoryReceiver::from_cap(self.cap(self.vm))
+            .allocate(&mut *io, length as _, VmBacking::Resident, VmProtection(3))
             .unwrap();
-        let region = VmAddressSpaceClient::new(&mut *io, self.cap(self.space))
-            .reserve(VmRegionRequest {
-                address: 0,
-                length: length as _,
-                alignment: 4096,
-                placement: VmPlacement::Anywhere,
-                ceiling: VmProtection(3),
-            })
+        let region = VmAddressSpaceReceiver::from_cap(self.cap(self.space))
+            .reserve(
+                &mut *io,
+                VmRegionRequest {
+                    address: 0,
+                    length: length as _,
+                    alignment: 4096,
+                    placement: VmPlacement::Anywhere,
+                    ceiling: VmProtection(3),
+                },
+            )
             .unwrap();
-        let address = VmRegionClient::new(&mut *io, Cap::from_ref(region.as_ref()))
-            .info()
+        let address = VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+            .info(&mut *io)
             .unwrap()
             .address;
         let mut updates = List::default();
@@ -89,8 +93,9 @@ impl Bootstrap {
             memory_offset: 0,
             protection: VmProtection(3),
         });
-        VmRegionClient::new(&mut *io, Cap::from_ref(region.as_ref()))
+        VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
             .apply(
+                &mut *io,
                 Some(Cap::from_ref(memory.as_ref())),
                 Parcel::inline(updates),
             )
@@ -98,19 +103,19 @@ impl Bootstrap {
         unsafe {
             core::ptr::copy_nonoverlapping(bytes.as_ptr(), address as *mut u8, bytes.len());
         }
-        VmRegionClient::new(&mut *io, Cap::from_ref(region.as_ref()))
-            .destroy()
+        VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+            .destroy(&mut *io)
             .unwrap();
         io.space.delete(region.as_ref()).unwrap();
-        VmMemoryClient::new(&mut *io, Cap::from_ref(memory.as_ref()))
-            .add_seals(VmSeals::WRITE)
+        VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref()))
+            .add_seals(&mut *io, VmSeals::WRITE)
             .unwrap();
         memory
     }
 }
 pub fn close_image(io: &mut Io, memory: Cap<VmMemoryObjectTag>) {
-    VmMemoryClient::new(&mut *io, Cap::from_ref(memory.as_ref()))
-        .close()
+    VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref()))
+        .close(&mut *io)
         .unwrap();
     io.space.delete(memory.as_ref()).unwrap();
 }

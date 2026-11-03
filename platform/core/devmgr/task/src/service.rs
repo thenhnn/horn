@@ -166,7 +166,11 @@ impl Service {
         }
     }
     pub fn init_clock(&mut self, base: u64) {
-        let irq = self.io().platform.irq(0).expect("HPET kernel vector");
+        let irq = {
+            let io = &mut *self.io();
+            io.platform.irq(&mut io.transport, 0)
+        }
+        .expect("HPET kernel vector");
         // QEMU HPET writes through the system address space (not PCI DMA),
         // and Q35 supplies no HPET DMAR scope. This is explicit platform policy,
         // not a compatibility-interrupt fallback for PCI devices.
@@ -184,17 +188,28 @@ impl Service {
             }
         };
         let io = self.io();
-        io.platform
-            .bind_irq(irq.token, &io.ctx.cap("timer").unwrap())
-            .expect("HPET IRQ bind");
+        {
+            let io = &mut *io;
+            io.platform
+                .bind_irq(&mut io.transport, irq.token, &io.ctx.cap("timer").unwrap())
+        }
+        .expect("HPET IRQ bind");
         let map = self.io().mmio(base, 4096).expect("HPET registers");
         self.clock = Some(crate::clock::Clock::new(map, irq.token, address, data));
-        self.io().platform.ack_irq(irq.token).expect("HPET IRQ arm");
+        {
+            let io = &mut *self.io();
+            io.platform.ack_irq(&mut io.transport, irq.token)
+        }
+        .expect("HPET IRQ arm");
     }
     pub fn clock_irq(&mut self) {
         let mut clock = self.clock.take().expect("HPET IRQ without clock");
         clock.poll(self.io());
-        self.io().platform.ack_irq(clock.irq).expect("HPET IRQ ack");
+        {
+            let io = &mut *self.io();
+            io.platform.ack_irq(&mut io.transport, clock.irq)
+        }
+        .expect("HPET IRQ ack");
         self.clock = Some(clock);
     }
     pub fn arm_fault_irq(&mut self) -> Option<u64> {
@@ -204,11 +219,22 @@ impl Service {
         // The unit's own fault MSI uses the kernel's MSI-vector mechanism,
         // not a PCI function or an interrupt-remapping table entry.
         let io = self.io();
-        let irq = io.platform.irq(0).expect("fault kernel IRQ");
-        io.platform
-            .bind_irq(irq.token, &io.ctx.cap("fault").unwrap())
-            .expect("fault IRQ bind");
-        io.platform.ack_irq(irq.token).expect("fault IRQ arm");
+        let irq = {
+            let io = &mut *io;
+            io.platform.irq(&mut io.transport, 0)
+        }
+        .expect("fault kernel IRQ");
+        {
+            let io = &mut *io;
+            io.platform
+                .bind_irq(&mut io.transport, irq.token, &io.ctx.cap("fault").unwrap())
+        }
+        .expect("fault IRQ bind");
+        {
+            let io = &mut *io;
+            io.platform.ack_irq(&mut io.transport, irq.token)
+        }
+        .expect("fault IRQ arm");
         let vector = u8::try_from(irq.vector).expect("fault IRQ vector");
         self.unit()
             .fault_interrupt(vector, 0)
@@ -245,7 +271,11 @@ impl Service {
                 break;
             }
         }
-        self.io().platform.ack_irq(token).expect("fault IRQ ack");
+        {
+            let io = &mut *self.io();
+            io.platform.ack_irq(&mut io.transport, token)
+        }
+        .expect("fault IRQ ack");
         self.unit()
             .mask_fault_interrupt(false)
             .expect("unmask fault event");
@@ -304,7 +334,7 @@ impl Service {
         Ok((badge, authority, exported))
     }
     fn retire(&mut self, authority: CapRef) {
-        let root = self.io().platform.transport.space.root;
+        let root = self.io().transport.space.root;
         root.absolute_cptr(sel4::CPtr::from_bits(authority.slot as _))
             .revoke()
             .expect("authority revoke");
@@ -314,10 +344,11 @@ impl Service {
     /// Uncertain cleanup is fail-stop, never slot reuse or an ordinary error.
     fn close_mmio(&mut self, device: usize, index: usize) {
         let token = self.devices[device].mmios[index].token;
-        self.io()
-            .platform
-            .revoke_mmio(token)
-            .expect("MMIO revoke acknowledgement");
+        {
+            let io = &mut *self.io();
+            io.platform.revoke_mmio(&mut io.transport, token)
+        }
+        .expect("MMIO revoke acknowledgement");
         let mmio = self.devices[device].mmios.swap_remove(index);
         if let Some(memory) = mmio.memory {
             self.io().space().delete(memory.as_ref()).unwrap();
@@ -358,10 +389,11 @@ impl Service {
                     .write_volatile((route.address() >> 32) as u32);
                 (table as *mut u32).add(2).write_volatile(route.data());
             }
-            self.io()
-                .platform
-                .ack_irq(token)
-                .expect("IRQ arm before device enable");
+            {
+                let io = &mut *self.io();
+                io.platform.ack_irq(&mut io.transport, token)
+            }
+            .expect("IRQ arm before device enable");
             let x = caps.msix.unwrap();
             let mut cfg = PciConfig {
                 io: self.io(),
@@ -384,10 +416,11 @@ impl Service {
                 route.data(),
             )
             .expect("MSI format");
-            self.io()
-                .platform
-                .ack_irq(token)
-                .expect("IRQ arm before MSI enable");
+            {
+                let io = &mut *self.io();
+                io.platform.ack_irq(&mut io.transport, token)
+            }
+            .expect("IRQ arm before MSI enable");
             m.enable(&mut PciConfig {
                 io: self.io(),
                 base: config,
@@ -405,10 +438,11 @@ impl Service {
                 .expect("DMA invalidate/drain");
         }
         for pin in map.pins {
-            self.io()
-                .platform
-                .unpin(pin.token)
-                .expect("DMA unpin after drain");
+            {
+                let io = &mut *self.io();
+                io.platform.unpin(&mut io.transport, pin.token)
+            }
+            .expect("DMA unpin after drain");
         }
         self.devices[map.device].dma_bytes -= map.length;
         self.retire(map.authority);
@@ -552,7 +586,11 @@ impl Service {
             return Err(DeviceError::Invalid);
         }
         let access = map.access;
-        let pin = match self.io().platform.pin(&memory, offset, length, access) {
+        let pin = match {
+            let io = &mut *self.io();
+            io.platform
+                .pin(&mut io.transport, &memory, offset, length, access)
+        } {
             Ok(p) => p,
             Err(CallError::Remote(e)) => return Err(e),
             Err(_) => panic!("DMA pin transport"),
@@ -571,10 +609,11 @@ impl Service {
             if self.unit().poisoned() {
                 panic!("DMA map poisoned: {:?}", e);
             }
-            self.io()
-                .platform
-                .unpin(pin.token)
-                .expect("unpublished pin release");
+            {
+                let io = &mut *self.io();
+                io.platform.unpin(&mut io.transport, pin.token)
+            }
+            .expect("unpublished pin release");
             self.maps[index] = Some(map);
             return Err(failure(e));
         }
@@ -870,7 +909,10 @@ impl DeviceControl for Caller<'_> {
             .map_err(|_| DeviceError::Exhausted)?;
         // Reserve metadata/endpoint slots before creating any CPU aliases.
         let (badge, authority, exported) = self.service.mint()?;
-        let grant = match self.service.io().platform.mmio(&space, address, length) {
+        let grant = match {
+            let io = &mut *self.service.io();
+            io.platform.mmio(&mut io.transport, &space, address, length)
+        } {
             Ok(grant) => grant,
             Err(CallError::Remote(error))
                 if error != DeviceError::Quarantined && error != DeviceError::Backend =>
@@ -1009,12 +1051,14 @@ impl DeviceControl for Caller<'_> {
         let sid = self.service.devices[d].sid;
         let domain = self.service.devices[d].domain;
         let io = self.service.io();
-        let lease =
-            VmFactoryClient::new(&mut io.platform.transport, io.ctx.cap("horn.vm").unwrap())
-                .delegate(12)
-                .expect("IRQ Untyped");
-        let grant = VmUntypedClient::new(&mut io.platform.transport, Cap::from_ref(lease.as_ref()))
-            .capability()
+        let lease = io
+            .ctx
+            .interface::<VmFactoryReceiver>("horn.vm")
+            .unwrap()
+            .delegate(&mut io.transport, 12)
+            .expect("IRQ Untyped");
+        let grant = VmUntypedReceiver::from_cap(Cap::from_ref(lease.as_ref()))
+            .capability(&mut io.transport)
             .expect("IRQ Untyped cap");
         let untyped = grant.capability;
         let kernel = io
@@ -1022,7 +1066,7 @@ impl DeviceControl for Caller<'_> {
             .cap::<sel4::cap_type::Untyped>(untyped.as_ref())
             .unwrap();
         let slot = io.space().reserve_slot().expect("notification slot");
-        let root = io.platform.transport.space.root;
+        let root = io.transport.space.root;
         kernel
             .untyped_retype(
                 &sel4::ObjectBlueprint::Notification,
@@ -1035,10 +1079,17 @@ impl DeviceControl for Caller<'_> {
             .space()
             .register(sel4::cap::Notification::from_bits(slot.path().bits()))
             .unwrap();
-        let irq = io.platform.irq(sid as u32).expect("kernel IRQ");
-        io.platform
-            .bind_irq(irq.token, &Cap::from_ref(notification))
-            .expect("IRQ bind");
+        let irq = {
+            let io = &mut *io;
+            io.platform.irq(&mut io.transport, sid as u32)
+        }
+        .expect("kernel IRQ");
+        {
+            let io = &mut *io;
+            io.platform
+                .bind_irq(&mut io.transport, irq.token, &Cap::from_ref(notification))
+        }
+        .expect("IRQ bind");
         let route = self
             .service
             .unit()
@@ -1078,7 +1129,7 @@ impl DeviceControl for Caller<'_> {
         {
             return Err(DeviceError::Denied);
         }
-        let root = self.service.io().platform.transport.space.root;
+        let root = self.service.io().transport.space.root;
         let slot = self
             .service
             .io()
@@ -1099,17 +1150,17 @@ impl DeviceControl for Caller<'_> {
             .unwrap();
         let sid = self.service.devices[d].sid;
         let domain = self.service.devices[d].domain;
-        let irq = self
-            .service
-            .io()
-            .platform
-            .irq(sid as u32)
-            .expect("kernel IRQ");
-        self.service
-            .io()
-            .platform
-            .bind_irq(irq.token, &Cap::from_ref(notification))
-            .expect("IRQ bind");
+        let irq = {
+            let io = &mut *self.service.io();
+            io.platform.irq(&mut io.transport, sid as u32)
+        }
+        .expect("kernel IRQ");
+        {
+            let io = &mut *self.service.io();
+            io.platform
+                .bind_irq(&mut io.transport, irq.token, &Cap::from_ref(notification))
+        }
+        .expect("IRQ bind");
         let route = self
             .service
             .unit()
@@ -1131,11 +1182,11 @@ impl DeviceControl for Caller<'_> {
             .as_ref()
             .ok_or(DeviceError::NotFound)?
             .token;
-        self.service
-            .io()
-            .platform
-            .ack_irq(token)
-            .map_err(|_| DeviceError::Backend)
+        {
+            let io = &mut *self.service.io();
+            io.platform.ack_irq(&mut io.transport, token)
+        }
+        .map_err(|_| DeviceError::Backend)
     }
     fn activate(&mut self) -> Result<(), DeviceError> {
         let d = self.service.device(self.badge)?;
@@ -1181,19 +1232,16 @@ impl DeviceControl for Caller<'_> {
                 .unit()
                 .remove_interrupt(domain, irq.route)
                 .expect("interrupt invalidate");
-            self.service
-                .io()
-                .platform
-                .close_irq(irq.token)
-                .expect("kernel IRQ revoke");
+            {
+                let io = &mut *self.service.io();
+                io.platform.close_irq(&mut io.transport, irq.token)
+            }
+            .expect("kernel IRQ revoke");
             self.service.retire(irq.notification);
             if let Some((lease, untyped)) = irq.backing {
-                VmUntypedClient::new(
-                    &mut self.service.io().platform.transport,
-                    Cap::from_ref(lease.as_ref()),
-                )
-                .close()
-                .expect("notification backing revoke");
+                VmUntypedReceiver::from_cap(Cap::from_ref(lease.as_ref()))
+                    .close(&mut self.service.io().transport)
+                    .expect("notification backing revoke");
                 self.service.io().space().delete(untyped.as_ref()).unwrap();
                 self.service.io().space().delete(lease.as_ref()).unwrap();
             }
@@ -1213,11 +1261,11 @@ impl DeviceControl for Caller<'_> {
             {
                 let map = self.service.maps[index].take().unwrap();
                 for pin in map.pins {
-                    self.service
-                        .io()
-                        .platform
-                        .unpin(pin.token)
-                        .expect("detached DMA unpin");
+                    {
+                        let io = &mut *self.service.io();
+                        io.platform.unpin(&mut io.transport, pin.token)
+                    }
+                    .expect("detached DMA unpin");
                 }
                 self.service.devices[d].dma_bytes -= map.length;
                 self.service.retire(map.authority);

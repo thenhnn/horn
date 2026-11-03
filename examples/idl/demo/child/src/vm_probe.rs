@@ -18,19 +18,22 @@ fn reserve(
     space: Cap<VmAddressSpaceTag>,
     size: u64,
 ) -> Cap<VmRegionObjectTag> {
-    VmAddressSpaceClient::new(transport, space)
-        .reserve(VmRegionRequest {
-            address: 0,
-            length: size,
-            alignment: 4096,
-            placement: VmPlacement::Anywhere,
-            ceiling: VmProtection(VmProtection::READ.0 | VmProtection::WRITE.0),
-        })
+    VmAddressSpaceReceiver::from_cap(space)
+        .reserve(
+            transport,
+            VmRegionRequest {
+                address: 0,
+                length: size,
+                alignment: 4096,
+                placement: VmPlacement::Anywhere,
+                ceiling: VmProtection(VmProtection::READ.0 | VmProtection::WRITE.0),
+            },
+        )
         .unwrap()
 }
 fn destroy(transport: &mut Sel4Transport<Sel4CapSpace>, region: Cap<VmRegionObjectTag>) {
-    VmRegionClient::new(&mut *transport, Cap::from_ref(region.as_ref()))
-        .destroy()
+    VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+        .destroy(&mut *transport)
         .unwrap();
     transport.space.delete(region.as_ref()).unwrap();
 }
@@ -39,8 +42,8 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
     let root = transport.space.root;
     let factory = ctx.cap::<VmFactoryTag>("horn.vm").unwrap();
     let address_space = ctx.cap::<VmAddressSpaceTag>("horn.address-space").unwrap();
-    let initial_charge = VmFactoryClient::new(&mut transport, factory)
-        .info()
+    let initial_charge = VmFactoryReceiver::from_cap(factory)
+        .info(&mut transport)
         .unwrap()
         .charged_bytes;
     // The first synchronous call also orders this marker after root's marker.
@@ -48,11 +51,11 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         core::arch::x86_64::__cpuid(1).ebx >> 24
     });
     // A whole Untyped is charged once, independent of the objects retyped inside it.
-    let lease = VmFactoryClient::new(&mut transport, factory)
-        .delegate(13)
+    let lease = VmFactoryReceiver::from_cap(factory)
+        .delegate(&mut transport, 13)
         .unwrap();
-    let grant = VmUntypedClient::new(&mut transport, Cap::from_ref(lease.as_ref()))
-        .capability()
+    let grant = VmUntypedReceiver::from_cap(Cap::from_ref(lease.as_ref()))
+        .capability(&mut transport)
         .unwrap();
     assert_eq!(grant.size_bits, 13);
     let untyped = grant.capability;
@@ -70,14 +73,14 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         )
         .unwrap();
     assert_eq!(
-        VmFactoryClient::new(&mut transport, factory)
-            .info()
+        VmFactoryReceiver::from_cap(factory)
+            .info(&mut transport,)
             .unwrap()
             .charged_bytes,
         initial_charge + 8192
     );
-    VmUntypedClient::new(&mut transport, Cap::from_ref(lease.as_ref()))
-        .close()
+    VmUntypedReceiver::from_cap(Cap::from_ref(lease.as_ref()))
+        .close(&mut transport)
         .unwrap();
     let derived = transport
         .space
@@ -87,15 +90,16 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
     transport.space.delete(untyped.as_ref()).unwrap();
     transport.space.delete(lease.as_ref()).unwrap();
     assert_eq!(
-        VmFactoryClient::new(&mut transport, factory)
-            .info()
+        VmFactoryReceiver::from_cap(factory)
+            .info(&mut transport,)
             .unwrap()
             .charged_bytes,
         initial_charge
     );
     let rw = VmProtection(VmProtection::READ.0 | VmProtection::WRITE.0);
     assert_eq!(
-        VmFactoryClient::new(&mut transport, factory).allocate(
+        VmFactoryReceiver::from_cap(factory).allocate(
+            &mut transport,
             4096,
             VmBacking::Resident,
             VmProtection(VmProtection::READ.0 | VmProtection::EXECUTE.0)
@@ -107,31 +111,36 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         length: 8192,
     };
     assert_eq!(
-        VmFactoryClient::new(&mut transport, factory).allocate(0, VmBacking::Resident, rw),
+        VmFactoryReceiver::from_cap(factory).allocate(&mut transport, 0, VmBacking::Resident, rw),
         Err(CallError::Remote(VmError::Invalid))
     );
     assert_eq!(
-        VmFactoryClient::new(&mut transport, factory).allocate(4096, VmBacking::DemandZero, rw),
+        VmFactoryReceiver::from_cap(factory).allocate(
+            &mut transport,
+            4096,
+            VmBacking::DemandZero,
+            rw
+        ),
         Err(CallError::Remote(VmError::Unsupported))
     );
     assert_eq!(
-        VmFactoryClient::new(&mut transport, factory).create_address_space(),
+        VmFactoryReceiver::from_cap(factory).create_address_space(&mut transport,),
         Err(CallError::Remote(VmError::Unsupported))
     );
     assert_eq!(
-        VmFactoryClient::new(&mut transport, Cap::from_ref(address_space.as_ref())).info(),
+        VmFactoryReceiver::from_cap(Cap::from_ref(address_space.as_ref())).info(&mut transport,),
         Err(CallError::Remote(VmError::Denied))
     );
-    let memory = VmFactoryClient::new(&mut transport, factory)
-        .allocate(8192, VmBacking::Resident, rw)
+    let memory = VmFactoryReceiver::from_cap(factory)
+        .allocate(&mut transport, 8192, VmBacking::Resident, rw)
         .unwrap();
     let first = reserve(&mut transport, address_space, 8192);
     let alias = reserve(&mut transport, address_space, 8192);
-    let first_info = VmRegionClient::new(&mut transport, Cap::from_ref(first.as_ref()))
-        .info()
+    let first_info = VmRegionReceiver::from_cap(Cap::from_ref(first.as_ref()))
+        .info(&mut transport)
         .unwrap();
-    let alias_info = VmRegionClient::new(&mut transport, Cap::from_ref(alias.as_ref()))
-        .info()
+    let alias_info = VmRegionReceiver::from_cap(Cap::from_ref(alias.as_ref()))
+        .info(&mut transport)
         .unwrap();
     let mapping = VmMap {
         offset: 0,
@@ -141,8 +150,12 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
     };
     let update = VmUpdate::Map(mapping);
     for region in [first, alias] {
-        VmRegionClient::new(&mut transport, Cap::from_ref(region.as_ref()))
-            .apply(Some(memory), batch(&[VmUpdate::Prepare(range), update]))
+        VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+            .apply(
+                &mut transport,
+                Some(memory),
+                batch(&[VmUpdate::Prepare(range), update]),
+            )
             .unwrap();
     }
     unsafe {
@@ -154,13 +167,13 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
     }
     let write_and_lock = VmSeals(VmSeals::WRITE.0 | VmSeals::SEAL.0);
     assert_eq!(
-        VmMemoryClient::new(&mut transport, Cap::from_ref(memory.as_ref()))
-            .add_seals(write_and_lock),
+        VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref()))
+            .add_seals(&mut transport, write_and_lock),
         Err(CallError::Remote(VmError::Busy))
     );
     assert_eq!(
-        VmMemoryClient::new(&mut transport, Cap::from_ref(memory.as_ref()))
-            .info()
+        VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref()))
+            .info(&mut transport,)
             .unwrap()
             .seals,
         VmSeals(0)
@@ -181,8 +194,8 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         .space
         .register(::sel4::cap::Endpoint::from_bits(copied_slot.path().bits()))
         .unwrap();
-    VmMemoryClient::new(&mut transport, Cap::from_ref(copied))
-        .add_seals(VmSeals::FUTURE_WRITE)
+    VmMemoryReceiver::from_cap(Cap::from_ref(copied))
+        .add_seals(&mut transport, VmSeals::FUTURE_WRITE)
         .unwrap();
     unsafe {
         core::ptr::write_volatile(alias_info.address as *mut u8, 0xa5);
@@ -190,15 +203,19 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
     // A non-service capability must not be interpreted as a memory identity.
     let fake = ctx.cap::<VmMemoryObjectTag>("wake").unwrap();
     assert_eq!(
-        VmRegionClient::new(&mut transport, Cap::from_ref(alias.as_ref()))
-            .apply(Some(fake), batch(&[])),
+        VmRegionReceiver::from_cap(Cap::from_ref(alias.as_ref())).apply(
+            &mut transport,
+            Some(fake),
+            batch(&[])
+        ),
         Err(CallError::Remote(VmBatchError {
             completed: 0,
             error: VmError::Denied
         }))
     );
     assert_eq!(
-        VmRegionClient::new(&mut transport, Cap::from_ref(first.as_ref())).apply(
+        VmRegionReceiver::from_cap(Cap::from_ref(first.as_ref())).apply(
+            &mut transport,
             None,
             batch(&[
                 VmUpdate::Prepare(range),
@@ -222,18 +239,26 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         ..mapping
     };
     assert_eq!(
-        VmRegionClient::new(&mut transport, Cap::from_ref(first.as_ref()))
-            .apply(Some(memory), batch(&[VmUpdate::Prepare(range), update])),
+        VmRegionReceiver::from_cap(Cap::from_ref(first.as_ref())).apply(
+            &mut transport,
+            Some(memory),
+            batch(&[VmUpdate::Prepare(range), update])
+        ),
         Err(CallError::Remote(VmBatchError {
             completed: 1,
             error: VmError::Denied
         }))
     );
-    VmRegionClient::new(&mut transport, Cap::from_ref(first.as_ref()))
-        .apply(Some(memory), batch(&[VmUpdate::Map(readonly)]))
+    VmRegionReceiver::from_cap(Cap::from_ref(first.as_ref()))
+        .apply(
+            &mut transport,
+            Some(memory),
+            batch(&[VmUpdate::Map(readonly)]),
+        )
         .unwrap();
     assert_eq!(
-        VmRegionClient::new(&mut transport, Cap::from_ref(first.as_ref())).apply(
+        VmRegionReceiver::from_cap(Cap::from_ref(first.as_ref())).apply(
+            &mut transport,
             None,
             batch(&[VmUpdate::Protect(VmProtect {
                 offset: 0,
@@ -247,16 +272,17 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         }))
     );
     assert_eq!(
-        VmFactoryClient::new(&mut transport, factory)
-            .info()
+        VmFactoryReceiver::from_cap(factory)
+            .info(&mut transport,)
             .unwrap()
             .charged_bytes,
         initial_charge + 8192
     );
     // Old mappings keep MAYWRITE across protect(READ), just like memfd.
     for protection in [VmProtection::READ, rw, VmProtection::READ] {
-        VmRegionClient::new(&mut transport, Cap::from_ref(alias.as_ref()))
+        VmRegionReceiver::from_cap(Cap::from_ref(alias.as_ref()))
             .apply(
+                &mut transport,
                 None,
                 batch(&[VmUpdate::Protect(VmProtect {
                     offset: 0,
@@ -267,13 +293,13 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
             .unwrap();
     }
     assert_eq!(
-        VmMemoryClient::new(&mut transport, Cap::from_ref(memory.as_ref()))
-            .add_seals(write_and_lock),
+        VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref()))
+            .add_seals(&mut transport, write_and_lock),
         Err(CallError::Remote(VmError::Busy))
     );
     assert_eq!(
-        VmMemoryClient::new(&mut transport, Cap::from_ref(memory.as_ref()))
-            .info()
+        VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref()))
+            .info(&mut transport,)
             .unwrap()
             .seals,
         VmSeals::FUTURE_WRITE
@@ -285,7 +311,8 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         );
     }
     assert_eq!(
-        VmRegionClient::new(&mut transport, Cap::from_ref(alias.as_ref())).apply(
+        VmRegionReceiver::from_cap(Cap::from_ref(alias.as_ref())).apply(
+            &mut transport,
             None,
             batch(&[VmUpdate::Protect(VmProtect {
                 offset: 0,
@@ -299,26 +326,28 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         }))
     );
     destroy(&mut transport, alias);
-    VmMemoryClient::new(&mut transport, Cap::from_ref(memory.as_ref()))
-        .add_seals(VmSeals(
-            write_and_lock.0 | VmSeals::GROW.0 | VmSeals::SHRINK.0,
-        ))
+    VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref()))
+        .add_seals(
+            &mut transport,
+            VmSeals(write_and_lock.0 | VmSeals::GROW.0 | VmSeals::SHRINK.0),
+        )
         .unwrap();
-    let sealed = VmMemoryClient::new(&mut transport, Cap::from_ref(copied))
-        .info()
+    let sealed = VmMemoryReceiver::from_cap(Cap::from_ref(copied))
+        .info(&mut transport)
         .unwrap();
     assert_eq!(sealed.seals.0, 31);
     assert_eq!(sealed.size, 8192);
     assert_eq!(
-        VmMemoryClient::new(&mut transport, Cap::from_ref(copied)).add_seals(VmSeals(0)),
+        VmMemoryReceiver::from_cap(Cap::from_ref(copied)).add_seals(&mut transport, VmSeals(0)),
         Err(CallError::Remote(VmError::Denied))
     );
     assert_eq!(
-        VmMemoryClient::new(&mut transport, Cap::from_ref(copied)).add_seals(VmSeals(32)),
+        VmMemoryReceiver::from_cap(Cap::from_ref(copied)).add_seals(&mut transport, VmSeals(32)),
         Err(CallError::Remote(VmError::Invalid))
     );
     assert_eq!(
-        VmRegionClient::new(&mut transport, Cap::from_ref(first.as_ref())).apply(
+        VmRegionReceiver::from_cap(Cap::from_ref(first.as_ref())).apply(
+            &mut transport,
             None,
             batch(&[VmUpdate::Protect(VmProtect {
                 offset: 0,
@@ -331,13 +360,13 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
             error: VmError::Denied
         }))
     );
-    VmMemoryClient::new(&mut transport, Cap::from_ref(memory.as_ref()))
-        .close()
+    VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref()))
+        .close(&mut transport)
         .unwrap();
     transport.space.delete(memory.as_ref()).unwrap();
     transport.space.delete(copied).unwrap();
-    let address = VmRegionClient::new(&mut transport, Cap::from_ref(first.as_ref()))
-        .info()
+    let address = VmRegionReceiver::from_cap(Cap::from_ref(first.as_ref()))
+        .info(&mut transport)
         .unwrap()
         .address;
     unsafe {
@@ -345,8 +374,8 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
     }
     destroy(&mut transport, first);
     assert_eq!(
-        VmFactoryClient::new(&mut transport, factory)
-            .info()
+        VmFactoryReceiver::from_cap(factory)
+            .info(&mut transport,)
             .unwrap()
             .charged_bytes,
         initial_charge
@@ -354,12 +383,13 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
     ::sel4::debug_println!(
         "VM_SEALS_PASS aliases=true future_write=true immutable=true cleanup=true"
     );
-    let revoked = VmFactoryClient::new(&mut transport, factory)
-        .allocate(4096, VmBacking::Resident, rw)
+    let revoked = VmFactoryReceiver::from_cap(factory)
+        .allocate(&mut transport, 4096, VmBacking::Resident, rw)
         .unwrap();
     let region = reserve(&mut transport, address_space, 4096);
-    VmRegionClient::new(&mut transport, Cap::from_ref(region.as_ref()))
+    VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
         .apply(
+            &mut transport,
             Some(revoked),
             batch(&[
                 VmUpdate::Prepare(VmRange {
@@ -375,14 +405,14 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
             ]),
         )
         .unwrap();
-    VmMemoryClient::new(&mut transport, Cap::from_ref(revoked.as_ref()))
-        .revoke()
+    VmMemoryReceiver::from_cap(Cap::from_ref(revoked.as_ref()))
+        .revoke(&mut transport)
         .unwrap();
     transport.space.delete(revoked.as_ref()).unwrap();
     destroy(&mut transport, region);
     assert_eq!(
-        VmFactoryClient::new(&mut transport, factory)
-            .info()
+        VmFactoryReceiver::from_cap(factory)
+            .info(&mut transport,)
             .unwrap()
             .charged_bytes,
         initial_charge
@@ -392,8 +422,8 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
     );
 
     // Leave one lease live: process exit, not client cooperation, must reclaim it.
-    let _unclosed = VmFactoryClient::new(&mut transport, factory)
-        .delegate(12)
+    let _unclosed = VmFactoryReceiver::from_cap(factory)
+        .delegate(&mut transport, 12)
         .unwrap();
     let mut bootstrap = Vec::with_capacity(4);
     bootstrap.extend_from_slice(&[11u8, 22, 33, 44]);

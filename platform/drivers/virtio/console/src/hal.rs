@@ -86,19 +86,13 @@ pub fn probe_for_test() {
     use horn_supervisor::protocol::*;
     with(|state| {
         assert!(matches!(
-            SupervisorJobClient::new(
-                state.session.transport(),
-                Cap::from_ref(state.supervisor.as_ref())
-            )
-            .cleanup_done(),
+            SupervisorJobReceiver::from_cap(Cap::from_ref(state.supervisor.as_ref()))
+                .cleanup_done(state.session.transport(),),
             Err(CallError::Remote(SupervisorError::Denied))
         ));
         assert!(matches!(
-            SupervisorFactoryClient::new(
-                state.session.transport(),
-                Cap::from_ref(state.supervisor.as_ref())
-            )
-            .core_log_sink(),
+            SupervisorFactoryReceiver::from_cap(Cap::from_ref(state.supervisor.as_ref()))
+                .core_log_sink(state.session.transport(),),
             Err(CallError::Remote(SupervisorError::Denied))
         ));
     });
@@ -107,32 +101,31 @@ pub fn probe_for_test() {
 pub fn stop_for_test(force: bool) {
     use horn_supervisor::protocol::*;
     with(|state| {
-        let mut client = SupervisorRuntimeClient::new(
-            state.session.transport(),
-            Cap::from_ref(state.supervisor.as_ref()),
-        );
+        let client = SupervisorRuntimeReceiver::from_cap(Cap::from_ref(state.supervisor.as_ref()));
         // READY is asynchronous; request_stop is legal during startup as well.
         assert!(matches!(
-            client.status().unwrap(),
+            client.status(state.session.transport()).unwrap(),
             ServiceStatus::Starting | ServiceStatus::Active
         ));
         client
-            .request_stop(if force {
-                StopMode::Force
-            } else {
-                StopMode::Graceful
-            })
+            .request_stop(
+                state.session.transport(),
+                if force {
+                    StopMode::Force
+                } else {
+                    StopMode::Graceful
+                },
+            )
             .unwrap();
     });
 }
 #[cfg(feature = "lifecycle-test")]
 pub fn exit_for_test() -> ! {
     with(|state| {
-        let _ = horn_procd::protocol::ProcessLifecycleClient::new(
-            state.session.transport(),
-            Cap::from_ref(state.lifecycle.as_ref()),
-        )
-        .exit(0);
+        let _ = horn_procd::protocol::ProcessLifecycleReceiver::from_cap(Cap::from_ref(
+            state.lifecycle.as_ref(),
+        ))
+        .exit(state.session.transport(), 0);
         panic!("exit unexpectedly returned");
     })
 }

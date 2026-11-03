@@ -70,10 +70,9 @@ impl Manager {
         owner: u64,
     ) {
         for object in definition.objects {
-            let capability =
-                ProcessControlClient::new(&mut self.io, Cap::from_ref(process.as_ref()))
-                    .kernel_object(object.kind.clone())
-                    .unwrap();
+            let capability = ProcessControlReceiver::from_cap(Cap::from_ref(process.as_ref()))
+                .kernel_object(&mut self.io, object.kind.clone())
+                .unwrap();
             for binding in object.slots {
                 self.boot.install(
                     &mut self.io,
@@ -85,8 +84,8 @@ impl Manager {
                 );
             }
             if object.bind {
-                ProcessControlClient::new(&mut self.io, Cap::from_ref(process.as_ref()))
-                    .bind_notification(&Cap::from_ref(capability.as_ref()))
+                ProcessControlReceiver::from_cap(Cap::from_ref(process.as_ref()))
+                    .bind_notification(&mut self.io, &Cap::from_ref(capability.as_ref()))
                     .unwrap();
             }
             for export in object.exports {
@@ -214,11 +213,10 @@ impl Manager {
                     let mut name = List::default();
                     name.len = definition.name.len() as _;
                     name.data[..definition.name.len()].copy_from_slice(definition.name.as_bytes());
-                    let sink = horn_log::protocol::LogFactoryClient::new(
-                        &mut self.io,
-                        Cap::from_ref(endpoint.as_ref()),
-                    )
-                    .create_sink(name)
+                    let sink = horn_log::protocol::LogFactoryReceiver::from_cap(Cap::from_ref(
+                        endpoint.as_ref(),
+                    ))
+                    .create_sink(&mut self.io, name)
                     .unwrap();
                     Cap::<Endpoint>::from_ref(sink.as_ref())
                 } else {
@@ -267,7 +265,7 @@ impl Manager {
             self.boot.context(&mut self.io, process, &mut entries);
             self.jobs[i].lifecycle.start().unwrap();
             self.jobs[i].deadline = now().wrapping_add(self.ticks * crate::ready_timeout_us());
-            self.process(i).start().unwrap();
+            self.process(i).start(&mut self.io).unwrap();
             self.io.space.delete(owner.as_ref()).unwrap();
             horn_runtime::logging::info!("starting {}", definition.name.bold());
         }

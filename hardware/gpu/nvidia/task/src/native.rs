@@ -204,7 +204,10 @@ impl Native {
     pub fn close(&mut self) -> Result<()> {
         self.healthy()?;
         self.time.cancel(&mut self.session)?;
-        self.session.control().close().map_err(|_| Error::Backend)?;
+        self.session
+            .control()
+            .close(self.session.transport())
+            .map_err(|_| Error::Backend)?;
         self.poisoned.set(true);
         Ok(())
     }
