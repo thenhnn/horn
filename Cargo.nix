@@ -1877,6 +1877,10 @@ rec {
             features = [ "rpc" ];
           }
           {
+            name = "libhorn";
+            packageId = "libhorn";
+          }
+          {
             name = "sel4";
             packageId = "sel4";
           }

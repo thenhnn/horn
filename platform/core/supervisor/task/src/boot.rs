@@ -1,20 +1,22 @@
-//! Privileged bootstrap mechanisms. All image/slot/grant policy is catalog data.
+//! Privileged bootstrap mechanisms. Image/slot/grant policy is catalog data.
 use super::*;
 use catalog::{BootSource, core};
 pub fn start(manager: &mut Manager) {
     let definition = core();
+    let boot = manager.boot;
+    let root = manager.cspace;
     let io = &mut manager.io;
-    let image = BOOT.upload(io, definition.elf);
+    let image = boot.upload(io, definition.elf);
     let mut launch = ProcessLaunch::default();
     launch.name.len = definition.name.len() as _;
     launch.name.data[..definition.name.len()].copy_from_slice(definition.name.as_bytes());
     launch.ram_limit = definition.ram;
-    let process = ProcessFactoryClient::new(&mut *io, cap(SUPERVISOR_CAPS_FACTORY_SLOT))
-        .prepare(&image, launch, definition.bootstrap.clone())
-        .unwrap();
+    let process =
+        ProcessFactoryClient::new(&mut *io, manager.ctx.cap("supervisor.factory").unwrap())
+            .prepare(&image, launch, definition.bootstrap.clone())
+            .unwrap();
     horn_supervisor::client::close_image(io, image);
     manager.objects(process, definition, 0);
-    // Boot may receive empty discovery scopes, never wait on a later service.
     for grant in definition.namespaces {
         assert_eq!(grant.min_ready, 0, "boot namespace cannot wait for READY");
         let node = manager
@@ -23,7 +25,7 @@ pub fn start(manager: &mut Manager) {
             .resolve(0, grant.path.strip_prefix('/').unwrap())
             .unwrap();
         let directory = manager.namespace.create(&mut manager.io, node, 0).unwrap();
-        BOOT.install(
+        boot.install(
             &mut manager.io,
             process,
             grant.slot,
@@ -36,39 +38,49 @@ pub fn start(manager: &mut Manager) {
     let io = &mut manager.io;
     let ready = mint(
         io,
-        root(),
-        cap::<Notification>(SUPERVISOR_CAPS_EVENTS_SLOT),
+        root,
+        manager
+            .ctx
+            .cap::<Notification>("supervisor.events")
+            .unwrap(),
         CORE_READY,
         Rights::WRITE,
     );
-    BOOT.install(io, process, definition.ready, ready, None, Rights::WRITE);
+    boot.install(io, process, definition.ready, ready, None, Rights::WRITE);
     io.space.delete(ready.as_ref()).unwrap();
     for grant in definition.grants {
         let source = match grant.source {
-            BootSource::Platform => {
-                copy(io, root(), cap::<Endpoint>(SUPERVISOR_CAPS_PLATFORM_SLOT))
-            }
+            BootSource::Platform => copy(
+                io,
+                root,
+                manager.ctx.cap::<Endpoint>("supervisor.platform").unwrap(),
+            ),
             BootSource::SupervisorFactory => mint(
                 io,
-                root(),
-                cap::<Endpoint>(SUPERVISOR_CAPS_SERVICE_SLOT),
+                root,
+                manager.ctx.cap::<Endpoint>("supervisor.service").unwrap(),
                 FACTORY_BADGE,
                 Rights::ALL,
             ),
         };
-        BOOT.install(io, process, grant.slot, source, None, Rights(grant.rights));
+        boot.install(io, process, grant.slot, source, None, Rights(grant.rights));
         io.space.delete(source.as_ref()).unwrap();
     }
     let mut control = ProcessControlClient::new(&mut *io, Cap::from_ref(process.as_ref()));
     control
         .fault_handler(
-            &cap(SUPERVISOR_CAPS_SELF_SLOT),
-            SUPERVISOR_CAPS_SIZE_BITS as _,
-            SUPERVISOR_CAPS_CRITICAL_FAULT_SLOT,
+            &boot.cap(boot.cnode),
+            boot.bits as _,
+            manager
+                .ctx
+                .cap::<Endpoint>("supervisor.critical_fault")
+                .unwrap()
+                .as_ref()
+                .slot,
         )
         .unwrap();
     control
-        .exit_signal(&cap(SUPERVISOR_CAPS_CRITICAL_EXIT_SLOT))
+        .exit_signal(&manager.ctx.cap("supervisor.critical_exit").unwrap())
         .unwrap();
     if !(cfg!(feature = "boot-tests") && option_env!("SUPERVISOR_STALL") == Some("1")) {
         control.start().unwrap();

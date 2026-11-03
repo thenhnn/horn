@@ -44,11 +44,11 @@ def test_supervisor_driver_revoke(system, mode, release, cpus):
     vm = system(modules=modules, cpus=cpus)
     with console_connection(vm):
         vm.serial.wait_for(
-            b"SUPERVISOR_RELEASE_PASS job=0 ram_returned=true owner_ack=true",
+            b"released; RAM returned, owner acknowledged",
             timeout=60,
         )
         output = vm.serial.path.read_text()
-        assert "SUPERVISOR_START policy=generic cleanup=owner-ack" in output
+        assert "starting system services" in output
         assert "DEVMGR_SERVICE_START name=virtio-console policy=devmgr" in output
         if mode == "orderly":
             assert "Console stopped" in output
@@ -56,7 +56,7 @@ def test_supervisor_driver_revoke(system, mode, release, cpus):
         else:
             assert "DEVMGR_DRIVER_REVOKE cpu_stopped=true orderly=false" in output
         if mode in ("orderly", "force", "timeout"):
-            assert "SUPERVISOR_STOP_REQUEST job=0 accepted=true" in output
+            assert "requested stop" in output
             assert "DEVMGR_ASSIGNMENT_PASS retired=true" in output
         assert (
             "DEVMGR_DRIVER_REVOKE dma_drained=true irq_closed=true mmio_revoked=true"

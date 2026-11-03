@@ -480,6 +480,7 @@ dependencies = [
  "horn-procd",
  "horn-supervisor",
  "horn-vm",
+ "libhorn",
  "sel4",
  "sel4-root-task",
 ]

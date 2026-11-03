@@ -75,7 +75,7 @@ impl Manager {
                     .kernel_object(object.kind.clone())
                     .unwrap();
             for binding in object.slots {
-                BOOT.install(
+                self.boot.install(
                     &mut self.io,
                     process,
                     binding.slot,
@@ -92,13 +92,19 @@ impl Manager {
             for export in object.exports {
                 let endpoint = mint(
                     &mut self.io,
-                    root(),
+                    self.cspace,
                     Cap::<Endpoint>::from_ref(capability.as_ref()),
                     export.badge,
                     Rights(export.rights),
                 );
-                let node = self.namespace.tree.declare(export.path, owner, endpoint).expect("configured export");
-                if export.supervisor_only { self.namespace.hide(node); }
+                let node = self
+                    .namespace
+                    .tree
+                    .declare(export.path, owner, endpoint)
+                    .expect("configured export");
+                if export.supervisor_only {
+                    self.namespace.hide(node);
+                }
             }
             self.io.space.delete(capability.as_ref()).unwrap();
         }
@@ -152,15 +158,12 @@ impl Manager {
             let Some(bindings) = self.requirements(definition) else {
                 if !self.wait_logged[index] {
                     self.wait_logged[index] = true;
-                    sel4::debug_println!(
-                        "SERVICE_WAIT name={} dependencies=unavailable",
-                        definition.name
-                    );
+                    horn_runtime::logging::debug!("{} waiting for dependencies", definition.name);
                 }
                 continue;
             };
             self.launched[index] = true;
-            let image = BOOT.upload(&mut self.io, definition.elf);
+            let image = self.boot.upload(&mut self.io, definition.elf);
             let mut launch = ProcessLaunch::default();
             launch.name.len = definition.name.len() as _;
             launch.name.data[..definition.name.len()].copy_from_slice(definition.name.as_bytes());
@@ -178,12 +181,12 @@ impl Manager {
             self.objects(process, definition, (i + 1) as u64);
             let ready = mint(
                 &mut self.io,
-                root(),
-                cap::<Notification>(SUPERVISOR_CAPS_EVENTS_SLOT),
+                self.cspace,
+                self.ctx.cap::<Notification>("supervisor.events").unwrap(),
                 ready_bit(i),
                 Rights::WRITE,
             );
-            BOOT.install(
+            self.boot.install(
                 &mut self.io,
                 process,
                 definition.ready,
@@ -196,18 +199,29 @@ impl Manager {
                 let entry = self.namespace.tree.node(node);
                 self.jobs[i].dependencies.push(entry.owner);
                 let endpoint = *self.namespace.tree.value(node).unwrap();
-                let logging = definition.context.iter().any(|b| b.name == "horn.log" && b.slot == required.slot);
+                let logging = definition
+                    .context
+                    .iter()
+                    .any(|b| b.name == "horn.log" && b.slot == required.slot);
                 let endpoint = if logging {
-                    assert!(self.namespace.is_hidden(node), "logging factory must be supervisor-only");
+                    assert!(
+                        self.namespace.is_hidden(node),
+                        "logging factory must be supervisor-only"
+                    );
                     let mut name = List::default();
                     name.len = definition.name.len() as _;
                     name.data[..definition.name.len()].copy_from_slice(definition.name.as_bytes());
                     let sink = horn_log::protocol::LogFactoryClient::new(
-                        &mut self.io, Cap::from_ref(endpoint.as_ref()),
-                    ).create_sink(name).unwrap();
+                        &mut self.io,
+                        Cap::from_ref(endpoint.as_ref()),
+                    )
+                    .create_sink(name)
+                    .unwrap();
                     Cap::<Endpoint>::from_ref(sink.as_ref())
-                } else { endpoint };
-                BOOT.install(
+                } else {
+                    endpoint
+                };
+                self.boot.install(
                     &mut self.io,
                     process,
                     required.slot,
@@ -215,7 +229,9 @@ impl Manager {
                     None,
                     Rights(Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0),
                 );
-                if logging { self.io.space.delete(endpoint.as_ref()).unwrap(); }
+                if logging {
+                    self.io.space.delete(endpoint.as_ref()).unwrap();
+                }
             }
             for grant in definition.namespaces {
                 let node = self
@@ -227,7 +243,7 @@ impl Manager {
                     .namespace
                     .create(&mut self.io, node, (i + 1) as u64)
                     .unwrap();
-                BOOT.install(
+                self.boot.install(
                     &mut self.io,
                     process,
                     grant.slot,
@@ -238,25 +254,31 @@ impl Manager {
                 self.io.space.delete(directory.as_ref()).unwrap();
             }
             if !definition.context.is_empty() {
-                let entries: Vec<_> = definition.context.iter().map(|binding| libhorn::startup::Entry {
-                    name: binding.name, selector: binding.slot as u64,
-                }).collect();
-                let size = entries.iter().try_fold(8usize, |n, e| n.checked_add(16)?.checked_add(e.name.len())).unwrap();
+                let entries: Vec<_> = definition
+                    .context
+                    .iter()
+                    .map(|binding| libhorn::startup::Entry {
+                        name: binding.name,
+                        selector: binding.slot as u64,
+                    })
+                    .collect();
+                let size = entries
+                    .iter()
+                    .try_fold(8usize, |n, e| n.checked_add(16)?.checked_add(e.name.len()))
+                    .unwrap();
                 let mut bytes = alloc::vec![0; size];
                 libhorn::bindings::encode(&entries, &mut bytes).unwrap();
-                let descriptor = BOOT.upload(&mut self.io, &bytes);
+                let descriptor = self.boot.upload(&mut self.io, &bytes);
                 ProcessControlClient::new(&mut self.io, Cap::from_ref(process.as_ref()))
-                    .startup_context(&descriptor, size as u64).unwrap();
+                    .startup_context(&descriptor, size as u64)
+                    .unwrap();
                 horn_supervisor::client::close_image(&mut self.io, descriptor);
             }
             self.jobs[i].lifecycle.start().unwrap();
             self.jobs[i].deadline = now().wrapping_add(self.ticks * crate::ready_timeout_us());
             self.process(i).start().unwrap();
             self.io.space.delete(owner.as_ref()).unwrap();
-            sel4::debug_println!(
-                "SERVICE_START name={} dependencies=resolved",
-                definition.name
-            );
+            horn_runtime::logging::info!("starting {}", definition.name);
         }
     }
 }

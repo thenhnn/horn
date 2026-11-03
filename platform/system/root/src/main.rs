@@ -327,6 +327,35 @@ fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
             )
             .unwrap();
     }
+    let mut bindings = [
+        ("horn.vm", SUPERVISOR_CAPS_VM_SLOT),
+        ("horn.address-space", SUPERVISOR_CAPS_ADDRESS_SPACE_SLOT),
+        ("horn.lifecycle", SUPERVISOR_CAPS_LIFECYCLE_SLOT),
+        ("horn.reply", SUPERVISOR_CAPS_REPLY_SLOT),
+        ("supervisor.factory", SUPERVISOR_CAPS_FACTORY_SLOT),
+        ("supervisor.processes", SUPERVISOR_CAPS_PROCESSES_SLOT),
+        ("supervisor.platform", SUPERVISOR_CAPS_PLATFORM_SLOT),
+        ("supervisor.system", SUPERVISOR_CAPS_SYSTEM_SLOT),
+        ("supervisor.service", SUPERVISOR_CAPS_SERVICE_SLOT),
+        ("supervisor.events", SUPERVISOR_CAPS_EVENTS_SLOT),
+        (
+            "supervisor.critical_fault",
+            SUPERVISOR_CAPS_CRITICAL_FAULT_SLOT,
+        ),
+        (
+            "supervisor.critical_exit",
+            SUPERVISOR_CAPS_CRITICAL_EXIT_SLOT,
+        ),
+    ]
+    .map(|(name, selector)| libhorn::startup::Entry {
+        name,
+        selector: selector as u64,
+    });
+    bindings.sort_unstable_by_key(|entry| entry.name);
+    let size = 8 + bindings.iter().map(|e| 16 + e.name.len()).sum::<usize>();
+    let mut descriptor = alloc::vec![0; size];
+    libhorn::bindings::encode(&bindings, &mut descriptor).unwrap();
+    manager.startup_context_bytes(process, &descriptor).unwrap();
     manager
         .tcb(process)
         .unwrap()

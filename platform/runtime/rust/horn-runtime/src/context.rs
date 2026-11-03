@@ -37,6 +37,19 @@ impl Context {
             return Ok(());
         };
         let sink = self.cap::<horn_log::protocol::LogSinkTag>("horn.log")?;
+        let io = self.logging_transport()?;
+        unsafe { horn_log::install(io, sink).map_err(|_| Error::Invalid) }
+    }
+    pub fn cap<T: CapType>(&self, name: &str) -> Result<Cap<T>, Error> {
+        let slot = self.record.lookup(name).ok_or(Error::Invalid)?;
+        Ok(bootstrap_cap(self.root, slot as u32))
+    }
+    pub fn cspace_bits(&self) -> u8 {
+        self.record.header().cspace_bits as u8
+    }
+    /// Reserve a dedicated transport for a logger connected during bootstrap.
+    /// Call before transport(); never share application receive/import slots.
+    pub fn logging_transport(&mut self) -> Result<Sel4Transport<Sel4CapSpace>, Error> {
         let range = self.application.as_mut().ok_or(Error::Invalid)?;
         let end = range.start.checked_add(2).ok_or(Error::Invalid)?;
         if end.checked_add(2).is_none_or(|n| n > range.end) {
@@ -44,12 +57,7 @@ impl Context {
         }
         let logging = range.start..end;
         range.start = end;
-        let io = crate::transport(self.root, logging)?;
-        unsafe { horn_log::install(io, sink).map_err(|_| Error::Invalid) }
-    }
-    pub fn cap<T: CapType>(&self, name: &str) -> Result<Cap<T>, Error> {
-        let slot = self.record.lookup(name).ok_or(Error::Invalid)?;
-        Ok(bootstrap_cap(self.root, slot as u32))
+        crate::transport(self.root, logging)
     }
     pub fn transport(&mut self) -> Result<Sel4Transport<Sel4CapSpace>, Error> {
         crate::transport(self.root, self.application.take().ok_or(Error::Invalid)?)
@@ -166,8 +174,18 @@ impl Inbox {
     /// Notification badges are coalesced hints; the consumer distinguishes them
     /// using its deployment badge convention, not an inferred RPC message type.
     pub fn receive(&mut self) -> Received<'_> {
+        self.receive_inner(false)
+    }
+    pub fn poll(&mut self) -> Received<'_> {
+        self.receive_inner(true)
+    }
+    fn receive_inner(&mut self, polling: bool) -> Received<'_> {
         sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&self.receive));
-        let (info, badge) = self.endpoint.recv(self.reply);
+        let (info, badge) = if polling {
+            self.endpoint.nb_recv(self.reply)
+        } else {
+            self.endpoint.recv(self.reply)
+        };
         Received {
             inbox: self,
             info: Some(info),
@@ -181,6 +199,11 @@ pub struct Received<'a> {
     badge: u64,
 }
 impl Received<'_> {
+    pub fn fault(&self) -> Option<sel4::Fault> {
+        self.info
+            .as_ref()
+            .map(|info| sel4::with_ipc_buffer(|ipc| sel4::Fault::new(ipc, info)))
+    }
     pub fn badge(&self) -> u64 {
         self.badge
     }

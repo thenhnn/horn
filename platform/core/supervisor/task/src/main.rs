@@ -11,20 +11,7 @@ use horn_supervisor::{
     protocol::*,
     *,
 };
-const SLOTS: TaskSlots = TaskSlots::new(SUPERVISOR_CAPS_FIRST_FREE_SLOT, SUPERVISOR_CAPS_SIZE_BITS);
-const BOOT: Bootstrap = Bootstrap {
-    cnode: SUPERVISOR_CAPS_SELF_SLOT,
-    bits: SUPERVISOR_CAPS_SIZE_BITS,
-    vm: SUPERVISOR_CAPS_VM_SLOT,
-    space: SUPERVISOR_CAPS_ADDRESS_SPACE_SLOT,
-};
-horn_runtime::task!(main,vm:horn_runtime::VmBootstrap{cnode:SUPERVISOR_CAPS_SELF_SLOT,factory:SUPERVISOR_CAPS_VM_SLOT,address_space:SUPERVISOR_CAPS_ADDRESS_SPACE_SLOT,slots:SLOTS});
-fn cap<T: CapType>(slot: u32) -> Cap<T> {
-    BOOT.cap(slot)
-}
-fn root() -> sel4::cap::CNode {
-    sel4::cap::CNode::from_bits(SUPERVISOR_CAPS_SELF_SLOT as _)
-}
+horn_runtime::task!(main);
 fn now() -> u64 {
     unsafe { core::arch::x86_64::_rdtsc() }
 }
@@ -44,6 +31,7 @@ fn stopped_bit(i: usize) -> u64 {
     1 << (17 + 2 * i)
 }
 struct Job {
+    name: List<u8, 64>,
     process: Cap<ProcessObjectTag>,
     // Keep the owner capability's derivation anchor for the instance lifetime.
     _authority: Cap<Endpoint>,
@@ -58,6 +46,9 @@ struct Job {
     publications: usize,
 }
 struct Manager {
+    ctx: horn_runtime::Context,
+    cspace: sel4::cap::CNode,
+    boot: Bootstrap,
     io: Io,
     jobs: Vec<Job>,
     ticks: u64,
@@ -66,6 +57,10 @@ struct Manager {
     wait_logged: [bool; 8],
 }
 impl Manager {
+    fn name(&self, i: usize) -> &str {
+        let name = &self.jobs[i].name;
+        core::str::from_utf8(&name.data[..name.len as usize]).unwrap()
+    }
     fn process(&mut self, i: usize) -> ProcessControlClient<&mut Io> {
         ProcessControlClient::new(&mut self.io, Cap::from_ref(self.jobs[i].process.as_ref()))
     }
@@ -103,7 +98,7 @@ impl Manager {
             .unwrap();
             return;
         }
-        sel4::debug_println!("SUPERVISOR_CPU_STOPPED job={} cleanup=pending", i);
+        horn_runtime::logging::debug!("{} stopped; awaiting cleanup", self.name(i));
         if let Some(note) = self.jobs[i].owner {
             self.io
                 .space
@@ -116,7 +111,7 @@ impl Manager {
         for i in 0..self.jobs.len() {
             if event & ready_bit(i) != 0 && self.jobs[i].lifecycle.ready() {
                 self.namespace.tree.ready((i + 1) as u64);
-                sel4::debug_println!("SUPERVISOR_SERVICE_READY job={}", i);
+                horn_runtime::logging::debug!("{} ready", self.name(i));
                 if let Some(note) = self.jobs[i].owner {
                     self.io
                         .space
@@ -163,11 +158,7 @@ impl Manager {
                 ServiceStatus::Starting | ServiceStatus::Stopping
             ) && now().wrapping_sub(self.jobs[i].deadline) < (1 << 63)
             {
-                sel4::debug_println!(
-                    "SUPERVISOR_TIMEOUT job={} state={:?}",
-                    i,
-                    self.jobs[i].lifecycle.state
-                );
+                horn_runtime::logging::warn!("{} timed out", self.name(i));
                 self.stopped(i);
             }
         }
@@ -208,7 +199,7 @@ impl Caller<'_> {
         if cap.as_ref().unwrapped_badge().is_some() {
             return Err(SupervisorError::Denied);
         }
-        Ok(copy(&mut self.manager.io, root(), cap))
+        Ok(copy(&mut self.manager.io, self.manager.cspace, cap))
     }
 }
 impl SupervisorFactory for Caller<'_> {
@@ -228,44 +219,54 @@ impl SupervisorFactory for Caller<'_> {
             .jobs
             .try_reserve(1)
             .expect("bounded job metadata");
-        let process =
-            ProcessFactoryClient::new(&mut self.manager.io, cap(SUPERVISOR_CAPS_FACTORY_SLOT))
-                .prepare(&elf, request, bootstrap)
-                .map_err(|e| match e {
-                    CallError::Remote(ProcessError::Exhausted | ProcessError::QuotaExceeded) => {
-                        SupervisorError::Exhausted
-                    }
-                    CallError::Remote(
-                        ProcessError::Invalid | ProcessError::InvalidElf | ProcessError::InvalidAbi,
-                    ) => SupervisorError::Invalid,
-                    CallError::Remote(ProcessError::Denied) => SupervisorError::Denied,
-                    _ => SupervisorError::Backend,
-                })?;
+        let name = request.name.clone();
+        let process = ProcessFactoryClient::new(
+            &mut self.manager.io,
+            self.manager.ctx.cap("supervisor.factory").unwrap(),
+        )
+        .prepare(&elf, request, bootstrap)
+        .map_err(|e| match e {
+            CallError::Remote(ProcessError::Exhausted | ProcessError::QuotaExceeded) => {
+                SupervisorError::Exhausted
+            }
+            CallError::Remote(
+                ProcessError::Invalid | ProcessError::InvalidElf | ProcessError::InvalidAbi,
+            ) => SupervisorError::Invalid,
+            CallError::Remote(ProcessError::Denied) => SupervisorError::Denied,
+            _ => SupervisorError::Backend,
+        })?;
         let i = self.manager.jobs.len();
         let fault = mint(
             &mut self.manager.io,
-            root(),
-            cap::<Endpoint>(SUPERVISOR_CAPS_SERVICE_SLOT),
+            self.manager.cspace,
+            self.manager
+                .ctx
+                .cap::<Endpoint>("supervisor.service")
+                .unwrap(),
             fault_badge(i),
             Rights::ALL,
         );
         ProcessControlClient::new(&mut self.manager.io, Cap::from_ref(process.as_ref()))
             .fault_handler(
-                &cap(SUPERVISOR_CAPS_SELF_SLOT),
-                SUPERVISOR_CAPS_SIZE_BITS as _,
+                &self.manager.boot.cap(self.manager.boot.cnode),
+                self.manager.boot.bits as _,
                 fault.as_ref().slot,
             )
             .unwrap();
         self.manager.io.space.delete(fault.as_ref()).unwrap();
         let authority = mint(
             &mut self.manager.io,
-            root(),
-            cap::<Endpoint>(SUPERVISOR_CAPS_SERVICE_SLOT),
+            self.manager.cspace,
+            self.manager
+                .ctx
+                .cap::<Endpoint>("supervisor.service")
+                .unwrap(),
             owner_badge(i),
             Rights::ALL,
         );
-        let exported = copy(&mut self.manager.io, root(), authority);
+        let exported = copy(&mut self.manager.io, self.manager.cspace, authority);
         self.manager.jobs.push(Job {
+            name,
             process,
             _authority: authority,
             lifecycle: Lifecycle::new(),
@@ -304,7 +305,7 @@ impl SupervisorJob for Caller<'_> {
         }) {
             return Err(SupervisorError::Denied);
         }
-        let retained = copy(&mut self.manager.io, root(), endpoint);
+        let retained = copy(&mut self.manager.io, self.manager.cspace, endpoint);
         if self
             .manager
             .namespace
@@ -356,8 +357,8 @@ impl SupervisorJob for Caller<'_> {
             Cap::from_ref(self.manager.jobs[i].process.as_ref()),
         )
         .install(
-            &cap(SUPERVISOR_CAPS_SELF_SLOT),
-            SUPERVISOR_CAPS_SIZE_BITS as _,
+            &self.manager.boot.cap(self.manager.boot.cnode),
+            self.manager.boot.bits as _,
             endpoint.as_ref().slot,
             slot,
             None,
@@ -373,8 +374,11 @@ impl SupervisorJob for Caller<'_> {
         let i = self.owner()?;
         let cap = mint(
             &mut self.manager.io,
-            root(),
-            cap::<Endpoint>(SUPERVISOR_CAPS_SERVICE_SLOT),
+            self.manager.cspace,
+            self.manager
+                .ctx
+                .cap::<Endpoint>("supervisor.service")
+                .unwrap(),
             client_badge(i),
             Rights(Rights::WRITE.0 | Rights::GRANT_REPLY.0),
         );
@@ -388,7 +392,7 @@ impl SupervisorJob for Caller<'_> {
         self.manager.jobs[i].process_exported = true;
         Ok(copy(
             &mut self.manager.io,
-            root(),
+            self.manager.cspace,
             self.manager.jobs[i].process,
         ))
     }
@@ -403,8 +407,8 @@ impl SupervisorJob for Caller<'_> {
         };
         Ok(mint(
             &mut self.manager.io,
-            root(),
-            cap(SUPERVISOR_CAPS_EVENTS_SLOT),
+            self.manager.cspace,
+            self.manager.ctx.cap("supervisor.events").unwrap(),
             bit,
             Rights::WRITE,
         ))
@@ -515,9 +519,9 @@ impl SupervisorJob for Caller<'_> {
         }
         self.manager.jobs[i].lifecycle.released();
         #[cfg(feature = "boot-tests")]
-        sel4::debug_println!(
-            "SUPERVISOR_RELEASE_PASS job={} ram_returned=true owner_ack=true",
-            i
+        horn_runtime::logging::info!(
+            "{} released; RAM returned, owner acknowledged",
+            self.manager.name(i)
         );
         Ok(())
     }
@@ -530,7 +534,7 @@ impl SupervisorRuntime for Caller<'_> {
     fn request_stop(&mut self, mode: StopMode) -> Result<(), SupervisorError> {
         let i = self.runtime()?;
         self.manager.jobs[i].lifecycle.request_stop(mode)?;
-        sel4::debug_println!("SUPERVISOR_STOP_REQUEST job={} accepted=true", i);
+        horn_runtime::logging::debug!("{} requested stop", self.manager.name(i));
         Ok(())
     }
 }
@@ -543,26 +547,45 @@ fn ready_timeout_us() -> u64 {
         None => 30_000_000,
     }
 }
-fn main() -> ! {
-    let mut io = horn_runtime::transport(root(), SLOTS.application()).unwrap();
-    let ticks = SystemControlClient::new(&mut io, cap(SUPERVISOR_CAPS_SYSTEM_SLOT))
+fn main(mut ctx: horn_runtime::Context) -> ! {
+    let mut log_io = ctx.logging_transport().unwrap();
+    let mut io = ctx.transport().unwrap();
+    let mut inbox = ctx.inbox("supervisor.service").unwrap();
+    let cspace = io.space.root;
+    let boot = Bootstrap {
+        cnode: cspace.bits() as u32,
+        bits: ctx.cspace_bits(),
+        vm: ctx.cap::<Endpoint>("horn.vm").unwrap().as_ref().slot,
+        space: ctx
+            .cap::<Endpoint>("horn.address-space")
+            .unwrap()
+            .as_ref()
+            .slot,
+    };
+    let ticks = SystemControlClient::new(&mut io, ctx.cap("supervisor.system").unwrap())
         .ticks_per_us()
         .unwrap();
     assert!(ticks != 0);
     let exits = mint(
         &mut io,
-        root(),
-        cap::<Notification>(SUPERVISOR_CAPS_EVENTS_SLOT),
+        cspace,
+        ctx.cap::<Notification>("supervisor.events").unwrap(),
         CHILD_EXIT,
         Rights::WRITE,
     );
-    ProcessFactoryClient::new(&mut io, cap(SUPERVISOR_CAPS_FACTORY_SLOT))
+    ProcessFactoryClient::new(&mut io, ctx.cap("supervisor.factory").unwrap())
         .watch(&exits)
         .unwrap();
     io.space.delete(exits.as_ref()).unwrap();
-    sel4::debug_println!("SUPERVISOR_START policy=generic cleanup=owner-ack");
-    let namespace = namespace::Namespace::new(&mut io);
+    let namespace = namespace::Namespace::new(
+        &mut io,
+        ctx.cap("supervisor.service").unwrap(),
+        ctx.cap("supervisor.processes").unwrap(),
+    );
     let mut manager = Manager {
+        ctx,
+        cspace,
+        boot,
         io,
         jobs: Vec::new(),
         ticks,
@@ -570,46 +593,56 @@ fn main() -> ! {
         launched: [false; 8],
         wait_logged: [false; 8],
     };
+    horn_runtime::logging::emergency(format_args!("starting system services"));
     boot::start(&mut manager);
-    // Start dependency-free services (notably logd) before accepting dynamic
-    // driver prepare requests from devmgr. No wait for devmgr readiness.
     manager.activate();
-    let endpoint = sel4::cap::Endpoint::from_bits(SUPERVISOR_CAPS_SERVICE_SLOT as _);
-    let reply = sel4::cap::Reply::from_bits(SUPERVISOR_CAPS_REPLY_SLOT as _);
-    let receive = root().absolute_cptr(sel4::CPtr::from_bits(SLOTS.public_receive() as _));
+    // logd is dependency-free and already started. This calls it directly,
+    // never the supervisor's own service endpoint.
+    let node = manager.namespace.tree.resolve(0, "services/log").unwrap();
+    assert!(manager.namespace.is_hidden(node));
+    let factory = *manager.namespace.tree.value(node).unwrap();
+    let mut name = List::default();
+    name.len = 10;
+    name.data[..10].copy_from_slice(b"supervisor");
+    let sink =
+        horn_log::protocol::LogFactoryClient::new(&mut log_io, Cap::from_ref(factory.as_ref()))
+            .create_sink(name)
+            .unwrap();
+    // Dedicated logger transport, initialized IPC/heap, process-lifetime sink.
+    unsafe {
+        horn_log::install(log_io, Cap::from_ref(sink.as_ref())).unwrap();
+    }
+    horn_runtime::logging::info!("ready");
     loop {
-        sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&receive));
-        let (info, badge) = if manager.polling() {
-            endpoint.nb_recv(reply)
+        let mut received = if manager.polling() {
+            inbox.poll()
         } else {
-            endpoint.recv(reply)
+            inbox.receive()
         };
+        let badge = received.badge();
         if let Some((i, _)) = manager
             .jobs
             .iter()
             .enumerate()
             .find(|(i, _)| badge == fault_badge(*i))
         {
-            let fault = sel4::with_ipc_buffer(|ipc| sel4::Fault::new(ipc, &info));
-            sel4::debug_println!("SUPERVISOR_FAULT job={} fault={:?}", i, fault);
+            horn_runtime::logging::error!("process {} fault: {:?}", i, received.fault());
         }
         if badge & CORE_READY != 0 {
             manager.namespace.tree.ready(0);
-            SystemControlClient::new(&mut manager.io, cap(SUPERVISOR_CAPS_SYSTEM_SLOT))
-                .ready()
-                .unwrap();
+            SystemControlClient::new(
+                &mut manager.io,
+                manager.ctx.cap("supervisor.system").unwrap(),
+            )
+            .ready()
+            .unwrap();
         }
         if manager.namespace.recognizes(badge) {
-            let request = {
-                let mut server = Sel4Server::new(root(), endpoint, receive, &mut manager.io.space);
-                server.decode_received_dynamic(
-                    info,
-                    badge,
-                    reply,
-                    horn_registry::protocol::registry_node_request_layout,
-                    horn_registry::protocol::RegistryNodeRequest::decode,
-                )
-            };
+            let request = received.decode(
+                &mut manager.io.space,
+                horn_registry::protocol::registry_node_request_layout,
+                horn_registry::protocol::RegistryNodeRequest::decode,
+            );
             if let Ok((_, request, reply)) = request {
                 let response = horn_registry::protocol::registry_node_dispatch(
                     request,
@@ -632,16 +665,11 @@ fn main() -> ! {
                 .enumerate()
                 .any(|(i, _)| badge == owner_badge(i) || badge == client_badge(i))
         {
-            let request = {
-                let mut server = Sel4Server::new(root(), endpoint, receive, &mut manager.io.space);
-                server.decode_received_dynamic(
-                    info,
-                    badge,
-                    reply,
-                    supervisor_host_request_layout,
-                    SupervisorHostRequest::decode,
-                )
-            };
+            let request = received.decode(
+                &mut manager.io.space,
+                supervisor_host_request_layout,
+                SupervisorHostRequest::decode,
+            );
             if let Ok((_, request, reply)) = request {
                 let response = supervisor_host_dispatch(
                     request,
@@ -653,7 +681,8 @@ fn main() -> ! {
                 supervisor_host_reply(reply, &mut manager.io.space, &response).unwrap();
             }
         }
-        receive.delete().unwrap();
+        // Release public receive state before update/activation issues RPC.
+        drop(received);
         manager.update(badge);
         manager.activate();
         manager.namespace.changed(&mut manager.io);

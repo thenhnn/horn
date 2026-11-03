@@ -11,6 +11,7 @@ path = "src/main.rs"
 boot-tests = []
 
 [dependencies]
+libhorn = { path = "../../libhorn" }
 horn-supervisor = { path = "../../core/supervisor" }
 horn-devmgr = { path = "../../core/devmgr" }
 horn-procd = { path = "../../core/procd" }

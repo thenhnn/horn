@@ -15,9 +15,12 @@ pub struct Namespace {
     pub tree: Registry<Cap<Endpoint>>,
     grants: Vec<Option<Grant>>,
     hidden: Vec<usize>,
+    root: sel4::cap::CNode,
+    service: Cap<Endpoint>,
 }
 impl Namespace {
-    pub fn new(io: &mut Io) -> Self {
+    pub fn new(io: &mut Io, service: Cap<Endpoint>, observer: Cap<Endpoint>) -> Self {
+        let root = io.space.root;
         let mut tree = Registry::new(64);
         for definition in catalog::SERVICES {
             for scope in definition.publish {
@@ -27,7 +30,7 @@ impl Namespace {
                 tree.directory(scope.path).unwrap();
             }
         }
-        let processes = copy(io, root(), cap::<Endpoint>(SUPERVISOR_CAPS_PROCESSES_SLOT));
+        let processes = copy(io, root, observer);
         tree.declare("/services/procd", u64::MAX, processes)
             .unwrap();
         tree.ready(u64::MAX);
@@ -35,10 +38,16 @@ impl Namespace {
             tree,
             grants: Vec::new(),
             hidden: Vec::new(),
+            root,
+            service,
         }
     }
-    pub fn hide(&mut self, node: usize) { self.hidden.push(node); }
-    pub fn is_hidden(&self, node: usize) -> bool { self.hidden.contains(&node) }
+    pub fn hide(&mut self, node: usize) {
+        self.hidden.push(node);
+    }
+    pub fn is_hidden(&self, node: usize) -> bool {
+        self.hidden.contains(&node)
+    }
     pub fn recognizes(&self, badge: u64) -> bool {
         badge >= DIRECTORY_BADGE && (badge - DIRECTORY_BADGE) < self.grants.len() as u64
     }
@@ -56,12 +65,12 @@ impl Namespace {
         }
         let anchor = mint(
             io,
-            root(),
-            cap::<Endpoint>(SUPERVISOR_CAPS_SERVICE_SLOT),
+            self.root,
+            self.service,
             DIRECTORY_BADGE + self.grants.len() as u64,
             Rights(Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0),
         );
-        let exported = copy(io, root(), anchor);
+        let exported = copy(io, self.root, anchor);
         self.grants.push(Some(Grant {
             scope,
             owner,
@@ -91,7 +100,9 @@ impl Namespace {
         let path = core::str::from_utf8(&path.data[..path.len as usize])
             .map_err(|_| r::RegistryError::Invalid)?;
         let node = self.tree.resolve(grant.scope, path)?;
-        if self.is_hidden(node) { return Err(r::RegistryError::NotFound); }
+        if self.is_hidden(node) {
+            return Err(r::RegistryError::NotFound);
+        }
         let entry = self.tree.node(node);
         if !entry.available {
             return Err(r::RegistryError::Unavailable);
@@ -117,7 +128,7 @@ impl Namespace {
         for slot in &mut self.grants {
             if slot.as_ref().is_some_and(|g| g.owner == owner) {
                 let grant = slot.take().unwrap();
-                root()
+                self.root
                     .absolute_cptr(sel4::CPtr::from_bits(grant.anchor.as_ref().slot as _))
                     .revoke()
                     .unwrap();
@@ -155,7 +166,9 @@ impl DirectoryCaller<'_> {
         let path = core::str::from_utf8(&path.data[..path.len as usize])
             .map_err(|_| r::RegistryError::Invalid)?;
         let node = self.manager.namespace.tree.resolve(scope, path)?;
-        if self.manager.namespace.is_hidden(node) { return Err(r::RegistryError::NotFound); }
+        if self.manager.namespace.is_hidden(node) {
+            return Err(r::RegistryError::NotFound);
+        }
         Ok(node)
     }
 }
@@ -173,7 +186,8 @@ impl r::RegistryDirectory for DirectoryCaller<'_> {
             .unwrap()
             .scope;
         let tree = &self.manager.namespace.tree;
-        let mut remaining = tree.entries(scope, after, recursive)
+        let mut remaining = tree
+            .entries(scope, after, recursive)
             .filter(|(id, _)| !self.manager.namespace.is_hidden(*id));
         let mut entries = List::default();
         let mut last = 0;
@@ -212,7 +226,7 @@ impl r::RegistryDirectory for DirectoryCaller<'_> {
             .tree
             .value(node)
             .ok_or(r::RegistryError::Invalid)?;
-        Ok(copy(&mut self.manager.io, root(), endpoint))
+        Ok(copy(&mut self.manager.io, self.manager.cspace, endpoint))
     }
     fn open(&mut self, path: List<u8, 96>) -> Result<Cap<r::RegistryNodeTag>, r::RegistryError> {
         let node = self.resolve(&path)?;
@@ -238,7 +252,7 @@ impl r::RegistryDirectory for DirectoryCaller<'_> {
         if generation > current {
             return Err(r::RegistryError::Invalid);
         }
-        let retained = copy(&mut self.manager.io, root(), signal);
+        let retained = copy(&mut self.manager.io, self.manager.cspace, signal);
         let grant = self.manager.namespace.grants[index].as_mut().unwrap();
         if let Some(old) = grant.signal.replace(retained) {
             self.manager.io.space.delete(old.as_ref()).unwrap();
