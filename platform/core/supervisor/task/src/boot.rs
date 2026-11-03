@@ -66,6 +66,24 @@ pub fn start(manager: &mut Manager) {
         boot.install(io, process, grant.slot, source, None, Rights(grant.rights));
         io.space.delete(source.as_ref()).unwrap();
     }
+    if !definition.context.is_empty() {
+        let entries: Vec<_> = definition
+            .context
+            .iter()
+            .map(|b| libhorn::startup::Entry {
+                name: b.name,
+                selector: b.slot as u64,
+            })
+            .collect();
+        let size = 8 + entries.iter().map(|e| 16 + e.name.len()).sum::<usize>();
+        let mut bytes = alloc::vec![0; size];
+        libhorn::bindings::encode(&entries, &mut bytes).unwrap();
+        let descriptor = boot.upload(io, &bytes);
+        ProcessControlClient::new(&mut *io, Cap::from_ref(process.as_ref()))
+            .startup_context(&descriptor, size as u64)
+            .unwrap();
+        horn_supervisor::client::close_image(io, descriptor);
+    }
     let mut control = ProcessControlClient::new(&mut *io, Cap::from_ref(process.as_ref()));
     control
         .fault_handler(

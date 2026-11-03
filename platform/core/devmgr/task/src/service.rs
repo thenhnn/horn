@@ -2,7 +2,7 @@
 //! The initial topology profile has no bridges/aliases or requester reuse after
 //! detach. Drivers receive BAR memory and IOVAs, never physical RAM addresses,
 //! writable PCI configuration or the platform bootstrap authority.
-use crate::native::{Io, Mapping, target};
+use crate::native::{Io, Mapping};
 use alloc::vec::Vec;
 use horn_devmgr::{
     Inventory,
@@ -183,9 +183,9 @@ impl Service {
                 Hardware::ReadOnly(_) => (0xfee0_0000, irq.vector),
             }
         };
-        self.io()
-            .platform
-            .bind_irq(irq.token, &target(DEVICE_CAPS_TIMER_SLOT))
+        let io = self.io();
+        io.platform
+            .bind_irq(irq.token, &io.ctx.cap("timer").unwrap())
             .expect("HPET IRQ bind");
         let map = self.io().mmio(base, 4096).expect("HPET registers");
         self.clock = Some(crate::clock::Clock::new(map, irq.token, address, data));
@@ -206,14 +206,14 @@ impl Service {
         let io = self.io();
         let irq = io.platform.irq(0).expect("fault kernel IRQ");
         io.platform
-            .bind_irq(irq.token, &target(DEVICE_CAPS_FAULT_SLOT))
+            .bind_irq(irq.token, &io.ctx.cap("fault").unwrap())
             .expect("fault IRQ bind");
         io.platform.ack_irq(irq.token).expect("fault IRQ arm");
         let vector = u8::try_from(irq.vector).expect("fault IRQ vector");
         self.unit()
             .fault_interrupt(vector, 0)
             .expect("fault event MSI");
-        sel4::debug_println!("VTD_FAULT_IRQ armed=true");
+        horn_runtime::logging::debug!("DMA fault reporting enabled");
         Some(irq.token)
     }
     pub fn handle_fault_irq(&mut self, token: u64) -> Faults {
@@ -230,8 +230,8 @@ impl Service {
                 if fault.source < 256 {
                     faults.requesters[fault.source as usize / 64] |= 1u64 << (fault.source % 64);
                 }
-                sel4::debug_println!(
-                    "VTD_FAULT source={:04x} address={:x} reason={:x} read={} overflow={}",
+                horn_runtime::logging::warn!(
+                    "DMA fault from device {:04x} at {:#x} (reason {:#x}, read {}, overflow {})",
                     fault.source,
                     fault.address,
                     fault.reason,
@@ -240,7 +240,7 @@ impl Service {
                 );
             } else {
                 if report.overflow {
-                    sel4::debug_println!("VTD_FAULT overflow=true");
+                    horn_runtime::logging::warn!("DMA fault report overflow");
                 }
                 break;
             }
@@ -263,16 +263,17 @@ impl Service {
             return Err(DeviceError::Exhausted);
         }
         self.next_badge = badge.checked_add(1).ok_or(DeviceError::Exhausted)?;
+        let endpoint = self.io().ctx.cap::<Endpoint>("service").unwrap();
         let space = self.io().space();
         let original = space.reserve_slot().map_err(|_| {
-            sel4::debug_println!("DEVICE_MINT_FAIL step=authority badge={:#x}", badge);
+            horn_runtime::logging::warn!("cannot allocate device authority {:#x}", badge);
             DeviceError::Exhausted
         })?;
-        let root = sel4::cap::CNode::from_bits(DEVICE_CAPS_SELF_SLOT as _);
+        let root = space.root;
         if root
             .absolute_cptr(*original.path())
             .mint(
-                &root.absolute_cptr(sel4::CPtr::from_bits(DEVICE_CAPS_SERVICE_SLOT as _)),
+                &root.absolute_cptr(sel4::CPtr::from_bits(endpoint.as_ref().slot as _)),
                 sel4::CapRights::new(true, true, false, true),
                 badge,
             )
@@ -286,7 +287,7 @@ impl Service {
         let exported = match space.reserve_slot() {
             Ok(slot) => slot,
             Err(_) => {
-                sel4::debug_println!("DEVICE_MINT_FAIL step=exported badge={:#x}", badge);
+                horn_runtime::logging::warn!("cannot export device authority {:#x}", badge);
                 space.delete(authority).unwrap();
                 return Err(DeviceError::Exhausted);
             }
@@ -303,7 +304,7 @@ impl Service {
         Ok((badge, authority, exported))
     }
     fn retire(&mut self, authority: CapRef) {
-        let root = sel4::cap::CNode::from_bits(DEVICE_CAPS_SELF_SLOT as _);
+        let root = self.io().platform.transport.space.root;
         root.absolute_cptr(sel4::CPtr::from_bits(authority.slot as _))
             .revoke()
             .expect("authority revoke");
@@ -425,8 +426,8 @@ impl Service {
         let objects = self.maps.iter().flatten().filter(|m| m.device == d).count();
         let device = &self.devices[d];
         if let Err(error) = device.dma_policy.admit(device.dma_bytes, objects, length) {
-            sel4::debug_println!(
-                "DEVICE_DMA_RESERVE_FAIL used={} objects={} limit_bytes={} limit_objects={} length={} next_iova={:#x} error={:?}",
+            horn_runtime::logging::warn!(
+                "DMA quota exceeded: {} bytes in {} objects (limits {} bytes, {} objects), request {} bytes at {:#x}: {:?}",
                 device.dma_bytes,
                 objects,
                 device.dma_policy.bytes,
@@ -442,8 +443,8 @@ impl Service {
             .checked_add(length)
             .filter(|end| *end <= 0x8000_0000)
             .ok_or_else(|| {
-                sel4::debug_println!(
-                    "DEVICE_DMA_RESERVE_FAIL step=window iova={:#x} length={}",
+                horn_runtime::logging::warn!(
+                    "DMA address space exhausted at {:#x}, requested {} bytes",
                     iova,
                     length
                 );
@@ -453,14 +454,20 @@ impl Service {
         let mut pins = Vec::new();
         pins.try_reserve_exact(length.div_ceil(65536) as usize)
             .map_err(|_| {
-                sel4::debug_println!("DEVICE_DMA_RESERVE_FAIL step=pins length={}", length);
+                horn_runtime::logging::warn!(
+                    "cannot allocate DMA pin metadata for {} bytes",
+                    length
+                );
                 DeviceError::Exhausted
             })?;
         let index = if let Some(n) = self.maps.iter().position(Option::is_none) {
             n
         } else {
             self.maps.try_reserve(1).map_err(|_| {
-                sel4::debug_println!("DEVICE_DMA_RESERVE_FAIL step=maps len={}", self.maps.len());
+                horn_runtime::logging::warn!(
+                    "cannot grow DMA mapping metadata beyond {} entries",
+                    self.maps.len()
+                );
                 DeviceError::Exhausted
             })?;
             self.maps.push(None);
@@ -470,8 +477,8 @@ impl Service {
         let reservation = match self.unit().reserve(domain, iova, (length / 4096) as usize) {
             Ok(r) => r,
             Err(e) => {
-                sel4::debug_println!(
-                    "DEVICE_DMA_RESERVE_FAIL step=vtd iova={:#x} pages={} error={:?}",
+                horn_runtime::logging::warn!(
+                    "cannot reserve DMA mappings at {:#x} for {} pages: {:?}",
                     iova,
                     length / 4096,
                     e
@@ -868,8 +875,8 @@ impl DeviceControl for Caller<'_> {
             Err(CallError::Remote(error))
                 if error != DeviceError::Quarantined && error != DeviceError::Backend =>
             {
-                sel4::debug_println!(
-                    "DEVICE_WINDOW_FAIL bar={} offset={:#x} length={} error={:?} open={}",
+                horn_runtime::logging::warn!(
+                    "cannot map BAR {} at {:#x} for {} bytes: {:?} ({} open mappings)",
                     index,
                     offset,
                     length,
@@ -911,8 +918,8 @@ impl DeviceControl for Caller<'_> {
             .service
             .reserve_dma(self.badge, length, access)
             .map_err(|error| {
-                sel4::debug_println!(
-                    "DEVICE_DMA_MAP_FAIL step=reserve length={} error={:?}",
+                horn_runtime::logging::warn!(
+                    "cannot reserve {} bytes of DMA memory: {:?}",
                     length,
                     error
                 );
@@ -928,8 +935,8 @@ impl DeviceControl for Caller<'_> {
             .badge;
         let appended = self.service.append_dma(badge, memory, offset, length);
         if let Err(error) = &appended {
-            sel4::debug_println!(
-                "DEVICE_DMA_MAP_FAIL step=append length={} error={:?}",
+            horn_runtime::logging::warn!(
+                "cannot attach {} bytes of DMA memory: {:?}",
                 length,
                 error
             );
@@ -940,7 +947,7 @@ impl DeviceControl for Caller<'_> {
                 // IOTLB invalidation, so commit it before the caller can use the
                 // device address.
                 if let Err(error) = self.service.commit_dma(badge) {
-                    sel4::debug_println!("DEVICE_DMA_MAP_FAIL step=commit error={:?}", error);
+                    horn_runtime::logging::warn!("cannot commit DMA mappings: {:?}", error);
                     let index = self
                         .service
                         .maps
@@ -1002,9 +1009,10 @@ impl DeviceControl for Caller<'_> {
         let sid = self.service.devices[d].sid;
         let domain = self.service.devices[d].domain;
         let io = self.service.io();
-        let lease = VmFactoryClient::new(&mut io.platform.transport, target(DEVICE_CAPS_VM_SLOT))
-            .delegate(12)
-            .expect("IRQ Untyped");
+        let lease =
+            VmFactoryClient::new(&mut io.platform.transport, io.ctx.cap("horn.vm").unwrap())
+                .delegate(12)
+                .expect("IRQ Untyped");
         let grant = VmUntypedClient::new(&mut io.platform.transport, Cap::from_ref(lease.as_ref()))
             .capability()
             .expect("IRQ Untyped cap");
@@ -1014,7 +1022,7 @@ impl DeviceControl for Caller<'_> {
             .cap::<sel4::cap_type::Untyped>(untyped.as_ref())
             .unwrap();
         let slot = io.space().reserve_slot().expect("notification slot");
-        let root = sel4::cap::CNode::from_bits(DEVICE_CAPS_SELF_SLOT as _);
+        let root = io.platform.transport.space.root;
         kernel
             .untyped_retype(
                 &sel4::ObjectBlueprint::Notification,
@@ -1070,7 +1078,7 @@ impl DeviceControl for Caller<'_> {
         {
             return Err(DeviceError::Denied);
         }
-        let root = sel4::cap::CNode::from_bits(DEVICE_CAPS_SELF_SLOT as _);
+        let root = self.service.io().platform.transport.space.root;
         let slot = self
             .service
             .io()

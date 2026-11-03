@@ -234,7 +234,6 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     write!(shell, "{}", "Horn development shell\r\n".blue());
     shell.bytes(b"$ ");
     shell.flush();
-    horn_runtime::logging::info!("ready");
     shell.ctx.notify_ready().unwrap();
     let mut line = [0u8; 256];
     let mut length = 0;

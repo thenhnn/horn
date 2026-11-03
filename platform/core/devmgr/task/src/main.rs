@@ -14,13 +14,7 @@ use alloc::alloc::{alloc, dealloc, handle_alloc_error};
 use core::{alloc::Layout, cell::RefCell, mem, ptr::NonNull};
 use horn_devmgr::{Inventory, firmware, pci::ConfigRead, protocol::*};
 use horn_ipc::*;
-const SLOTS: TaskSlots = TaskSlots::new(DEVICE_CAPS_FIRST_FREE_SLOT, DEVICE_CAPS_SIZE_BITS);
-horn_runtime::task!(main, vm: horn_runtime::VmBootstrap {
-    cnode: DEVICE_CAPS_SELF_SLOT,
-    factory: DEVICE_CAPS_VM_SLOT,
-    address_space: DEVICE_CAPS_ADDRESS_SPACE_SLOT,
-    slots: SLOTS,
-});
+horn_runtime::task!(main);
 
 use native::PlatformClient;
 
@@ -79,12 +73,21 @@ impl ConfigRead for Firmware<'_> {
     }
 }
 
-fn main() -> ! {
-    let root = sel4::cap::CNode::from_bits(DEVICE_CAPS_SELF_SLOT as _);
-    let receive = root.absolute_cptr(sel4::CPtr::from_bits(SLOTS.public_receive() as _));
-    // Public receive, private RPC and heap callbacks have disjoint slots.
-    let transport = horn_runtime::transport(root, SLOTS.application()).expect("devmgr transport");
-    let target = horn_runtime::bootstrap_cap(root, DEVICE_CAPS_PLATFORM_SLOT);
+fn main(mut ctx: horn_runtime::Context) -> ! {
+    let mut log_io = ctx.logging_transport().unwrap();
+    let sink = horn_supervisor::protocol::SupervisorFactoryClient::new(
+        &mut log_io,
+        ctx.cap("supervisor").unwrap(),
+    )
+    .core_log_sink()
+    .unwrap();
+    // IPC/heap are initialized, and this transport is reserved exclusively for logging.
+    unsafe {
+        horn_runtime::logging::install(log_io, Cap::from_ref(sink.as_ref())).unwrap();
+    }
+    let transport = ctx.transport().expect("devmgr transport");
+    let mut inbox = ctx.inbox("service").unwrap();
+    let target = ctx.cap("platform").unwrap();
     let mut platform = DevicePlatformClient::new(transport, target);
     #[cfg(feature = "boot-tests")]
     boot_tests::allocator();
@@ -122,7 +125,7 @@ fn main() -> ! {
     let hpet = clock::discover(&tables);
     drop(tables);
     let count = inventory.status().unwrap().pci_devices;
-    let mut io = native::Io::new(platform.into_inner());
+    let mut io = native::Io::new(platform.into_inner(), ctx);
     let mut service = if let Some(dmar) = dmar {
         assert!(regions.iter().all(|r| r.segment == 0 && r.first_bus == 0));
         let mut cursor = 0;
@@ -150,18 +153,12 @@ fn main() -> ! {
         let unit =
             unsafe { horn_devmgr::vtd::Vtd::enable(io, dmar, policy.ticks_per_us * 1_000_000) }
                 .expect("VT-d initialization");
-        sel4::debug_println!(
-            "VTD_ACTIVE translation=true interrupt_remap=true compatibility=false"
-        );
+
         service::Service::enabled(inventory, regions, unit)
     } else {
         service::Service::new(inventory, regions, io)
     };
-    sel4::debug_println!(
-        "DEVMGR_READY devices={} ecam=true iommu={}",
-        count,
-        policy.vtd
-    );
+    horn_runtime::logging::info!("PCI discovery complete: {} devices", count);
     let fault_irq = service.arm_fault_irq();
     service.init_clock(hpet);
     service.io().platform.ready().expect("platform preparation");
@@ -171,9 +168,8 @@ fn main() -> ! {
     #[cfg(feature = "boot-tests")]
     let mut observer = drivers
         .is_empty()
-        .then(|| boot_tests::Observer::start(&mut service.io().platform.transport));
+        .then(|| boot_tests::Observer::start(service.io()));
     let mut reported = false;
-    let reply = sel4::cap::Reply::from_bits(DEVICE_CAPS_REPLY_SLOT as _);
     loop {
         drivers.launch_pending(&mut service);
         #[cfg(not(feature = "boot-tests"))]
@@ -182,78 +178,55 @@ fn main() -> ! {
         let tests_finished = observer.as_ref().is_none_or(|probe| probe.finished);
         if !reported && tests_finished {
             reported = true;
-            sel4::debug_println!("DEVMGR_SERVICE_READY configured=true");
             #[cfg(feature = "boot-tests")]
-            boot_tests::ready();
+            boot_tests::ready(&service.io().ctx);
             #[cfg(not(feature = "boot-tests"))]
-            horn_runtime::notify_ready(DEVICE_CAPS_READY_SLOT);
+            service.io().ctx.notify_ready().unwrap();
         }
-        let request = {
-            let mut server = Sel4Server::new(
-                root,
-                sel4::cap::Endpoint::from_bits(DEVICE_CAPS_SERVICE_SLOT as _),
-                receive,
-                service.io().space(),
+        let mut received = inbox.receive();
+        let badge = received.badge();
+        if badge
+            & (horn_devmgr::FAULT_NOTIFICATION_BADGE
+                | horn_supervisor::OWNER_CHANGED
+                | horn_devmgr::TIMER_NOTIFICATION_BADGE)
+            != 0
+        {
+            // Drop receive state before IRQ handlers and owner callbacks issue RPC.
+            drop(received);
+            if badge & horn_devmgr::FAULT_NOTIFICATION_BADGE != 0 {
+                let faults =
+                    service.handle_fault_irq(fault_irq.expect("unexpected fault notification"));
+                drivers.faulted(&mut service, faults);
+            }
+            if badge & horn_devmgr::TIMER_NOTIFICATION_BADGE != 0 {
+                service.clock_irq();
+            }
+            if badge & horn_supervisor::OWNER_CHANGED != 0 {
+                drivers.changed(&mut service);
+                #[cfg(feature = "boot-tests")]
+                if let Some(probe) = &mut observer {
+                    probe.changed(&mut service.io().platform.transport);
+                }
+            }
+            continue;
+        }
+        if badge == 0 {
+            continue;
+        }
+        let request = received.decode(
+            service.io().space(),
+            device_host_request_layout,
+            DeviceHostRequest::decode,
+        );
+        if let Ok((_, request, reply)) = request {
+            let response = device_host_dispatch(
+                request,
+                &mut service::Caller {
+                    service: &mut service,
+                    badge,
+                },
             );
-            sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&server.recv_slot));
-            let (info, badge) = server.endpoint.recv(reply);
-            if badge
-                & (horn_devmgr::FAULT_NOTIFICATION_BADGE
-                    | horn_supervisor::OWNER_CHANGED
-                    | horn_devmgr::TIMER_NOTIFICATION_BADGE)
-                != 0
-            {
-                drop(server);
-                receive.delete().unwrap();
-                if badge & horn_devmgr::FAULT_NOTIFICATION_BADGE != 0 {
-                    let faults =
-                        service.handle_fault_irq(fault_irq.expect("unexpected fault notification"));
-                    drivers.faulted(&mut service, faults);
-                }
-                if badge & horn_devmgr::TIMER_NOTIFICATION_BADGE != 0 {
-                    service.clock_irq();
-                }
-                if badge & horn_supervisor::OWNER_CHANGED != 0 {
-                    drivers.changed(&mut service);
-                    #[cfg(feature = "boot-tests")]
-                    if let Some(probe) = &mut observer {
-                        probe.changed(&mut service.io().platform.transport);
-                    }
-                }
-                continue;
-            }
-            if badge == 0 {
-                // No exported client has badge zero. Discard unsolicited caps
-                // from unbadged bootstrap traffic without dispatching authority.
-                receive.delete().unwrap();
-                continue;
-            }
-            server.decode_received_dynamic(
-                info,
-                badge,
-                reply,
-                device_host_request_layout,
-                DeviceHostRequest::decode,
-            )
-        };
-        match request {
-            Ok((_, request, reply)) => {
-                let badge = reply.badge;
-                let response = device_host_dispatch(
-                    request,
-                    &mut service::Caller {
-                        service: &mut service,
-                        badge,
-                    },
-                );
-                device_host_reply(reply, service.io().space(), &response).unwrap();
-                receive.delete().unwrap();
-            }
-            Err(_) => {
-                // Discard unsolicited/invalid capability arguments and abandon
-                // the malformed call, rather than killing the critical service.
-                receive.delete().unwrap();
-            }
+            device_host_reply(reply, service.io().space(), &response).unwrap();
         }
     }
 }

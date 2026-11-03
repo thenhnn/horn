@@ -93,6 +93,10 @@ class SupervisorFactory:
         bootstrap: ProcessBootstrap,
     ) -> Result[Cap[SupervisedJob, Move], SupervisorError]: ...
 
+    # Boot owner only; the supervisor chooses the immutable core service label.
+    @method
+    def core_log_sink(self) -> Result[Cap[LogSinkObject, Move], SupervisorError]: ...
+
 
 @iface("net.nhnn.horn.supervisor.job", version=(1, 0))
 class SupervisorJob:

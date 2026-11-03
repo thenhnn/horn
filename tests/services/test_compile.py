@@ -60,7 +60,13 @@ def test_logger_dependency_is_injected_without_mutating_input(tmp_path):
     services = definitions(tmp_path)
     logger = {**services["timer"], "requires": {}}
     logger["exports"] = [
-        {"path": "/services/log", "object": "server", "badge": 16, "rights": 14, "supervisorOnly": True}
+        {
+            "path": "/services/log",
+            "object": "server",
+            "badge": 16,
+            "rights": 14,
+            "supervisorOnly": True,
+        }
     ]
     services["logd"] = logger
     services["timer"]["logging"] = "/services/log"
@@ -74,9 +80,34 @@ def test_logger_cannot_depend_on_itself(tmp_path):
     services = definitions(tmp_path)
     services["timer"]["logging"] = "/services/log"
     services["timer"]["exports"] = [
-        {"path": "/services/log", "object": "server", "badge": 16, "rights": 14, "supervisorOnly": True}
+        {
+            "path": "/services/log",
+            "object": "server",
+            "badge": 16,
+            "rights": 14,
+            "supervisorOnly": True,
+        }
     ]
     with pytest.raises(AssertionError, match="dependency cycle"):
+        compiler.compile_services(services)
+
+
+def test_abi2_boot_has_named_context(tmp_path):
+    services = definitions(tmp_path)
+    services["boot"].update(abi=2, bootstrap=None, capset=None)
+    result = compiler.compile_services(services)
+    assert 'name:"boot"' in result
+    assert 'ContextBinding{name:"horn.vm",slot:1}' in result
+    assert 'context:&[],name:"boot"' not in result
+
+
+def test_boot_cannot_silently_ignore_runtime_dependency(tmp_path):
+    services = definitions(tmp_path)
+    services["boot"].update(abi=2, bootstrap=None, capset=None)
+    services["boot"]["requires"] = {
+        "later": {"path": "/devices/clock", "select": "first"}
+    }
+    with pytest.raises(AssertionError, match="boot cannot wait"):
         compiler.compile_services(services)
 
 

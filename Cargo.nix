@@ -1168,6 +1168,11 @@ rec {
             packageId = "libhorn";
           }
           {
+            name = "owo-colors";
+            packageId = "owo-colors";
+            usesDefaultFeatures = false;
+          }
+          {
             name = "sel4";
             packageId = "sel4";
           }
@@ -1831,6 +1836,11 @@ rec {
           {
             name = "libhorn";
             packageId = "libhorn";
+          }
+          {
+            name = "owo-colors";
+            packageId = "owo-colors";
+            usesDefaultFeatures = false;
           }
           {
             name = "sel4";

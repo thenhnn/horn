@@ -17,11 +17,11 @@ def test_devmgr_ordinary_boot_has_no_probes(system, console):
                 assert chunk
                 received += chunk
             assert received == greeting
-            vm.serial.wait_for(b"SUPERVISOR_READY policy=userspace", timeout=60)
+            vm.serial.wait_for(b"devmgr\x1b[0m ready", timeout=60)
             assert_idle(vm)
     else:
         vm.start()
-        vm.serial.wait_for(b"SUPERVISOR_READY policy=userspace", timeout=60)
+        vm.serial.wait_for(b"devmgr\x1b[0m ready", timeout=60)
         assert_idle(vm)
         vm.kill()
     output = vm.serial.path.read_text()
@@ -62,7 +62,7 @@ def test_devmgr_discovery(system, release, fault, cpus):
         timeout=60,
     )
     vm.serial.wait_for(b"DEVMGR_ALLOCATOR allocator=mimalloc")
-    vm.serial.wait_for(b"DEVMGR_READY devices=", timeout=60)
+    vm.serial.wait_for(b"PCI discovery complete:", timeout=60)
     vm.serial.wait_for(b"DEVMGR_PLATFORM_PASS bounded=true returned=true")
     vm.serial.wait_for(b"DEVMGR_AUTH_PASS observer_rebadge=false")
     vm.serial.wait_for(
@@ -86,4 +86,4 @@ def test_device_manager_startup_deadline(system):
     assert vm.process.wait(timeout=60) == 0
     output = vm.serial.path.read_text()
     assert "DEVMGR_FATAL reboot=true reason=startup timeout" in output
-    assert "DEVMGR_READY" not in output
+    assert "devmgr\x1b[0m ready" not in output

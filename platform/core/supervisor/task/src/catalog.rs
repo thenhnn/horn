@@ -158,7 +158,10 @@ impl Manager {
             let Some(bindings) = self.requirements(definition) else {
                 if !self.wait_logged[index] {
                     self.wait_logged[index] = true;
-                    horn_runtime::logging::debug!("{} waiting for dependencies", definition.name);
+                    horn_runtime::logging::debug!(
+                        "{} waiting for dependencies",
+                        definition.name.bold()
+                    );
                 }
                 continue;
             };
@@ -278,7 +281,7 @@ impl Manager {
             self.jobs[i].deadline = now().wrapping_add(self.ticks * crate::ready_timeout_us());
             self.process(i).start().unwrap();
             self.io.space.delete(owner.as_ref()).unwrap();
-            horn_runtime::logging::info!("starting {}", definition.name);
+            horn_runtime::logging::info!("starting {}", definition.name.bold());
         }
     }
 }

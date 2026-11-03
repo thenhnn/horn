@@ -48,16 +48,16 @@ fn overflow_is_an_error_not_a_successfully_truncated_record() {
     ));
 }
 #[test]
-fn invalid_utf8_is_rejected_before_output_and_control_bytes_are_escaped() {
+fn invalid_utf8_is_rejected_before_output_and_message_ansi_is_preserved() {
     let mut record = record(
         log::Level::Warn,
         "timer",
-        format_args!("escape:\x1b[31m\nnext"),
+        format_args!("\x1b[1mservice\x1b[0m ready\nnext"),
     )
     .unwrap();
     let mut text = String::new();
     render(&mut text, "timerd", &record).unwrap();
-    assert!(text.contains("\\u{1b}[31m"));
+    assert!(text.contains("\x1b[1mservice\x1b[0m ready"));
     assert!(text.contains("\n       │ next"));
     text.clear();
     record.message.data[0] = 0xff;

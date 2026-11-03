@@ -62,8 +62,10 @@ def compile_services(definitions):
     for name, service in definitions.items():
         if service.get("logging") is not None:
             assert any(
-                export["path"] == service["logging"] and export.get("supervisorOnly", False)
-                for provider in definitions.values() for export in provider["exports"]
+                export["path"] == service["logging"]
+                and export.get("supervisorOnly", False)
+                for provider in definitions.values()
+                for export in provider["exports"]
             ), f"{name}: logging factory must be supervisor-only"
     graph = {name: set() for name in definitions}
     for name, service in definitions.items():
@@ -108,11 +110,15 @@ def compile_services(definitions):
     for name, service in sorted(definitions.items()):
         abi = service.get("abi", 1)
         assert abi in (1, 2), f"{name}: unsupported startup ABI"
+        if service["activation"] == "boot":
+            assert not service["requires"] and not service["after"], (
+                f"{name}: boot cannot wait for runtime dependencies"
+            )
+            assert all(g["minReady"] == 0 for g in service["namespaces"].values()), (
+                f"{name}: boot namespace cannot wait for READY"
+            )
         if abi == 2:
             assert service.get("bootstrap") is None and service.get("capset") is None
-            assert service["activation"] != "boot", (
-                "ABI2 boot-service provisioning not implemented"
-            )
             ports = ["vm", "address_space", "lifecycle", "reply", "ready"]
             local = (
                 list(service["requires"])

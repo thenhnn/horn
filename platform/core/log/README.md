@@ -21,8 +21,8 @@ this change does **not** claim every existing message is migrated.
   successful partial record. `emit` exposes the Result; `log` macros cannot
   return errors, so facade failures produce a direct EMERGENCY diagnostic.
 - Always-colored levels/targets through owo-colors, no color toggle. Invalid
-  UTF-8 fails before output; terminal controls are escaped, multiline messages
-  visibly indented. Process name comes from an immutable sink binding, selected
+  UTF-8 fails before output; message ANSI/control codes are preserved, metadata
+  controls are escaped, and multiline messages are visibly indented. Process name comes from an immutable sink binding, selected
   by the kernel-supplied badge. Target remains caller-supplied module metadata.
 - A stalled/dead logger may block a caller indefinitely: no universal timeout.
   Never use normal logging while holding a resource the logger needs.

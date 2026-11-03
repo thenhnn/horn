@@ -247,8 +247,7 @@ in {
     services.definitions = {
       devmgr = {
         elf = runtimeElf childWorkspace.members.horn-devmgr-task "devmgr";
-        bootstrap = bootstrap "horn_device";
-        capset = "DeviceCaps";
+        abi = 2;
         activation = "boot";
         ram = 64 * 1024 * 1024;
         grants = {

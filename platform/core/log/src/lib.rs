@@ -115,7 +115,20 @@ impl fmt::Display for Escaped<'_> {
         Ok(())
     }
 }
-/// Always colored. UTF-8/control bytes validated before emitting any output.
+struct MessageText<'a>(&'a str);
+impl fmt::Display for MessageText<'_> {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, line) in self.0.split('\n').enumerate() {
+            if i != 0 {
+                out.write_str("\n       │ ")?;
+            }
+            out.write_str(line)?;
+        }
+        Ok(())
+    }
+}
+/// Always colored. UTF-8 validated before emitting any output.
+/// Message ANSI/control codes are preserved; metadata controls are escaped.
 /// Caller must serialize the entire call and reply only after it returns.
 pub fn render(out: &mut impl Write, process: &str, record: &LogRecord) -> Result<(), LogError> {
     let target = record
@@ -143,7 +156,7 @@ pub fn render(out: &mut impl Write, process: &str, record: &LogRecord) -> Result
             "{} {} {}",
             Escaped(process).cyan().bold(),
             Escaped(target).dimmed(),
-            Escaped(message)
+            MessageText(message)
         )
     })();
     result.map_err(|_| LogError::Output)

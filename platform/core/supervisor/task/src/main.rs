@@ -11,6 +11,7 @@ use horn_supervisor::{
     protocol::*,
     *,
 };
+use owo_colors::OwoColorize;
 horn_runtime::task!(main);
 fn now() -> u64 {
     unsafe { core::arch::x86_64::_rdtsc() }
@@ -98,7 +99,7 @@ impl Manager {
             .unwrap();
             return;
         }
-        horn_runtime::logging::debug!("{} stopped; awaiting cleanup", self.name(i));
+        horn_runtime::logging::debug!("{} stopped; awaiting cleanup", self.name(i).bold());
         if let Some(note) = self.jobs[i].owner {
             self.io
                 .space
@@ -111,7 +112,7 @@ impl Manager {
         for i in 0..self.jobs.len() {
             if event & ready_bit(i) != 0 && self.jobs[i].lifecycle.ready() {
                 self.namespace.tree.ready((i + 1) as u64);
-                horn_runtime::logging::debug!("{} ready", self.name(i));
+                horn_runtime::logging::info!("{} ready", self.name(i).bold());
                 if let Some(note) = self.jobs[i].owner {
                     self.io
                         .space
@@ -158,7 +159,7 @@ impl Manager {
                 ServiceStatus::Starting | ServiceStatus::Stopping
             ) && now().wrapping_sub(self.jobs[i].deadline) < (1 << 63)
             {
-                horn_runtime::logging::warn!("{} timed out", self.name(i));
+                horn_runtime::logging::warn!("{} timed out", self.name(i).bold());
                 self.stopped(i);
             }
         }
@@ -203,6 +204,37 @@ impl Caller<'_> {
     }
 }
 impl SupervisorFactory for Caller<'_> {
+    fn core_log_sink(&mut self) -> Result<Cap<LogSinkObjectTag>, SupervisorError> {
+        if self.badge != FACTORY_BADGE {
+            return Err(SupervisorError::Denied);
+        }
+        let node = self
+            .manager
+            .namespace
+            .tree
+            .resolve(0, "services/log")
+            .map_err(|_| SupervisorError::Busy)?;
+        if !self.manager.namespace.is_hidden(node) {
+            return Err(SupervisorError::Denied);
+        }
+        let factory = *self
+            .manager
+            .namespace
+            .tree
+            .value(node)
+            .ok_or(SupervisorError::Busy)?;
+        let source = catalog::core().name.as_bytes();
+        let mut name = List::default();
+        name.len = source.len() as _;
+        name.data[..source.len()].copy_from_slice(source);
+        horn_log::protocol::LogFactoryClient::new(
+            &mut self.manager.io,
+            Cap::from_ref(factory.as_ref()),
+        )
+        .create_sink(name)
+        .map(|cap| Cap::from_ref(cap.as_ref()))
+        .map_err(|_| SupervisorError::Backend)
+    }
     fn prepare(
         &mut self,
         elf: Cap<VmMemoryObjectTag>,
@@ -521,7 +553,7 @@ impl SupervisorJob for Caller<'_> {
         #[cfg(feature = "boot-tests")]
         horn_runtime::logging::info!(
             "{} released; RAM returned, owner acknowledged",
-            self.manager.name(i)
+            self.manager.name(i).bold()
         );
         Ok(())
     }
@@ -534,7 +566,7 @@ impl SupervisorRuntime for Caller<'_> {
     fn request_stop(&mut self, mode: StopMode) -> Result<(), SupervisorError> {
         let i = self.runtime()?;
         self.manager.jobs[i].lifecycle.request_stop(mode)?;
-        horn_runtime::logging::debug!("{} requested stop", self.manager.name(i));
+        horn_runtime::logging::debug!("{} requested stop", self.manager.name(i).bold());
         Ok(())
     }
 }
@@ -593,7 +625,6 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         launched: [false; 8],
         wait_logged: [false; 8],
     };
-    horn_runtime::logging::emergency(format_args!("starting system services"));
     boot::start(&mut manager);
     manager.activate();
     // logd is dependency-free and already started. This calls it directly,
@@ -612,7 +643,6 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     unsafe {
         horn_log::install(log_io, Cap::from_ref(sink.as_ref())).unwrap();
     }
-    horn_runtime::logging::info!("ready");
     loop {
         let mut received = if manager.polling() {
             inbox.poll()
@@ -626,7 +656,11 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
             .enumerate()
             .find(|(i, _)| badge == fault_badge(*i))
         {
-            horn_runtime::logging::error!("process {} fault: {:?}", i, received.fault());
+            horn_runtime::logging::error!(
+                "{} fault: {:?}",
+                manager.name(i).bold(),
+                received.fault()
+            );
         }
         if badge & CORE_READY != 0 {
             manager.namespace.tree.ready(0);
@@ -636,6 +670,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
             )
             .ready()
             .unwrap();
+            horn_runtime::logging::info!("{} ready", catalog::core().name.bold());
         }
         if manager.namespace.recognizes(badge) {
             let request = received.decode(

@@ -71,6 +71,6 @@ def test_http_event_loop_and_growing_pool(system, cpus):
     vm.serial.wait_for("listening on TCP port 80", timeout=30)
     exercise_http(port)
     log = vm.serial.path.read_text()
-    assert "panicked" not in log and "VTD_FAULT source=" not in log, log
+    assert "panicked" not in log and "DMA fault from device" not in log, log
     if cpus > 1:
         assert "hardware clock (via IPC)" in log, log

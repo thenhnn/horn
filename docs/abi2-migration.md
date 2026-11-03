@@ -12,8 +12,8 @@ logger failures and critical contexts that cannot safely perform RPC.
 | netd | ABI2, named caps, Inbox receive cleanup, DHCP logs; user boot-confirmed |
 | virtio-net | Dynamic ABI2 context and shared logger; deployment builds, awaiting boot confirmation |
 | virtio-console | ABI2 and shared logger; user boot-confirmed; DMA-probe and orderly-stop deployments compile-checked |
-| supervisor | ABI2 with root-issued named context, explicit deployment authority and dedicated log transport; deployment builds, awaiting user boot check |
-| devmgr | Still ABI1; next boot-critical consumer to migrate |
+| supervisor | ABI2, named caps and logd; user boot-confirmed; sole reporter of service READY events |
+| devmgr | ABI2 boot provisioning, explicit Context in native Io, named caps and dedicated logd sink; normal, DMA-probe and orderly-stop deployments build, awaiting user boot check |
 | NVIDIA | Pending source migration only; hardware launches remain separately authorized |
 | legacy examples, probe fixtures | Pending inventory and migration |
 
@@ -32,6 +32,14 @@ log_sink() binds the child's actual process name, not a caller-supplied label.
 Dependency-free logd is activated before handling dynamic prepare requests.
 Do not introduce a boot cycle by synchronously waiting for logd inside devmgr's
 initial driver launch. Preserve IRQ/stop acknowledgement and DMA teardown order.
+
+Devmgr's boot record is installed after its grants and objects, before start.
+It derives its dedicated log sink through the supervisor's boot-owner-only
+`core_log_sink()` RPC, after reserving logging transport and before discovery.
+Supervisor activates dependency-free logd before serving that request; no factory
+capability or caller-chosen label is exposed to devmgr. Its startup namespace
+stays immutable. Ordinary driver/application runtime capabilities cannot use
+this boot-owner method (the lifecycle fixture checks rejection).
 
 Remove ABI1 macros, descriptors/capsets and ordinary debug printing only after
 all consumers are migrated. Test matchers should follow readable messages

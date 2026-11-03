@@ -15,16 +15,12 @@ pub struct Mapping {
     pub token: u64,
 }
 pub struct Io {
+    pub ctx: horn_runtime::Context,
+    pub boot: horn_supervisor::client::Bootstrap,
     pub platform: PlatformClient,
     pub registers: Option<Mapping>,
     pub base: u64,
     pages: Vec<Mapping>,
-}
-pub fn target<T: CapType>(slot: u32) -> Cap<T> {
-    horn_runtime::bootstrap_cap(
-        sel4::cap::CNode::from_bits(DEVICE_CAPS_SELF_SLOT as _),
-        slot,
-    )
 }
 fn vm_error(error: CallError<VmError>) -> vtd::Error {
     match error {
@@ -33,9 +29,21 @@ fn vm_error(error: CallError<VmError>) -> vtd::Error {
     }
 }
 impl Io {
-    pub fn new(platform: PlatformClient) -> Self {
+    pub fn new(platform: PlatformClient, ctx: horn_runtime::Context) -> Self {
+        let boot = horn_supervisor::client::Bootstrap {
+            cnode: platform.transport.space.root.bits() as _,
+            bits: ctx.cspace_bits(),
+            vm: ctx.cap::<Endpoint>("horn.vm").unwrap().as_ref().slot,
+            space: ctx
+                .cap::<Endpoint>("horn.address-space")
+                .unwrap()
+                .as_ref()
+                .slot,
+        };
         Self {
             platform,
+            ctx,
+            boot,
             registers: None,
             base: 0,
             pages: Vec::new(),
@@ -52,7 +60,7 @@ impl Io {
     ) -> vtd::Result<Mapping> {
         let region = VmAddressSpaceClient::new(
             &mut self.platform.transport,
-            target(DEVICE_CAPS_ADDRESS_SPACE_SLOT),
+            self.ctx.cap("horn.address-space").unwrap(),
         )
         .reserve(VmRegionRequest {
             address: 0,
@@ -115,7 +123,11 @@ impl Io {
     pub fn mmio(&mut self, base: u64, length: usize) -> vtd::Result<Mapping> {
         let grant = self
             .platform
-            .mmio(&target(DEVICE_CAPS_ADDRESS_SPACE_SLOT), base, length as u64)
+            .mmio(
+                &self.ctx.cap("horn.address-space").unwrap(),
+                base,
+                length as u64,
+            )
             .map_err(|_| vtd::Error::Backend)?;
         self.map_cpu(grant.memory, length, grant.token)
     }
@@ -178,10 +190,12 @@ unsafe impl Hardware for Io {
         self.pages
             .try_reserve(1)
             .map_err(|_| vtd::Error::Exhausted)?;
-        let memory =
-            VmFactoryClient::new(&mut self.platform.transport, target(DEVICE_CAPS_VM_SLOT))
-                .allocate(4096, VmBacking::Resident, VmProtection(3))
-                .map_err(vm_error)?;
+        let memory = VmFactoryClient::new(
+            &mut self.platform.transport,
+            self.ctx.cap("horn.vm").unwrap(),
+        )
+        .allocate(4096, VmBacking::Resident, VmProtection(3))
+        .map_err(vm_error)?;
         let grant = self
             .platform
             .pin(&memory, 0, 4096, 3)

@@ -57,7 +57,6 @@ impl SystemControl for System<'_> {
     }
     fn ready(&mut self) -> Result<(), SystemError> {
         self.platform.ready = true;
-        sel4::debug_println!("SUPERVISOR_READY policy=userspace");
         Ok(())
     }
     fn fail(&mut self, _: SystemFailure) -> Result<(), SystemError> {

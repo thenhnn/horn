@@ -67,7 +67,7 @@ impl Clock {
         this.write(0x110, (address << 32) | data as u64);
         this.write(0xf0, 0);
         this.write(0x10, 1);
-        sel4::debug_println!("HPET_CLOCK_READY one_shot=true fsb=true");
+        horn_runtime::logging::debug!("hardware clock initialized");
         this
     }
     fn read(&self, offset: usize) -> u64 {
@@ -99,7 +99,7 @@ impl Clock {
         if ticks > u64::MAX as u128 {
             return Err(ClockError::Invalid);
         }
-        let root = sel4::cap::CNode::from_bits(DEVICE_CAPS_SELF_SLOT as _);
+        let root = io.platform.transport.space.root;
         let note = horn_supervisor::client::copy(&mut io.platform.transport, root, signal);
         self.cancel(io);
         self.signal = Some(note);

@@ -271,6 +271,7 @@ dependencies = [
  "horn-runtime",
  "horn-supervisor",
  "libhorn",
+ "owo-colors",
  "sel4",
 ]
 
@@ -468,6 +469,7 @@ dependencies = [
  "horn-supervisor",
  "horn-vm",
  "libhorn",
+ "owo-colors",
  "sel4",
 ]
 

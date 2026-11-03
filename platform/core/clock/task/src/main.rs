@@ -178,8 +178,8 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         span_cycles: t1 - t0,
         span_us: end - start,
     };
-    horn_runtime::logging::info!(
-        "ready; {}",
+    horn_runtime::logging::debug!(
+        "{}",
         if page.flags != 0 {
             "local TSC enabled (fast path)"
         } else {

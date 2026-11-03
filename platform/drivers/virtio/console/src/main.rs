@@ -206,7 +206,6 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     #[cfg(feature = "lifecycle-test")]
     hal::probe_for_test(); // Must pass before the host sees a readiness banner.
 
-    horn_runtime::logging::info!("Console ready");
     ctx.notify_ready().unwrap();
     #[cfg(feature = "lifecycle-test")]
     match option_env!("HORN_DRIVER_TEST") {

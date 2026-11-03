@@ -28,7 +28,6 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     });
     let mut hardware = Some(hardware::Hardware::new(transport, common));
     let mut service = service::Service::new(hardware.as_ref().unwrap().mac());
-    horn_runtime::logging::info!("ready");
     ctx.notify_ready().unwrap();
     loop {
         if let Some(hw) = &mut hardware {

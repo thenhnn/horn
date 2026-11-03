@@ -47,5 +47,5 @@ def test_linux_initramfs_pid1_and_clock(system):
         time.sleep(0.05)
     assert "/init: FP/SIMD state survives syscalls and signals" in output, diagnostics
     assert "Linux /init running as PID 1" in output, diagnostics
-    assert "linux ready" in serial, diagnostics
+    assert "linux\x1b[0m ready" in serial, diagnostics
     assert vm.monitor.execute("query-status")["running"]

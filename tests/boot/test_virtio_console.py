@@ -92,15 +92,12 @@ def test_virtio_console_dma_irq(system, release, cpus):
             received + devices + processes + commands
         )
         vm.serial.wait_for(b"DEVMGR_ALLOCATOR allocator=mimalloc")
-        vm.serial.wait_for(
-            b"VTD_ACTIVE translation=true interrupt_remap=true compatibility=false"
-        )
-        vm.serial.wait_for(b"VTD_FAULT_IRQ armed=true")
-        vm.serial.wait_for(
-            b"Console ready"
-        )
+        vm.serial.wait_for(b"DMA fault reporting enabled")
+        vm.serial.wait_for(b"virtio-console@0000:00:04.0\x1b[0m ready")
+        # IRQ handling and supervisor READY acknowledgement can log in either order.
+        vm.serial.position = 0
         vm.serial.wait_for(b"Console interrupt received")
-        assert "VTD_FAULT source=" not in vm.serial.path.read_text()
+        assert "DMA fault from device" not in vm.serial.path.read_text()
         assert vm.monitor.execute("query-status")["running"]
         assert_idle(vm)
         # Ensure a genuinely sleeping system still wakes and handles new input.
@@ -127,11 +124,11 @@ def test_virtio_console_denied_dma(system, probe):
         # diagnostic can interleave bytewise with timerd startup on debug UART.
         vm.serial.wait_for(b"DEVICE_MMIO_LEASE_PASS quota=8 cycles=16 scoped=true")
         vm.serial.wait_for(f"DMA_PROBE {probe}=true".encode())
-        vm.serial.wait_for(b"VTD_FAULT source=0020", timeout=60)
+        vm.serial.wait_for(b"DMA fault from device 0020", timeout=60)
         vm.serial.wait_for(b"read=true overflow=false", timeout=60)
         output = vm.serial.path.read_text()
         fault = re.search(
-            r"VTD_FAULT source=0020 address=([0-9a-f]+) reason=([0-9a-f]+) read=true overflow=false",
+            r"DMA fault from device 0020 at 0x([0-9a-f]+) \(reason 0x([0-9a-f]+), read true, overflow false\)",
             output,
         )
         assert fault, output

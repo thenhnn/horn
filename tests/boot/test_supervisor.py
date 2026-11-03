@@ -16,7 +16,7 @@ def test_supervisor_requires_explicit_ready(system, scenario):
     vm.start()
     assert vm.process.wait(timeout=60) == 0
     output = vm.serial.path.read_text()
-    assert "SUPERVISOR_READY policy=userspace" not in output
+    assert "devmgr\x1b[0m ready" not in output
     if scenario == "no_ready":
         assert "DEVMGR_READY_WITHHELD test=true" in output
         assert "DEVMGR_RPC_PASS" in output
@@ -48,8 +48,7 @@ def test_supervisor_driver_revoke(system, mode, release, cpus):
             timeout=60,
         )
         output = vm.serial.path.read_text()
-        assert "starting system services" in output
-        assert "DEVMGR_SERVICE_START name=virtio-console policy=devmgr" in output
+        assert "starting \x1b[1mvirtio-console@" in output
         if mode == "orderly":
             assert "Console stopped" in output
             assert "DEVMGR_DRIVER_REVOKE cpu_stopped=true orderly=true" in output
@@ -63,6 +62,6 @@ def test_supervisor_driver_revoke(system, mode, release, cpus):
             in output
         )
         assert "DEVMGR_FATAL" not in output
-        assert "VTD_FAULT source=" not in output
+        assert "DMA fault from device" not in output
         assert vm.monitor.execute("query-status")["running"]
         assert_idle(vm)

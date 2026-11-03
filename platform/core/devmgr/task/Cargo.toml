@@ -11,6 +11,7 @@ path = "src/main.rs"
 boot-tests = []
 
 [dependencies]
+owo-colors = { version = "=4.4.0", default-features = false }
 libhorn = { path = "../../../libhorn" }
 acpi = { version = "=5.2.0", default-features = false }
 horn-devmgr = { path = ".." }

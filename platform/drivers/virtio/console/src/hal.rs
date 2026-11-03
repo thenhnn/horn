@@ -92,7 +92,15 @@ pub fn probe_for_test() {
             )
             .cleanup_done(),
             Err(CallError::Remote(SupervisorError::Denied))
-        ))
+        ));
+        assert!(matches!(
+            SupervisorFactoryClient::new(
+                state.session.transport(),
+                Cap::from_ref(state.supervisor.as_ref())
+            )
+            .core_log_sink(),
+            Err(CallError::Remote(SupervisorError::Denied))
+        ));
     });
 }
 #[cfg(feature = "lifecycle-test")]
