@@ -263,6 +263,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "horn-startup-c" = rec {
+      packageId = "horn-startup-c";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "horn-startup-c";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "horn-supervisor" = rec {
       packageId = "horn-supervisor";
       build = internal.buildRustCrateWithFeatures {
@@ -1115,12 +1125,6 @@ rec {
             packageId = "sel4";
           }
         ];
-        buildDependencies = [
-          {
-            name = "horn-idl-build";
-            packageId = "horn-idl-build";
-          }
-        ];
 
       };
       "horn-devmgr-task" = rec {
@@ -1175,12 +1179,6 @@ rec {
           {
             name = "sel4";
             packageId = "sel4";
-          }
-        ];
-        buildDependencies = [
-          {
-            name = "horn-idl-build";
-            packageId = "horn-idl-build";
           }
         ];
         features = {
@@ -1762,6 +1760,19 @@ rec {
         };
         resolvedDefaultFeatures = [ "worker" ];
       };
+      "horn-startup-c" = rec {
+        crateName = "horn-startup-c";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./platform/libhorn/c; };type = [ "staticlib" ];
+        dependencies = [
+          {
+            name = "libhorn";
+            packageId = "libhorn";
+          }
+        ];
+
+      };
       "horn-supervisor" = rec {
         crateName = "horn-supervisor";
         version = "0.1.0";
@@ -1776,6 +1787,10 @@ rec {
           {
             name = "horn-log";
             packageId = "horn-log";
+          }
+          {
+            name = "libhorn";
+            packageId = "libhorn";
           }
           {
             name = "sel4";
@@ -2149,9 +2164,18 @@ rec {
             packageId = "horn-runtime";
           }
           {
+            name = "horn-supervisor";
+            packageId = "horn-supervisor";
+            features = [ "client" ];
+          }
+          {
             name = "horn-vm";
             packageId = "horn-vm";
             features = [ "protocol" ];
+          }
+          {
+            name = "libhorn";
+            packageId = "libhorn";
           }
           {
             name = "sel4";
@@ -2196,6 +2220,10 @@ rec {
             name = "horn-vm";
             packageId = "horn-vm";
             features = [ "rpc" ];
+          }
+          {
+            name = "libhorn";
+            packageId = "libhorn";
           }
           {
             name = "sel4";

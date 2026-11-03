@@ -15,17 +15,6 @@ mod slots;
 pub use slots::TaskSlots;
 
 pub const MAX_CAPS: usize = 3;
-/// Emit once per executable, not once per generated protocol module.
-/// Segment permissions, entry point and TLS use the standard ELF metadata.
-#[macro_export]
-macro_rules! horn_tag {
-    () => {
-        #[used]
-        #[unsafe(link_section = ".horn")]
-        pub static HORN_TAG: [u8; 8] = *b"HORN\x01\x00\x00\x00";
-    };
-}
-
 pub const MAX_MESSAGE_WORDS: usize = 120;
 pub const MAX_MESSAGE_BYTES: usize = MAX_MESSAGE_WORDS * 8;
 

@@ -8,6 +8,7 @@
     pkgs = pkgs.pkgsBuildBuild;
     sources = import ../../nix/npins;
     sel4 = config.sel4.out;
+    workspace = config.rust.workspace;
   };
 in {
   imports = [../system/module.nix];
@@ -17,8 +18,6 @@ in {
   devmgr-demo.shell = false;
   services.definitions.linux = {
     elf = "${linux}/bin/task.elf";
-    bootstrap = "${linux}/caps.json";
-    capset = "LinuxCaps";
     ram = 64 * 1024 * 1024;
     requires = {
       console = {

@@ -18,7 +18,7 @@ impl Manager {
     /// derived here, never accepted from this descriptor.
     pub fn startup_context_bytes(&mut self, id: ProcessId, bytes: &[u8]) -> Result<(), Error> {
         let p = self.process(id)?;
-        if p.state != State::Created || p.abi != 2 || p.startup_attempted {
+        if p.state != State::Created || p.startup_attempted {
             return Err(Error::Denied);
         }
         if bytes.is_empty() || bytes.len() > p.allocator.account().usage().limit {
@@ -59,7 +59,7 @@ impl Manager {
         length: u64,
     ) -> Result<(), ProcessError> {
         let p = self.process(id).map_err(error)?;
-        if p.state != State::Created || p.abi != 2 || p.startup_attempted {
+        if p.state != State::Created || p.startup_attempted {
             return Err(ProcessError::State);
         }
         let length = usize::try_from(length).map_err(|_| ProcessError::Invalid)?;

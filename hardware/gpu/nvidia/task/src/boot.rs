@@ -948,8 +948,14 @@ fn bar(config: &[u32; 64], index: usize) -> Result<u64> {
     };
     Ok((high << 32) | u64::from(low & !15))
 }
-pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
-    let mut ctx = Ad106::new(Native::new(session, time));
+pub fn run(
+    session: DeviceSession,
+    time: Time,
+    resources: PciResources,
+    startup: horn_runtime::Context,
+    mut inbox: horn_runtime::Inbox,
+) -> ! {
+    let mut ctx = Ad106::new(Native::new(session, time, startup));
     let result = (|| -> Result<()> {
         // Whole-boot budget inside the profile's 180 s READY window: firmware
         // staging alone is 60.6 MiB of chunked VT-d mappings.
@@ -1317,7 +1323,7 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                 None
             }
         };
-        horn_runtime::notify_ready(DEVICE_DRIVER_CAPS_READY_SLOT);
+        ctx.with_platform(|p| p.startup.notify_ready().map_err(|_| Error::Backend))?;
         // First RM client above the firmware: root -> device -> subdevice.
         // A failure here is reported but must not tear down a healthy GSP.
         let mut live = None;
@@ -1361,10 +1367,6 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
             }
             Err(error) => sel4::debug_println!("NVIDIA_RM_FAILED error={:?}", error),
         }
-        let endpoint = sel4::cap::Endpoint::from_bits(DEVICE_DRIVER_CAPS_SERVICE_SLOT as _);
-        let reply_cap = sel4::cap::Reply::from_bits(DEVICE_DRIVER_CAPS_REPLY_SLOT as _);
-        let receive = sel4::cap::CNode::from_bits(DEVICE_DRIVER_CAPS_SELF_SLOT as _)
-            .absolute_cptr(sel4::CPtr::from_bits(crate::SLOTS.public_receive() as _));
         loop {
             if let Some(animation) = live.as_mut() {
                 animation.tick(&mut ctx, &mut queue, inputs.libos, inputs.app_version)?;
@@ -1373,9 +1375,10 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                 // on the existing endpoint, rather than an endless boot loop.
                 ctx.with_platform(|p| p.arm_display_tick(animation.next()))?;
             }
-            sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&receive));
-            let (message, badge) = endpoint.recv(reply_cap);
+            let mut received = inbox.receive();
+            let badge = received.badge();
             if badge & horn_supervisor::STOP != 0 {
+                drop(received);
                 ctx.with_platform(Native::cancel_display_tick)?;
                 let stop_deadline = ctx.time_us()?.checked_add(800_000).ok_or(Error::Range)?;
                 ctx.with_platform(Native::disable_gsp_events)?;
@@ -1403,12 +1406,25 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                 }
                 drop(queue);
                 ctx.with_platform(Native::close)?;
-                sel4::cap::Notification::from_bits(DEVICE_DRIVER_CAPS_STOPPED_SLOT as _).signal();
+                ctx.with_platform(|p| {
+                    sel4::cap::Notification::from_bits(
+                        p.startup
+                            .cap::<horn_ipc::Notification>("devmgr.stopped")
+                            .map_err(|_| Error::Backend)?
+                            .as_ref()
+                            .slot as _,
+                    )
+                    .signal();
+                    Ok(())
+                })?;
                 loop {
-                    sel4::cap::Notification::from_bits(DEVICE_DRIVER_CAPS_WAKE_SLOT as _).wait();
+                    ctx.with_platform(|p| {
+                        p.startup.wait("devmgr.wake").map_err(|_| Error::Backend)
+                    })?;
                 }
             }
             if badge & horn_supervisor::IRQ != 0 {
+                drop(received);
                 ctx.with_platform(Native::service_gsp_event)?;
                 while let Some(bytes) = queue.try_receive()? {
                     let packet = wire::Packet::decode(&bytes)?;
@@ -1439,18 +1455,11 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                 )?;
             } else if badge == crate::CLIENT {
                 ctx.with_platform(|native| {
-                    let request = {
-                        let root = sel4::cap::CNode::from_bits(DEVICE_DRIVER_CAPS_SELF_SLOT as _);
-                        let mut server =
-                            Sel4Server::new(root, endpoint, receive, &mut native.transport().space);
-                        server.decode_received_dynamic(
-                            message,
-                            badge,
-                            reply_cap,
-                            p::nvidia_probe_object_request_layout,
-                            p::NvidiaProbeObjectRequest::decode,
-                        )
-                    };
+                    let request = received.decode(
+                        &mut native.transport().space,
+                        p::nvidia_probe_object_request_layout,
+                        p::NvidiaProbeObjectRequest::decode,
+                    );
                     if let Ok((_, request, reply)) = request {
                         let response = p::nvidia_probe_object_dispatch(
                             request,
@@ -1469,7 +1478,6 @@ pub fn run(session: DeviceSession, time: Time, resources: PciResources) -> ! {
                     Ok(())
                 })?;
             }
-            receive.delete().map_err(|_| Error::Backend)?;
         }
     })();
     let error = result.err().unwrap_or(Error::State);

@@ -48,7 +48,6 @@ class ChildCaps:
     service: Cap[CounterService, Copy]
     wake: Cap[sel4.Notification, Copy]
     reply: Cap[sel4.Reply, Move]
-    tcb: Cap[sel4.TCB, Copy]
     # Interfaces/codecs live in horn-vm; no raw frame or VSpace authority.
     vm: Cap[sel4.Endpoint, Copy]
     address_space: Cap[sel4.Endpoint, Copy]

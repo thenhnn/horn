@@ -256,27 +256,15 @@ impl Manager {
                 );
                 self.io.space.delete(directory.as_ref()).unwrap();
             }
-            if !definition.context.is_empty() {
-                let entries: Vec<_> = definition
-                    .context
-                    .iter()
-                    .map(|binding| libhorn::startup::Entry {
-                        name: binding.name,
-                        selector: binding.slot as u64,
-                    })
-                    .collect();
-                let size = entries
-                    .iter()
-                    .try_fold(8usize, |n, e| n.checked_add(16)?.checked_add(e.name.len()))
-                    .unwrap();
-                let mut bytes = alloc::vec![0; size];
-                libhorn::bindings::encode(&entries, &mut bytes).unwrap();
-                let descriptor = self.boot.upload(&mut self.io, &bytes);
-                ProcessControlClient::new(&mut self.io, Cap::from_ref(process.as_ref()))
-                    .startup_context(&descriptor, size as u64)
-                    .unwrap();
-                horn_supervisor::client::close_image(&mut self.io, descriptor);
-            }
+            let mut entries: Vec<_> = definition
+                .context
+                .iter()
+                .map(|binding| libhorn::startup::Entry {
+                    name: binding.name,
+                    selector: binding.slot as u64,
+                })
+                .collect();
+            self.boot.context(&mut self.io, process, &mut entries);
             self.jobs[i].lifecycle.start().unwrap();
             self.jobs[i].deadline = now().wrapping_add(self.ticks * crate::ready_timeout_us());
             self.process(i).start().unwrap();

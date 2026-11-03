@@ -10,7 +10,6 @@ use horn_supervisor::{
 };
 use owo_colors::OwoColorize;
 struct DriverConfig {
-    abi: u8,
     clock: bool,
     name: &'static str,
     rule: horn_devmgr::matching::PciMatch,
@@ -320,8 +319,8 @@ impl Drivers {
         );
         io.space.delete(runtime.as_ref()).unwrap();
         io.space.delete(ready.as_ref()).unwrap();
-        if cfg.abi == 2 {
-            const LOG: u32 = 30;
+        {
+            const LOG: u32 = d::DEVICE_DRIVER_CAPS_FIRST_FREE_SLOT;
             let sink = s::SupervisorJobClient::new(&mut *io, Cap::from_ref(managed.as_ref()))
                 .log_sink()
                 .unwrap();
@@ -394,15 +393,7 @@ impl Drivers {
                     selector: d::DEVICE_DRIVER_CAPS_ALARM_SIGNAL_SLOT as u64,
                 });
             }
-            entries.sort_unstable_by_key(|e| e.name);
-            let size = 8 + entries.iter().map(|e| 16 + e.name.len()).sum::<usize>();
-            let mut bytes = alloc::vec![0; size];
-            libhorn::bindings::encode(&entries, &mut bytes).unwrap();
-            let descriptor = boot.upload(io, &bytes);
-            s::ProcessControlClient::new(&mut *io, Cap::from_ref(process.as_ref()))
-                .startup_context(&descriptor, size as u64)
-                .unwrap();
-            close_image(io, descriptor);
+            boot.context(io, process, &mut entries);
         }
         s::SupervisorJobClient::new(&mut *io, Cap::from_ref(managed.as_ref()))
             .start()

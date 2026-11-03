@@ -4,9 +4,6 @@ use horn_supervisor::{
     client::{Io, close_image, mint},
     protocol as s,
 };
-mod layout {
-    include!(concat!(env!("OUT_DIR"), "/probe_layout.rs"));
-}
 static ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/probe.elf"));
 pub struct Observer {
     job: Cap<s::SupervisedJobTag>,
@@ -26,10 +23,10 @@ impl Observer {
         request.name.data[..name.len()].copy_from_slice(name);
         request.ram_limit = 8 << 20;
         let slots = s::ProcessBootstrap {
-            vm: layout::DEVICE_PROBE_CAPS_VM_SLOT,
-            address_space: layout::DEVICE_PROBE_CAPS_ADDRESS_SPACE_SLOT,
-            lifecycle: layout::DEVICE_PROBE_CAPS_LIFECYCLE_SLOT,
-            reply: layout::DEVICE_PROBE_CAPS_REPLY_SLOT,
+            vm: 1,
+            address_space: 2,
+            lifecycle: 3,
+            reply: 4,
         };
         let managed = s::SupervisorFactoryClient::new(&mut *io, ctx.cap("supervisor").unwrap())
             .prepare(&image, request, slots)
@@ -54,21 +51,41 @@ impl Observer {
         boot.install(
             io,
             process,
-            layout::DEVICE_PROBE_CAPS_OBSERVER_SLOT,
+            6,
             observer,
             None,
             Rights(Rights::WRITE.0 | Rights::GRANT_REPLY.0),
         );
         io.space.delete(observer.as_ref()).unwrap();
-        boot.install(
-            io,
-            process,
-            layout::DEVICE_PROBE_CAPS_READY_SLOT,
-            ready,
-            None,
-            Rights::WRITE,
-        );
+        boot.install(io, process, 5, ready, None, Rights::WRITE);
         io.space.delete(ready.as_ref()).unwrap();
+        let mut entries = [
+            libhorn::startup::Entry {
+                name: "horn.vm",
+                selector: 1,
+            },
+            libhorn::startup::Entry {
+                name: "horn.address-space",
+                selector: 2,
+            },
+            libhorn::startup::Entry {
+                name: "horn.lifecycle",
+                selector: 3,
+            },
+            libhorn::startup::Entry {
+                name: "horn.reply",
+                selector: 4,
+            },
+            libhorn::startup::Entry {
+                name: "horn.ready",
+                selector: 5,
+            },
+            libhorn::startup::Entry {
+                name: "devmgr.observer",
+                selector: 6,
+            },
+        ];
+        boot.context(io, process, &mut entries);
         s::SupervisorJobClient::new(&mut *io, Cap::from_ref(managed.as_ref()))
             .start()
             .unwrap();

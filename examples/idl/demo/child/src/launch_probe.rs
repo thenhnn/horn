@@ -1,38 +1,19 @@
-use crate::protocol::{
-    CHILD_CAPS_ELF_SLOT, CHILD_CAPS_PROCESS_FACTORY_SLOT, CHILD_CAPS_PROCESS_OBSERVER_SLOT,
-    CHILD_CAPS_VM_SLOT,
-};
 use alloc::vec::Vec;
 use horn_ipc::*;
 use horn_procd::protocol::*;
 use horn_vm::protocol as vm;
 
-fn target<T: CapType>(root: sel4::cap::CNode, slot: u32) -> Cap<T> {
-    Cap::new(
-        root.bits() as _,
-        slot,
-        sel4::WORD_SIZE as _,
-        0,
-        CapMode::COPY,
-        Rights::ALL,
-    )
-}
 fn request(ram_limit: u64) -> ProcessLaunch {
     let mut name = List::default();
     name.data[..7].copy_from_slice(b"spawned");
     name.len = 7;
     ProcessLaunch { name, ram_limit }
 }
-pub fn run(
-    root: sel4::cap::CNode,
-    receive: sel4::AbsoluteCPtr,
-    space: Sel4CapSpace,
-) -> Sel4CapSpace {
-    let mut t = Sel4Transport::new(root, receive, space);
-    let factory = target(root, CHILD_CAPS_PROCESS_FACTORY_SLOT);
-    let observer = target(root, CHILD_CAPS_PROCESS_OBSERVER_SLOT);
-    let memory = target(root, CHILD_CAPS_VM_SLOT);
-    let elf = &target(root, CHILD_CAPS_ELF_SLOT);
+pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>) {
+    let factory = ctx.cap("process_factory").unwrap();
+    let observer = ctx.cap("process_observer").unwrap();
+    let memory = ctx.cap("horn.vm").unwrap();
+    let elf = &ctx.cap("elf").unwrap();
     let initial = vm::VmFactoryClient::new(&mut t, memory)
         .info()
         .unwrap()
@@ -184,6 +165,39 @@ pub fn run(
     ProcessControlClient::new(&mut t, Cap::from_ref(child.as_ref()))
         .set_limit(8 << 20)
         .unwrap();
+    assert_eq!(
+        ProcessControlClient::new(&mut t, Cap::from_ref(child.as_ref())).start(),
+        Err(CallError::Remote(ProcessError::State)),
+    );
+    let boot = horn_supervisor::client::Bootstrap {
+        cnode: t.space.root.bits() as _,
+        bits: ctx.cspace_bits(),
+        vm: ctx.cap::<Endpoint>("horn.vm").unwrap().as_ref().slot,
+        space: ctx
+            .cap::<Endpoint>("horn.address-space")
+            .unwrap()
+            .as_ref()
+            .slot,
+    };
+    let mut entries = [
+        libhorn::startup::Entry {
+            name: "horn.vm",
+            selector: 1,
+        },
+        libhorn::startup::Entry {
+            name: "horn.address-space",
+            selector: 2,
+        },
+        libhorn::startup::Entry {
+            name: "horn.lifecycle",
+            selector: 3,
+        },
+        libhorn::startup::Entry {
+            name: "horn.reply",
+            selector: 4,
+        },
+    ];
+    boot.context(&mut t, Cap::from_ref(child.as_ref()), &mut entries);
     ProcessControlClient::new(&mut t, Cap::from_ref(child.as_ref()))
         .start()
         .unwrap();
@@ -219,5 +233,4 @@ pub fn run(
     sel4::debug_println!(
         "LAUNCH_RPC_PASS sealed=true quota=true pagination=true control=true cleanup=true"
     );
-    t.space
 }

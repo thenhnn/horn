@@ -12,7 +12,6 @@ pub struct Image<'a> {
     pub(crate) file: object::File<'a>,
     pub(crate) pages: BTreeMap<usize, u32>,
     pub entry: usize,
-    pub abi: u8,
     pub ipc_address: usize,
 }
 impl<'a> Image<'a> {
@@ -38,11 +37,9 @@ impl<'a> Image<'a> {
             }
         }
         let tag = file.section_by_name(".horn").ok_or(Error::InvalidAbi)?;
-        let abi = match tag.data().map_err(|_| Error::InvalidAbi)? {
-            b"HORN\x01\x00\x00\x00" => 1,
-            b"HORN\x02\x00\x00\x00" => 2,
-            _ => return Err(Error::InvalidAbi),
-        };
+        if tag.data().map_err(|_| Error::InvalidAbi)? != b"HORN\x02\x00\x00\x00" {
+            return Err(Error::InvalidAbi);
+        }
         let mut pages = BTreeMap::new();
         let page = horn_vm::sel4::PAGE_SIZE;
         let entry = usize::try_from(file.entry()).map_err(|_| Error::InvalidElf)?;
@@ -99,7 +96,6 @@ impl<'a> Image<'a> {
             file,
             pages,
             entry,
-            abi,
             ipc_address,
         })
     }

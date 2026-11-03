@@ -24,7 +24,6 @@ fn main() {
     if env::var_os("CARGO_FEATURE_BOOT_TESTS").is_none() {
         return;
     }
-    horn_idl_build::rust("devmgr_probe", "probe_layout.rs");
     if let Some(path) = env::var_os("DEVMGR_PROBE_ELF").filter(|p| !p.is_empty()) {
         println!("cargo:rerun-if-changed={}", PathBuf::from(&path).display());
         fs::copy(path, out.join("probe.elf")).unwrap();

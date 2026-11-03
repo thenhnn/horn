@@ -2,8 +2,11 @@
   pkgs,
   sources,
   sel4,
+  workspace,
 }: let
   idl = import ../../tools/idl {inherit pkgs;};
+  startup = workspace.members.horn-startup-c;
+  startupHeaders = import ../libhorn {inherit pkgs;};
   initramfs = pkgs.runCommand "linux-horn-initramfs" {nativeBuildInputs = [pkgs.stdenv.cc];} ''
     mkdir -p "$out"
     $CC -nostdlib -static -no-pie -Wl,-e,_start -Wl,-Ttext=0x400000 ${./init/init.S} -o "$out/init"
@@ -17,19 +20,24 @@
       hardeningDisable = ["all"];
       dontConfigure = true;
       buildPhase = ''
-        python3 -B -m horn_idl horn_linux --header protocol.h --c protocol.c --capsets caps.json
+        python3 -B -m horn_idl horn_linux --header protocol.h --c protocol.c
         flags="-std=gnu11 -O2 -ffreestanding -fno-builtin -fno-stack-protector -fno-pie -m64 -mcmodel=large -mno-red-zone -mgeneral-regs-only -D__thread= -DNDEBUG"
         cp ${../runtime/c/horn-ipc/src/horn_ipc.c} horn_ipc.c
         for source in transport.c protocol.c horn_ipc.c; do
           $CC $flags -I. -I${./arch/include/shared} -I${sel4}/libsel4/include \
-            -I${../runtime/c/horn-ipc/include} -c "$source" -o "$(basename "$source" .c).o"
+            -I${../runtime/c/horn-ipc/include} -I${startupHeaders}/include -c "$source" -o "$(basename "$source" .c).o"
         done
-        ar rcs host.a transport.o protocol.o horn_ipc.o
+        ar -M <<EOF
+        CREATE host.a
+        ADDLIB $(echo ${startup.lib}/lib/libhorn_startup_c-*.a)
+        ADDMOD transport.o protocol.o horn_ipc.o
+        SAVE
+        END
+        EOF
       '';
       installPhase = ''
         mkdir -p "$out/lib"
         cp host.a "$out/lib/"
-        cp caps.json "$out/caps.json"
       '';
       dontFixup = true;
     });
@@ -64,7 +72,6 @@ in
       mkdir -p "$out/bin"
       ${pkgs.stdenv.cc.bintools.targetPrefix}objcopy --strip-debug vmlinux "$out/bin/task.elf"
       cp .config "$out/config"
-      cp ${host}/caps.json "$out/caps.json"
     '';
     dontFixup = true;
     passthru = {inherit host initramfs;};

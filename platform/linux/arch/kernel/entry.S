@@ -13,5 +13,5 @@ horn_boot_stack:
 horn_boot_stack_top:
 .section .horn,"a"
 .ascii "HORN"
-.long 1
+.long 2
 .section .note.GNU-stack,"",@progbits

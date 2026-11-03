@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! Accounted Horn resources for the AD106 boot core. No Linux DMA wrappers,
 //! physical-RAM mapping, Drop cleanup or guessed clock/interrupt vectors.
-use crate::{target, time::Time};
+use crate::time::Time;
 mod bar1;
 use alloc::{rc::Rc, vec::Vec};
 pub(crate) use bar1::VramRegion;
@@ -106,6 +106,7 @@ impl DmaBlock {
 /// stay inside the eight-export assignment bound.
 const LIVE_WINDOWS: usize = 3;
 pub struct Native {
+    pub startup: horn_runtime::Context,
     session: DeviceSession,
     time: Time,
     windows: Vec<(u32, MmioWindow)>,
@@ -117,6 +118,7 @@ pub struct Native {
     pub(crate) display_crc: Option<VramRegion>,
     bar1: bar1::Bar1,
     pub(crate) ce_started: bool,
+    #[cfg(gsp_boot)]
     pub(crate) ce_backing: Option<crate::boot::copy::Retained>,
     poisoned: Rc<Cell<bool>>,
 }
@@ -125,7 +127,7 @@ impl Native {
     /// LIVE_WINDOWS cached plus two fixed GIN/EOI windows. Eagerly holding
     /// large register blocks exhausted the device-page claim budget before any
     /// firmware work started, and every export is a separately revocable lease.
-    pub fn new(session: DeviceSession, time: Time) -> Self {
+    pub fn new(session: DeviceSession, time: Time, startup: horn_runtime::Context) -> Self {
         let mut windows = Vec::new();
         windows
             .try_reserve_exact(LIVE_WINDOWS)
@@ -135,6 +137,7 @@ impl Native {
             .try_reserve_exact(2)
             .expect("AD106 GIN window metadata");
         Self {
+            startup,
             session,
             time,
             windows,
@@ -146,6 +149,7 @@ impl Native {
             display_crc: None,
             bar1: Default::default(),
             ce_started: false,
+            #[cfg(gsp_boot)]
             ce_backing: None,
             poisoned: Rc::new(Cell::new(false)),
         }
@@ -273,8 +277,8 @@ impl Native {
         }
         horn_nvidia_gsp::gin::quiesce(self)?;
         self.session.interrupt_on(
-            &target(DEVICE_DRIVER_CAPS_IRQ_SIGNAL_SLOT),
-            target(DEVICE_DRIVER_CAPS_WAKE_SLOT),
+            &self.startup.cap("devmgr.irq_signal").unwrap(),
+            self.startup.cap("devmgr.wake").unwrap(),
         );
         self.irq_prepared = true;
         Ok(())

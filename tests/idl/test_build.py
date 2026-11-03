@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_named_schema_without_consumer_import_paths(tmp_path):
     env = dict(os.environ, PYTHONPATH=str(ROOT / "tools/idl"))
     env.pop("HORN_IDL_SOURCES", None)
-    for name in ("horn_shell", "devmgr_probe"):
+    for name in ("horn_shell", "horn_device"):
         subprocess.run(
             [
                 "python3",
@@ -30,7 +30,8 @@ def test_named_schema_without_consumer_import_paths(tmp_path):
             capture_output=True,
         )
         assert (tmp_path / f"{name}.rs").stat().st_size > 0
-        assert json.loads((tmp_path / f"{name}.json").read_text())
+        # RPC-only entry schemas need not declare a bootstrap capset.
+        assert isinstance(json.loads((tmp_path / f"{name}.json").read_text()), dict)
 
 
 def test_cargo_rebuilds_for_transitive_schema_edit(tmp_path):

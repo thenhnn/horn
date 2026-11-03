@@ -1,30 +1,20 @@
 #![no_std]
 #![no_main]
-mod layout {
-    include!(concat!(env!("OUT_DIR"), "/layout.rs"));
-}
 use horn_devmgr::protocol::*;
 use horn_ipc::*;
-const SLOTS: TaskSlots = TaskSlots::new(
-    layout::DEVICE_PROBE_CAPS_FIRST_FREE_SLOT,
-    layout::DEVICE_PROBE_CAPS_SIZE_BITS,
-);
-horn_runtime::task!(main,vm:horn_runtime::VmBootstrap{cnode:layout::DEVICE_PROBE_CAPS_SELF_SLOT,factory:layout::DEVICE_PROBE_CAPS_VM_SLOT,address_space:layout::DEVICE_PROBE_CAPS_ADDRESS_SPACE_SLOT,slots:SLOTS});
-fn cap<T: CapType>(slot: u32) -> Cap<T> {
-    horn_runtime::bootstrap_cap(
-        sel4::cap::CNode::from_bits(layout::DEVICE_PROBE_CAPS_SELF_SLOT as _),
-        slot,
-    )
-}
-fn main() -> ! {
-    let root = sel4::cap::CNode::from_bits(layout::DEVICE_PROBE_CAPS_SELF_SLOT as _);
-    let mut io = horn_runtime::transport(root, SLOTS.application()).unwrap();
+horn_runtime::task!(main);
+fn main(mut ctx: horn_runtime::Context) -> ! {
+    let mut io = ctx.transport().unwrap();
+    let root = io.space.root;
     let forged = io.space.reserve_slot().unwrap();
     assert!(
         forged
             .mint(
                 &root.absolute_cptr(sel4::CPtr::from_bits(
-                    layout::DEVICE_PROBE_CAPS_OBSERVER_SLOT as _
+                    ctx.cap::<Endpoint>("devmgr.observer")
+                        .unwrap()
+                        .as_ref()
+                        .slot as _
                 )),
                 sel4::CapRights::all(),
                 horn_devmgr::ASSIGNMENT_BADGE
@@ -42,13 +32,11 @@ fn main() -> ! {
         ))
         .unwrap();
     assert!(matches!(
-        DeviceAssignmentClient::new(&mut io, cap(layout::DEVICE_PROBE_CAPS_OBSERVER_SLOT))
-            .claim(33),
+        DeviceAssignmentClient::new(&mut io, ctx.cap("devmgr.observer").unwrap()).claim(33),
         Err(CallError::Remote(DeviceError::Denied))
     ));
     sel4::debug_println!("DEVMGR_AUTH_PASS observer_rebadge=false");
-    let mut client =
-        DeviceObserverClient::new(&mut io, cap(layout::DEVICE_PROBE_CAPS_OBSERVER_SLOT));
+    let mut client = DeviceObserverClient::new(&mut io, ctx.cap("devmgr.observer").unwrap());
     let status = client.status().unwrap();
     assert_eq!(status.iommu, IommuState::NotInitialized);
     assert!(status.pci_devices >= 5);
@@ -86,10 +74,10 @@ fn main() -> ! {
     sel4::debug_println!(
         "DEVMGR_RPC_PASS ecam=true pagination=true info=true msi=true readonly=true"
     );
-    horn_runtime::notify_ready(layout::DEVICE_PROBE_CAPS_READY_SLOT);
+    ctx.notify_ready().unwrap();
     let _ = horn_supervisor::protocol::ProcessLifecycleClient::new(
         &mut io,
-        cap(layout::DEVICE_PROBE_CAPS_LIFECYCLE_SLOT),
+        ctx.cap("horn.lifecycle").unwrap(),
     )
     .exit(0);
     panic!("exit returned");

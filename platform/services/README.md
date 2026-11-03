@@ -4,16 +4,15 @@ The initial configuration lives in `platform/system/module.nix`. It uses
 `services.definitions` from `platform/services/module.nix`.
 
 There are no `shell`, `devmgr` or `pci-driver` ABI categories in the launcher.
-`horn_idl --capsets` exports named slots from an existing IDL capset as JSON.
-A definition selects that descriptor and a declaration name. The configuration
-compiler resolves names to slots and emits a static Rust catalog. Adding another
+All services use ABI2. The configuration compiler assigns private placement
+slots and emits a static Rust catalog plus named context bindings. Adding an
 ordinary service does not require changing the compiler or supervisor.
 
 ## Service definition
 
 Each definition supplies:
 
-- `elf`, `ram`, and `abi` (default 1); ABI1 also requires `bootstrap`, `capset`;
+- `elf` and `ram`; obsolete `abi`, `bootstrap`, and `capset` options are rejected;
 - `activation`: `boot` for the one root-critical bootstrap service, otherwise
   `automatic`;
 - `requires.<port> = { path; select = "exact" | "first"; }`;
@@ -24,23 +23,24 @@ Each definition supplies:
 - privileged bootstrap `grants` and allowed child-publication prefixes `publish`.
 
 The common task ports are `vm`, `address_space`, `lifecycle`, `reply`, and `ready`.
-For ABI1, other ports belong to the program's capset. Unknown/duplicate bindings
-and static configuration dependency cycles are rejected during catalog generation.
+Other ports are deployment-defined names. Duplicate/reserved bindings and static
+dependency cycles are rejected during catalog generation.
 
-ABI2 services can set `logging = "/services/log"`; the compiler adds a dependency
+Services can set `logging = "/services/log"`; the compiler adds a dependency
 and private `horn.log` grant. Runtime installs the synchronous logger before main,
 with a dedicated transport disjoint from application and heap receive slots. The
 logger itself keeps `logging = null` to avoid recursion/dependency cycles.
 
-ABI2 automatic services instead omit `bootstrap`/`capset`. The compiler assigns
+The compiler assigns
 private slots to the common ports followed by bytewise-sorted deployment ports;
 no slot constants are generated for the application. Common ports appear in its
 context as `horn.vm`, `horn.address-space`, `horn.lifecycle`, `horn.reply` and
 `horn.ready`. Application ports must be printable ASCII and must not shadow the
 common ports or reserved `horn.*` namespace. The supervisor sends a sealed
 names/selectors descriptor after all installs and before start; procd constructs
-the actual startup record. Timer is the first ABI2 consumer. Root-critical boot
-service migration is deliberately not supported yet; it retains ABI1.
+the actual startup record. Root-critical boot services use the same record and
+cannot wait for runtime dependencies or READY-gated namespaces. Devmgr derives
+its own log sink through supervisor after logd activation to avoid a boot cycle.
 
 `requires` copies a published endpoint into the named input. `first` selects one
 currently available endpoint in the subtree, once, in publication order. It does
@@ -83,8 +83,7 @@ import of the existing root-hosted, supervisor-scoped process observer.
 Devmgr owns a separate embedded `devmgr.drivers` catalog: ELF, RAM budget,
 `vendor`/`device` and/or packed 24-bit `class`/`classMask`, and publication policy.
 No configured BDF selects a driver. Discovery selects candidates; assignment
-still requires the actual scoped device capability. No match or an ambiguous
-match logs a diagnostic and skips that device.
+still requires the actual scoped device capability. Unmatched devices are skipped; ambiguous matches produce a diagnostic.
 
 Devmgr passes the selected ELF to supervisor, installs the device/IRQ capabilities,
 declares the public endpoint, then starts the instance. Supervisor handles process

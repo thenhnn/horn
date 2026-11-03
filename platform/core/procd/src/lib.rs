@@ -93,7 +93,6 @@ struct Process {
     tcb: sel4::cap::Tcb,
     loaded: loader::Loaded,
     entry: usize,
-    abi: u8,
     ipc_address: usize,
     cnode_bits: usize,
     bootstrap_end: u32,
@@ -311,7 +310,6 @@ impl Manager {
             tcb,
             loaded,
             entry: image.entry,
-            abi: image.abi,
             ipc_address: image.ipc_address,
             cnode_bits: config.cnode_bits,
             bootstrap_end: 2,
@@ -530,11 +528,9 @@ impl Manager {
         }
         let mut regs = sel4::UserContext::default();
         *regs.pc_mut() = p.entry as sel4::Word;
-        if p.abi == 2 {
-            let (address, length) = p.startup.ok_or(Error::InvalidState)?;
-            regs.inner_mut().rdi = address as _;
-            regs.inner_mut().rsi = length as _;
-        }
+        let (address, length) = p.startup.ok_or(Error::InvalidState)?;
+        regs.inner_mut().rdi = address as _;
+        regs.inner_mut().rsi = length as _;
         p.tcb.tcb_write_all_registers(true, &mut regs)?;
         p.state = State::Active;
         Ok(())

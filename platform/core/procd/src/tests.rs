@@ -60,7 +60,7 @@ fn image() -> alloc::vec::Vec<u8> {
             bytes[header + offset..header + offset + 8].copy_from_slice(&value.to_le_bytes());
         }
     }
-    bytes[0x188..0x190].copy_from_slice(b"HORN\x01\x00\x00\x00");
+    bytes[0x188..0x190].copy_from_slice(b"HORN\x02\x00\x00\x00");
     bytes[0x190..0x1a1].copy_from_slice(b"\0.shstrtab\0.horn\0");
     for (header, name, kind, offset, size) in [
         (0x240, 1u32, 3u32, 0x190u64, 17u64),
@@ -77,8 +77,13 @@ fn image() -> alloc::vec::Vec<u8> {
 #[test]
 fn elf_abi2_is_explicit_and_reserved_tag_bytes_are_checked() {
     let mut bytes = image();
+    assert!(Image::parse(&bytes, 4096..0x800000, 2).is_ok());
+    bytes[0x18c] = 1;
+    assert!(matches!(
+        Image::parse(&bytes, 4096..0x800000, 2),
+        Err(Error::InvalidAbi)
+    ));
     bytes[0x18c] = 2;
-    assert_eq!(Image::parse(&bytes, 4096..0x800000, 2).unwrap().abi, 2);
     bytes[0x18d] = 1;
     assert!(matches!(
         Image::parse(&bytes, 4096..0x800000, 2),
@@ -94,7 +99,6 @@ fn elf_abi2_is_explicit_and_reserved_tag_bytes_are_checked() {
 fn elf_checks_abi_bounds_entry_and_page_level_wx() {
     let valid = image();
     let parsed = Image::parse(&valid, 4096..0x800000, 2).unwrap();
-    assert_eq!(parsed.abi, 1);
     assert_eq!(parsed.entry, 0x400000);
     assert_eq!(parsed.ipc_address, 0x402000);
     assert!(matches!(

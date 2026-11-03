@@ -14,11 +14,6 @@ spec.loader.exec_module(compiler)
 
 
 def definitions(tmp_path):
-    bootstrap = tmp_path / "boot.json"
-    bootstrap.write_text(
-        '{"BootCaps":{"slots":{"vm":2,"address_space":3,"lifecycle":4,"reply":5,"ready":6}}}'
-    )
-
     def service():
         return {
             "elf": "/service.elf",
@@ -34,9 +29,8 @@ def definitions(tmp_path):
         }
 
     boot = service()
-    boot.update(activation="boot", bootstrap=str(bootstrap), capset="BootCaps")
+    boot.update(activation="boot")
     timer = service()
-    timer.update(abi=2, bootstrap=None, capset=None)
     timer["requires"] = {"source": {"path": "/devices/clock", "select": "first"}}
     timer["objects"] = {
         "server": {
@@ -94,7 +88,6 @@ def test_logger_cannot_depend_on_itself(tmp_path):
 
 def test_abi2_boot_has_named_context(tmp_path):
     services = definitions(tmp_path)
-    services["boot"].update(abi=2, bootstrap=None, capset=None)
     result = compiler.compile_services(services)
     assert 'name:"boot"' in result
     assert 'ContextBinding{name:"horn.vm",slot:1}' in result
@@ -103,7 +96,6 @@ def test_abi2_boot_has_named_context(tmp_path):
 
 def test_boot_cannot_silently_ignore_runtime_dependency(tmp_path):
     services = definitions(tmp_path)
-    services["boot"].update(abi=2, bootstrap=None, capset=None)
     services["boot"]["requires"] = {
         "later": {"path": "/devices/clock", "select": "first"}
     }
@@ -113,12 +105,13 @@ def test_boot_cannot_silently_ignore_runtime_dependency(tmp_path):
 
 def test_abi2_assigns_private_slots_and_sorted_runtime_names(tmp_path):
     result = compiler.compile_services(definitions(tmp_path))
-    assert 'context:&[],name:"boot"' in result
+    assert 'context:&[],name:"boot"' not in result
     assert 'ContextBinding{name:"horn.address-space",slot:2}' in result
     assert 'ContextBinding{name:"horn.vm",slot:1}' in result
     assert 'ContextBinding{name:"source",slot:9}' in result
-    assert result.index('name:"events"') < result.index('name:"horn.address-space"')
-    assert result.index('name:"horn.vm"') < result.index('name:"source"')
+    timer = next(line for line in result.splitlines() if 'name:"timer",' in line)
+    assert timer.index('name:"events"') < timer.index('name:"horn.address-space"')
+    assert timer.index('name:"horn.vm"') < timer.index('name:"source"')
 
 
 @pytest.mark.parametrize("name", ["horn.hidden", "vm", "bad name", "é"])
@@ -126,6 +119,17 @@ def test_reserved_and_invalid_context_names_rejected(tmp_path, name):
     services = definitions(tmp_path)
     services["timer"]["requires"][name] = services["timer"]["requires"].pop("source")
     with pytest.raises(AssertionError):
+        compiler.compile_services(services)
+
+
+@pytest.mark.parametrize(
+    "obsolete",
+    [{"abi": 1}, {"abi": 2}, {"bootstrap": "/caps.json"}, {"capset": "TimerCaps"}],
+)
+def test_obsolete_startup_options_are_rejected(tmp_path, obsolete):
+    services = definitions(tmp_path)
+    services["timer"].update(obsolete)
+    with pytest.raises(AssertionError, match="obsolete startup options"):
         compiler.compile_services(services)
 
 

@@ -45,7 +45,6 @@ this change does **not** claim every existing message is migrated.
 
 ```nix
 services.definitions.timerd = {
-  abi = 2;
   logging = "/services/log";
   # existing image, objects, dependencies...
 };

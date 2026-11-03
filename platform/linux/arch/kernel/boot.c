@@ -32,7 +32,7 @@ void __init setup_arch(char **cmdline_p)
  extern void horn_console_init(void);
  horn_console_init();
  physmem_size = horn_ram_bytes();
- uml_reserved = ALIGN((unsigned long)_end + PAGE_SIZE, PAGE_SIZE);
+ uml_reserved = ALIGN(horn_boot_reserved_end(), PAGE_SIZE);
  high_physmem = uml_physmem + physmem_size;
  end_iomem = high_physmem;
  start_vm = 0x40000000;
@@ -52,9 +52,9 @@ void __init setup_arch(char **cmdline_p)
  paging_init();
 }
 static int start_linux(void *unused) { extern void start_kernel(void); start_kernel(); return 0; }
-void horn_start(void)
+void horn_start(const void *startup, unsigned long size)
 {
- horn_host_init();
+ horn_host_init(startup, size);
  host_fp_size=horn_fp_bytes();
  cpu_tasks[0] = &init_task;
  register_console(&horn_early_console);

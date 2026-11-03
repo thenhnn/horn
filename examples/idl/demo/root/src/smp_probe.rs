@@ -62,15 +62,35 @@ pub fn run(
             (process::PROCESS_CAPS_LIFECYCLE_SLOT, lifecycle.bits()),
             (process::PROCESS_CAPS_REPLY_SLOT, child_reply.bits()),
         ] {
-            cnode
-                .absolute_cptr_from_bits_with_depth(slot as _, process::PROCESS_CAPS_SIZE_BITS as _)
-                .copy(
-                    &root.absolute_cptr(sel4::CPtr::from_bits(source)),
+            manager
+                .install_initial_capability(
+                    child,
+                    slot,
+                    root.absolute_cptr(sel4::CPtr::from_bits(source)),
                     sel4::CapRights::all(),
                 )
                 .unwrap();
         }
         manager.attach_vm(child, memory).unwrap();
+        let mut bindings = [
+            libhorn::startup::Entry {
+                name: "horn.vm",
+                selector: process::PROCESS_CAPS_VM_SLOT as _,
+            },
+            libhorn::startup::Entry {
+                name: "horn.address-space",
+                selector: process::PROCESS_CAPS_ADDRESS_SPACE_SLOT as _,
+            },
+            libhorn::startup::Entry {
+                name: "horn.lifecycle",
+                selector: process::PROCESS_CAPS_LIFECYCLE_SLOT as _,
+            },
+            libhorn::startup::Entry {
+                name: "horn.reply",
+                selector: process::PROCESS_CAPS_REPLY_SLOT as _,
+            },
+        ];
+        crate::install_context(manager, child, &mut bindings);
         children.push(child);
     }
     let cpus = [

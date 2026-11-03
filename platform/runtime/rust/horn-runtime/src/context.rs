@@ -1,5 +1,5 @@
 //! Explicit single-thread initial context. Bootstrap caps are process-lifetime views.
-use crate::{Error, TaskSlots, VmBootstrap, bootstrap_cap};
+use crate::{Error, TaskSlots, bootstrap_cap};
 use horn_ipc::*;
 
 pub struct Context {
@@ -7,6 +7,7 @@ pub struct Context {
     root: sel4::cap::CNode,
     slots: TaskSlots,
     application: Option<core::ops::Range<u32>>,
+    heap: Option<core::ops::Range<u32>>,
     inbox_available: bool,
 }
 impl Context {
@@ -29,6 +30,7 @@ impl Context {
             root: sel4::cap::CNode::from_bits(h.cspace_root as _),
             slots,
             application: Some(slots.application()),
+            heap: Some(slots.heap()),
             inbox_available: true,
         })
     }
@@ -62,13 +64,17 @@ impl Context {
     pub fn transport(&mut self) -> Result<Sel4Transport<Sel4CapSpace>, Error> {
         crate::transport(self.root, self.application.take().ok_or(Error::Invalid)?)
     }
-    pub(crate) fn heap_bootstrap(&self) -> Result<VmBootstrap, Error> {
-        Ok(VmBootstrap {
-            cnode: self.root.bits() as u32,
-            factory: self.cap::<Endpoint>("horn.vm")?.as_ref().slot,
-            address_space: self.cap::<Endpoint>("horn.address-space")?.as_ref().slot,
-            slots: self.slots,
-        })
+    /// Take the exclusively reserved heap backend once. Normally installed by
+    /// task!; explicit ownership supports staged allocator tests without ABI1.
+    pub fn heap(&mut self) -> Result<crate::allocator::VmHeap, Error> {
+        let factory = self.cap::<horn_vm::protocol::VmFactoryTag>("horn.vm")?;
+        let space = self.cap::<horn_vm::protocol::VmAddressSpaceObjectTag>("horn.address-space")?;
+        let range = self.heap.take().ok_or(Error::Invalid)?;
+        crate::allocator::VmHeap::new(
+            crate::transport(self.root, range)?,
+            factory.as_ref(),
+            space.as_ref(),
+        )
     }
     pub fn notify_ready(&self) -> Result<(), Error> {
         sel4::cap::Notification::from_bits(

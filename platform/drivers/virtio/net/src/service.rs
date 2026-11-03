@@ -122,13 +122,8 @@ impl EthernetInterface for Service {
             return Err(NetError::Denied);
         }
         let next = virtio::with(|s| {
-            horn_supervisor::client::copy(
-                s.transport(),
-                sel4::cap::CNode::from_bits(
-                    horn_devmgr::protocol::DEVICE_DRIVER_CAPS_SELF_SLOT as _,
-                ),
-                signal,
-            )
+            let root = s.transport().space.root;
+            horn_supervisor::client::copy(s.transport(), root, signal)
         });
         if let Some(old) = self.note.replace(next) {
             virtio::with(|s| s.transport().space.delete(old.as_ref()).unwrap());

@@ -7,15 +7,10 @@ use core::sync::atomic::Ordering;
 use horn_ipc::*;
 use horn_procd::protocol::*;
 use horn_smp_probe::{ADDRESS, Shared};
-const SLOTS: TaskSlots = TaskSlots::new(PROCESS_CAPS_FIRST_FREE_SLOT, PROCESS_CAPS_SIZE_BITS);
-horn_runtime::task!(main, vm: horn_runtime::VmBootstrap {
-    cnode: PROCESS_CAPS_SELF_SLOT, factory: PROCESS_CAPS_VM_SLOT,
-    address_space: PROCESS_CAPS_ADDRESS_SPACE_SLOT, slots: SLOTS,
-});
-fn main() -> ! {
-    let root = sel4::cap::CNode::from_bits(PROCESS_CAPS_SELF_SLOT as _);
-    let mut io = horn_runtime::transport(root, SLOTS.application()).unwrap();
-    let target = horn_runtime::bootstrap_cap(root, PROCESS_CAPS_LIFECYCLE_SLOT);
+horn_runtime::task!(main);
+fn main(mut ctx: horn_runtime::Context) -> ! {
+    let mut io = ctx.transport().unwrap();
+    let target = ctx.cap("horn.lifecycle").unwrap();
     let mut task = ProcessLifecycleClient::new(&mut io, target);
     let placement = task.placement().unwrap();
     assert!(placement.cpu_count >= 2);

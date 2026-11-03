@@ -12,6 +12,8 @@ name = "launched"
 path = "src/launched.rs"
 
 [dependencies]
+libhorn = { path = "../../../../platform/libhorn" }
+horn-supervisor = { path = "../../../../platform/core/supervisor", features = ["client"] }
 horn-procd = { path = "../../../../platform/core/procd" }
 horn-mimalloc = { path = "../../../../platform/runtime/rust/horn-mimalloc" }
 horn-runtime = { path = "../../../../platform/runtime/rust/horn-runtime" }

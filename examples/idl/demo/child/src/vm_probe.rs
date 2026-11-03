@@ -1,23 +1,12 @@
-use crate::protocol::{CHILD_CAPS_ADDRESS_SPACE_SLOT, CHILD_CAPS_VM_SLOT};
 use alloc::vec::Vec;
 use core::{
     alloc::{Allocator, Layout},
     ptr::NonNull,
 };
 use horn_ipc::*;
-use horn_mimalloc::{Mimalloc, VmHeap};
+use horn_mimalloc::Mimalloc;
 use horn_vm::protocol::*;
 
-fn target<T: CapType>(root: ::sel4::cap::CNode, slot: u32) -> Cap<T> {
-    Cap::new(
-        root.bits() as u64,
-        slot,
-        ::sel4::WORD_SIZE as u8,
-        0,
-        CapMode::COPY,
-        Rights::ALL,
-    )
-}
 fn batch(values: &[VmUpdate]) -> Parcel<List<VmUpdate, 16>> {
     let mut list = List::default();
     list.len = values.len() as u32;
@@ -46,10 +35,10 @@ fn destroy(transport: &mut Sel4Transport<Sel4CapSpace>, region: Cap<VmRegionObje
     transport.space.delete(region.as_ref()).unwrap();
 }
 
-pub fn run(root: ::sel4::cap::CNode, recv: ::sel4::AbsoluteCPtr, space: Sel4CapSpace) {
-    let mut transport = Sel4Transport::new(root, recv, space);
-    let factory = target::<VmFactoryTag>(root, CHILD_CAPS_VM_SLOT);
-    let address_space = target::<VmAddressSpaceTag>(root, CHILD_CAPS_ADDRESS_SPACE_SLOT);
+pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Sel4CapSpace>) {
+    let root = transport.space.root;
+    let factory = ctx.cap::<VmFactoryTag>("horn.vm").unwrap();
+    let address_space = ctx.cap::<VmAddressSpaceTag>("horn.address-space").unwrap();
     let initial_charge = VmFactoryClient::new(&mut transport, factory)
         .info()
         .unwrap()
@@ -199,7 +188,7 @@ pub fn run(root: ::sel4::cap::CNode, recv: ::sel4::AbsoluteCPtr, space: Sel4CapS
         core::ptr::write_volatile(alias_info.address as *mut u8, 0xa5);
     }
     // A non-service capability must not be interpreted as a memory identity.
-    let fake = target::<VmMemoryObjectTag>(root, crate::protocol::CHILD_CAPS_WAKE_SLOT);
+    let fake = ctx.cap::<VmMemoryObjectTag>("wake").unwrap();
     assert_eq!(
         VmRegionClient::new(&mut transport, Cap::from_ref(alias.as_ref()))
             .apply(Some(fake), batch(&[])),
@@ -413,7 +402,7 @@ pub fn run(root: ::sel4::cap::CNode, recv: ::sel4::AbsoluteCPtr, space: Sel4CapS
     assert!(horn_runtime::is_control(
         (&*bootstrap_box as *const u64).cast()
     ));
-    let mut heap = VmHeap::new(transport, factory.as_ref(), address_space.as_ref()).unwrap();
+    let mut heap = ctx.heap().unwrap();
     // Recycled physical backing must not disclose the previous dirty contents.
     let pointer = heap.allocate(8192, 4096).unwrap();
     unsafe {

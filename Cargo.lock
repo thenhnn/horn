@@ -252,7 +252,6 @@ name = "horn-devmgr-probe"
 version = "0.1.0"
 dependencies = [
  "horn-devmgr",
- "horn-idl-build",
  "horn-ipc",
  "horn-runtime",
  "horn-supervisor",
@@ -265,7 +264,6 @@ version = "0.1.0"
 dependencies = [
  "acpi",
  "horn-devmgr",
- "horn-idl-build",
  "horn-ipc",
  "horn-registry",
  "horn-runtime",
@@ -449,12 +447,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "horn-startup-c"
+version = "0.1.0"
+dependencies = [
+ "libhorn",
+]
+
+[[package]]
 name = "horn-supervisor"
 version = "0.1.0"
 dependencies = [
  "horn-idl-build",
  "horn-ipc",
  "horn-log",
+ "libhorn",
  "sel4",
 ]
 
@@ -556,7 +562,9 @@ dependencies = [
  "horn-mimalloc",
  "horn-procd",
  "horn-runtime",
+ "horn-supervisor",
  "horn-vm",
+ "libhorn",
  "sel4",
 ]
 
@@ -569,6 +577,7 @@ dependencies = [
  "horn-procd",
  "horn-smp-probe",
  "horn-vm",
+ "libhorn",
  "sel4",
  "sel4-root-task",
 ]

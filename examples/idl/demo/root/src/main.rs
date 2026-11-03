@@ -30,6 +30,17 @@ const VM_START: usize = 0x4000_0000;
 const VM_SIZE: usize = 64 * 1024 * 1024;
 const RAM_LIMIT: usize = 32 * 1024 * 1024;
 
+fn install_context(
+    manager: &mut Manager,
+    id: horn_procd::ProcessId,
+    entries: &mut [libhorn::startup::Entry<'_>],
+) {
+    entries.sort_unstable_by_key(|e| e.name);
+    let size = 8 + entries.iter().map(|e| 16 + e.name.len()).sum::<usize>();
+    let mut bytes = alloc::vec![0; size];
+    libhorn::bindings::encode(entries, &mut bytes).unwrap();
+    manager.startup_context_bytes(id, &bytes).unwrap();
+}
 fn config(name: &str) -> Config<'_> {
     Config {
         name,
@@ -199,7 +210,6 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
     assert_eq!(allocator.account().usage().charged, before);
 
     let mut child_allocator = processes.allocator(child).unwrap();
-    let child_cnode = processes.cnode(child).unwrap();
     let child_reply = child_allocator
         .allocate(::sel4::ObjectBlueprint::Reply)
         .unwrap();
@@ -232,14 +242,13 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
         .unwrap();
     let factory = memory.factory();
     let address_space = memory.address_space();
-    // The generated named slots remain the bootstrap contract. The CNode itself
-    // is created by procd and charged to the process, not an unaccounted cap packer.
+    // Private loader placement, not the task ABI. The child receives named
+    // context entries; procd accounts its CNode and freezes these installs.
     for (slot, source) in [
-        (CHILD_CAPS_SELF_SLOT, child_cnode.bits()),
+        (CHILD_CAPS_SELF_SLOT, processes.cnode(child).unwrap().bits()),
         (CHILD_CAPS_SERVICE_SLOT, counter.bits()),
         (CHILD_CAPS_WAKE_SLOT, wake.bits()),
         (CHILD_CAPS_REPLY_SLOT, child_reply.bits()),
-        (CHILD_CAPS_TCB_SLOT, processes.tcb(child).unwrap().bits()),
         (CHILD_CAPS_VM_SLOT, factory.bits()),
         (CHILD_CAPS_ADDRESS_SPACE_SLOT, address_space.bits()),
         (CHILD_CAPS_LIFECYCLE_SLOT, lifecycle.bits()),
@@ -247,16 +256,56 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
         (CHILD_CAPS_PROCESS_OBSERVER_SLOT, process_observer.bits()),
         (CHILD_CAPS_ELF_SLOT, elf.as_ref().slot as _),
     ] {
-        child_cnode
-            .absolute_cptr_from_bits_with_depth(slot as _, CHILD_CAPS_SIZE_BITS as usize)
-            .copy(
-                &root.absolute_cptr(::sel4::CPtr::from_bits(source)),
+        processes
+            .install_initial_capability(
+                child,
+                slot,
+                root.absolute_cptr(::sel4::CPtr::from_bits(source)),
                 ::sel4::CapRights::all(),
             )
             .unwrap();
     }
     memory.finish_exports().unwrap();
     processes.attach_vm(child, memory).unwrap();
+    let mut bindings = [
+        libhorn::startup::Entry {
+            name: "horn.vm",
+            selector: CHILD_CAPS_VM_SLOT as _,
+        },
+        libhorn::startup::Entry {
+            name: "horn.address-space",
+            selector: CHILD_CAPS_ADDRESS_SPACE_SLOT as _,
+        },
+        libhorn::startup::Entry {
+            name: "horn.lifecycle",
+            selector: CHILD_CAPS_LIFECYCLE_SLOT as _,
+        },
+        libhorn::startup::Entry {
+            name: "horn.reply",
+            selector: CHILD_CAPS_REPLY_SLOT as _,
+        },
+        libhorn::startup::Entry {
+            name: "service",
+            selector: CHILD_CAPS_SERVICE_SLOT as _,
+        },
+        libhorn::startup::Entry {
+            name: "wake",
+            selector: CHILD_CAPS_WAKE_SLOT as _,
+        },
+        libhorn::startup::Entry {
+            name: "elf",
+            selector: CHILD_CAPS_ELF_SLOT as _,
+        },
+        libhorn::startup::Entry {
+            name: "process_factory",
+            selector: CHILD_CAPS_PROCESS_FACTORY_SLOT as _,
+        },
+        libhorn::startup::Entry {
+            name: "process_observer",
+            selector: CHILD_CAPS_PROCESS_OBSERVER_SLOT as _,
+        },
+    ];
+    install_context(&mut processes, child, &mut bindings);
     ::sel4::debug_println!("idl demo root: child Horn ABI verified at runtime");
     processes.start(child).unwrap();
 

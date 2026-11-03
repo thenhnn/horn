@@ -13,7 +13,6 @@
     "nvidia_probe": "hardware/gpu/nvidia/task/idl/nvidia_probe.py",
     "horn_linux": "platform/linux/idl/horn_linux.py",
     "horn_shell": "platform/apps/shell/idl/horn_shell.py",
-    "idl_demo": "examples/idl/demo/schema.py",
-    "devmgr_probe": "tests/boot/devmgr-probe/schema.py"
+    "idl_demo": "examples/idl/demo/schema.py"
   }
 }

@@ -9,7 +9,7 @@ boot-validated**. Managed handles, CSpace growth, thread-local contexts and
 
 - Dependency-free `no_std` Rust core; C header generated separately using
   `rust-cbindgen` from pinned nixpkgs.
-- Opt-in ELF ABI=2; preserve ABI=1 for existing executables during migration.
+- ELF ABI=2 only; ABI=1 is rejected by procd.
 - x86-64 entry: RDI points to a startup record, RSI gives its exact byte length.
   Procd installs these registers only for an explicit ABI2 ELF tag.
 - Initial context immutable/resident for process lifetime. Local, printable ASCII
@@ -17,21 +17,25 @@ boot-validated**. Managed handles, CSpace growth, thread-local contexts and
 - Process-local selectors, not pointers, PIDs or globally meaningful authority.
 - Initial caps are retained for process lifetime. Lookup currently yields a
   bootstrap selector for runtime import, **not an owning managed handle**.
-- Context names/grants come from deployment, not `@capset` in RPC IDL. Timer
-  uses explicit `main(ctx: horn_runtime::Context)`; legacy tasks keep ABI1.
+- Context names/grants come from deployment, not a task-side capset contract.
+  Rust tasks use explicit `main(ctx: horn_runtime::Context)`; Linux uses this C API.
 
-## Draft wire format
+## Wire format
 
 `src/startup.rs` is the single layout source. `default.nix` generates
 `include/horn/startup.h` using the build host's pinned nixpkgs `rust-cbindgen`,
-then compiles `header-check.c` with C11 layout/prototype assertions. Only
-stddef/stdint C headers are required. The Rust crate has no VM, seL4, heap or
+then compiles `header-check.c` with C11 layout/prototype assertions. The small
+`c/` static-library crate exports this same validator/lookup for freestanding
+C clients; hosted Linux links it and obtains named caps and actual IPC/CSpace
+fields from the validated record. No second C parser or guessed `_end` exists.
+Only stddef/stdint C headers are required. The Rust crate has no VM, seL4, heap or
 Cargo build dependencies; header generation is independent of its target graph.
 
-Build both artifacts:
+Build the Rust library, generated headers and freestanding C archive:
 
 ```sh
-nix-build nix -A rust.libhornHeaders -A rust.workspace.members.libhorn --no-out-link
+nix-build nix -A rust.libhornHeaders -A rust.workspace.members.libhorn \
+  -A rust.workspace.members.horn-startup-c.lib --no-out-link
 ```
 
 All wire integers are little endian. Header is96 bytes, entries24 bytes each.
@@ -85,7 +89,7 @@ application and heap pools; lazy tree growth remains separate work.
 - Generated C header passes C11 syntax and layout/prototype assertions.
 - Cargo.lock and crate2nix graphs regenerated using pinned toolchain.
 - Nix seL4 library build and separate header generation/C11 checks pass.
-- Full pc-dev devmgr root build (mixed ABI1/ABI2) passes.
+- ABI2-only pc-dev system, IDL/SMP, hosted Linux and NVIDIA deployments build.
 - pc-release build is blocked by unchanged `horn-vm` calls to
   `sel4::debug_println!`, unavailable with that kernel configuration. No unrelated
   release-logging fixes are included here.

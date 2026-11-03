@@ -26,22 +26,7 @@ mod p {
     include!(concat!(env!("OUT_DIR"), "/protocol.rs"));
 }
 const CLIENT: u64 = 16;
-const SLOTS: horn_runtime::TaskSlots = horn_runtime::TaskSlots::new(
-    DEVICE_DRIVER_CAPS_FIRST_FREE_SLOT,
-    DEVICE_DRIVER_CAPS_SIZE_BITS,
-);
-horn_runtime::task!(main, vm: horn_runtime::VmBootstrap {
-    cnode: DEVICE_DRIVER_CAPS_SELF_SLOT,
-    factory: DEVICE_DRIVER_CAPS_VM_SLOT,
-    address_space: DEVICE_DRIVER_CAPS_ADDRESS_SPACE_SLOT,
-    slots: SLOTS,
-});
-fn target<T: CapType>(slot: u32) -> Cap<T> {
-    horn_runtime::bootstrap_cap(
-        sel4::cap::CNode::from_bits(DEVICE_DRIVER_CAPS_SELF_SLOT as _),
-        slot,
-    )
-}
+horn_runtime::task!(main);
 
 struct SnapshotConfig<'a>(&'a [u32; 64]);
 impl interrupt::Config for SnapshotConfig<'_> {
@@ -95,14 +80,14 @@ impl p::NvidiaProbe for Reader<'_> {
     }
 }
 #[allow(unreachable_code)]
-fn main() -> ! {
-    let root = sel4::cap::CNode::from_bits(DEVICE_DRIVER_CAPS_SELF_SLOT as _);
-    let transport = horn_runtime::transport(root, SLOTS.application()).expect("NVIDIA transport");
+fn main(mut ctx: horn_runtime::Context) -> ! {
+    let transport = ctx.transport().expect("NVIDIA transport");
+    let mut inbox = ctx.inbox("devmgr.service").unwrap();
     let mut session = DeviceSession::new(
         transport,
-        target(DEVICE_DRIVER_CAPS_VM_SLOT),
-        target(DEVICE_DRIVER_CAPS_ADDRESS_SPACE_SLOT),
-        target(DEVICE_DRIVER_CAPS_DEVICE_SLOT),
+        ctx.cap("horn.vm").unwrap(),
+        ctx.cap("horn.address-space").unwrap(),
+        ctx.cap("devmgr.device").unwrap(),
     );
     let resources = session
         .control()
@@ -129,7 +114,7 @@ fn main() -> ! {
     );
     let bytes = usize::try_from(resources.bar_lengths.data[0]).expect("BAR0 size");
     assert_eq!(bytes, horn_nvidia::probe::BAR0_BYTES, "unexpected BAR0");
-    let mut time = time::Time::new(&mut session).expect("named clock/alarm");
+    let mut time = time::Time::new(&mut session, &ctx).expect("named clock/alarm");
     let now = time.now(&mut session).expect("monotonic time");
     time.sleep_until(&mut session, now.checked_add(100).expect("alarm deadline"))
         .expect("monotonic alarm");
@@ -143,7 +128,7 @@ fn main() -> ! {
         msi.offset
     );
     #[cfg(gsp_boot)]
-    boot::run(session, time, resources);
+    boot::run(session, time, resources, ctx, inbox);
     let boot_window = session.mmio_window(0, 0, 4096);
     let gfw_window = session.mmio_window(0, 0x118000, 4096);
     let (gpu, gfw) = {
@@ -223,45 +208,38 @@ fn main() -> ! {
         gpu.boot42,
         gfw
     );
-    horn_runtime::notify_ready(DEVICE_DRIVER_CAPS_READY_SLOT);
-    let endpoint = sel4::cap::Endpoint::from_bits(DEVICE_DRIVER_CAPS_SERVICE_SLOT as _);
-    let reply = sel4::cap::Reply::from_bits(DEVICE_DRIVER_CAPS_REPLY_SLOT as _);
-    let receive = root.absolute_cptr(sel4::CPtr::from_bits(SLOTS.public_receive() as _));
+    ctx.notify_ready().unwrap();
     let mut stopped = false;
     loop {
-        let request = {
-            let mut server =
-                Sel4Server::new(root, endpoint, receive, &mut session.transport().space);
-            sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&server.recv_slot));
-            let (info, badge) = server.endpoint.recv(reply);
-            if badge & horn_supervisor::STOP != 0 {
-                drop(server);
-                receive.delete().unwrap();
-                if !stopped {
-                    // No DMA was started. Broker close revokes/acknowledges
-                    // all CPU aliases before detaching. Never use raw BAR
-                    // views after this acknowledgment.
-                    time.cancel(&mut session).expect("probe alarm cancel");
-                    session.control().close().expect("probe assignment close");
-                    stopped = true;
-                    sel4::debug_println!("NVIDIA_PROBE_STOPPED dma_started=false");
-                    sel4::cap::Notification::from_bits(DEVICE_DRIVER_CAPS_STOPPED_SLOT as _)
-                        .signal();
-                }
-                continue;
+        let mut received = inbox.receive();
+        let badge = received.badge();
+        if badge & horn_supervisor::STOP != 0 {
+            drop(received);
+            if !stopped {
+                // No DMA was started. Broker close revokes and acknowledges
+                // all CPU aliases before detaching. Never reuse raw BAR views.
+                time.cancel(&mut session).expect("probe alarm cancel");
+                session.control().close().expect("probe assignment close");
+                stopped = true;
+                sel4::debug_println!("NVIDIA_PROBE_STOPPED dma_started=false");
+                sel4::cap::Notification::from_bits(
+                    ctx.cap::<Notification>("devmgr.stopped")
+                        .unwrap()
+                        .as_ref()
+                        .slot as _,
+                )
+                .signal();
             }
-            if badge != CLIENT {
-                receive.delete().unwrap();
-                continue;
-            }
-            server.decode_received_dynamic(
-                info,
-                badge,
-                reply,
-                p::nvidia_probe_object_request_layout,
-                p::NvidiaProbeObjectRequest::decode,
-            )
-        };
+            continue;
+        }
+        if badge != CLIENT {
+            continue;
+        }
+        let request = received.decode(
+            &mut session.transport().space,
+            p::nvidia_probe_object_request_layout,
+            p::NvidiaProbeObjectRequest::decode,
+        );
         if let Ok((_, request, reply)) = request {
             let response = p::nvidia_probe_object_dispatch(
                 request,
@@ -272,6 +250,5 @@ fn main() -> ! {
             );
             p::nvidia_probe_object_reply(reply, &mut session.transport().space, &response).unwrap();
         }
-        receive.delete().unwrap();
     }
 }

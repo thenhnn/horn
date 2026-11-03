@@ -365,6 +365,7 @@ class DevicePlatformObject:
     pass
 
 
+# Private placement for the trusted launcher; tasks consume ABI2 names only.
 @capset(capacity=256)
 class DeviceDriverCaps:
     vm: Cap[VmFactory, Copy]
@@ -381,20 +382,3 @@ class DeviceDriverCaps:
     # Installed only when trusted driver policy requests monotonic time.
     clock: Cap[ClockHost, Copy]
     alarm_signal: Cap[sel4.Notification, Copy]
-
-
-@capset(capacity=256)
-class DeviceCaps:
-    reply: Cap[sel4.Reply, Move]
-    service: Cap[sel4.Endpoint, Copy]
-    platform: Cap[sel4.Endpoint, Copy]
-    # Bound to devmgr's TCB by root; IRQ signals wake its blocking endpoint receive.
-    fault: Cap[sel4.Notification, Copy]
-    vm: Cap[VmFactory, Copy]
-    address_space: Cap[VmAddressSpaceObject, Copy]
-    lifecycle: Cap[sel4.Endpoint, Copy]
-    ready: Cap[sel4.Notification, Copy]
-    events: Cap[sel4.Notification, Copy]
-    supervisor: Cap[sel4.Endpoint, Copy]
-    timer: Cap[sel4.Notification, Copy]
-    clocks: Cap[RegistryNode, Copy]

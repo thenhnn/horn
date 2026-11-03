@@ -10,8 +10,6 @@
     pkgs.pkgsBuildBuild.runCommand "${name}-runtime.elf" {
       nativeBuildInputs = [pkgs.pkgsBuildBuild.llvmPackages.llvm];
     } ''llvm-objcopy --strip-debug ${package}/bin/${name}.elf "$out"'';
-  idl = import ../../tools/idl {pkgs = pkgs.pkgsBuildBuild;};
-  bootstrap = idl.capsets;
   driverCatalog = pkgs.pkgsBuildBuild.writeText "horn-drivers.rs" ("static DRIVERS: &[DriverConfig] = &["
     + lib.concatMapStrings (d: let
       option = v:
@@ -20,7 +18,6 @@
         else "Some(${toString v})";
     in ''
       DriverConfig {
-        abi: ${toString d.abi},
         clock: ${lib.boolToString d.clock},
         name: ${builtins.toJSON d.name},
         ram: ${toString d.ram},
@@ -123,7 +120,6 @@ in {
     type = lib.types.listOf (lib.types.submodule {
       options = {
         name = lib.mkOption {type = lib.types.str;};
-        abi = lib.mkOption { type = lib.types.enum [1 2]; default = 1; };
         clock = lib.mkOption {
           type = lib.types.bool;
           default = false;
@@ -215,7 +211,6 @@ in {
     devmgr.drivers =
       (lib.optional config.devmgr-demo.console {
         name = "virtio-console";
-        abi = 2;
         clock = config.devmgr-demo.dma-probe != "none";
         elf = runtimeElf console "virtio_console";
         ram = 32 * 1024 * 1024;
@@ -231,7 +226,6 @@ in {
       })
       ++ (lib.optional config.devmgr-demo.net {
         name = "virtio-net";
-        abi = 2;
         elf = runtimeElf childWorkspace.members.horn-virtio-net "virtio_net";
         ram = 32 * 1024 * 1024;
         pci = {
@@ -247,7 +241,6 @@ in {
     services.definitions = {
       devmgr = {
         elf = runtimeElf childWorkspace.members.horn-devmgr-task "devmgr";
-        abi = 2;
         activation = "boot";
         ram = 64 * 1024 * 1024;
         grants = {
@@ -306,7 +299,6 @@ in {
       };
       logd = {
         elf = runtimeElf childWorkspace.members.horn-logd "logd";
-        abi = 2;
         ram = 4 * 1024 * 1024;
         objects.service = {
           kind = "Endpoint";
@@ -328,7 +320,6 @@ in {
       timerd = {
         logging = "/services/log";
         elf = runtimeElf childWorkspace.members.horn-timerd "timerd";
-        abi = 2;
         ram = 8 * 1024 * 1024;
         requires.source = {path = "/devices/platform/clock";};
         objects = {
@@ -365,7 +356,6 @@ in {
       };
       netd = lib.mkIf config.devmgr-demo.net {
         elf = runtimeElf childWorkspace.members.horn-netd "netd";
-        abi = 2;
         logging = "/services/log";
         ram = 32 * 1024 * 1024;
         requires = {
@@ -407,7 +397,6 @@ in {
       };
       http-demo = lib.mkIf config.devmgr-demo.net {
         elf = runtimeElf childWorkspace.members.horn-http-demo "http_demo";
-        abi = 2;
         logging = "/services/log";
         ram = 8 * 1024 * 1024;
         requires.tcp = {path = "/services/net/tcp";};
@@ -421,7 +410,6 @@ in {
       };
       horn-shell = lib.mkIf config.devmgr-demo.shell {
         elf = runtimeElf childWorkspace.members.horn-shell "shell";
-        abi = 2;
         logging = "/services/log";
         ram = 8 * 1024 * 1024;
         requires = {

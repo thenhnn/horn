@@ -104,30 +104,3 @@ class TcpConnectionObject:
 @object(implements=(TcpFactory, TcpServer, TcpConnection))
 class TcpHost:
     pass
-
-
-@capset(capacity=256)
-class NetdCaps:
-    vm: Cap[sel4.Endpoint, Copy]
-    address_space: Cap[sel4.Endpoint, Copy]
-    lifecycle: Cap[sel4.Endpoint, Copy]
-    reply: Cap[sel4.Reply, Move]
-    ready: Cap[sel4.Notification, Copy]
-    ethernet: Cap[sel4.Endpoint, Copy]
-    clock: Cap[sel4.Endpoint, Copy]
-    service: Cap[sel4.Endpoint, Copy]
-    events: Cap[sel4.Notification, Copy]
-    ethernet_signal: Cap[sel4.Notification, Copy]
-    timer_signal: Cap[sel4.Notification, Copy]
-
-
-@capset(capacity=256)
-class HttpCaps:
-    vm: Cap[sel4.Endpoint, Copy]
-    address_space: Cap[sel4.Endpoint, Copy]
-    lifecycle: Cap[sel4.Endpoint, Copy]
-    reply: Cap[sel4.Reply, Move]
-    ready: Cap[sel4.Notification, Copy]
-    tcp: Cap[sel4.Endpoint, Copy]
-    events: Cap[sel4.Notification, Copy]
-    signal: Cap[sel4.Notification, Copy]
