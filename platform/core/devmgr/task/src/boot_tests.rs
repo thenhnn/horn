@@ -30,7 +30,7 @@ impl Observer {
             reply: 4,
         };
         let managed = ctx
-            .interface::<s::SupervisorFactory>("supervisor")
+            .object::<s::SupervisorHostTag>("supervisor")
             .unwrap()
             .prepare(&mut *io, &image, request, slots)
             .unwrap();

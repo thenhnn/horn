@@ -18,7 +18,10 @@ use horn_supervisor::protocol::SupervisorFactoryClient as _;
 horn_runtime::task!(main);
 
 #[derive(Clone)]
-struct Firmware<'a>(DevicePlatform, &'a RefCell<Sel4Transport<Sel4CapSpace>>);
+struct Firmware<'a>(
+    Cap<DevicePlatformObjectTag>,
+    &'a RefCell<Sel4Transport<Sel4CapSpace>>,
+);
 impl Firmware<'_> {
     fn read(&self, mut address: u64, bytes: &mut [u8]) {
         for chunk in bytes.chunks_mut(256) {
@@ -73,7 +76,7 @@ impl ConfigRead for Firmware<'_> {
 fn main(mut ctx: horn_runtime::Context) -> ! {
     let mut log_io = ctx.logging_transport().unwrap();
     let sink = ctx
-        .interface::<horn_supervisor::protocol::SupervisorFactory>("supervisor")
+        .object::<horn_supervisor::protocol::SupervisorHostTag>("supervisor")
         .unwrap()
         .core_log_sink(&mut log_io)
         .unwrap();
@@ -84,7 +87,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     }
     let mut transport = ctx.transport().expect("devmgr transport");
     let mut inbox = ctx.inbox("service").unwrap();
-    let platform = ctx.interface::<DevicePlatform>("platform").unwrap();
+    let platform = ctx.object::<DevicePlatformObjectTag>("platform").unwrap();
     #[cfg(feature = "boot-tests")]
     boot_tests::allocator();
     let policy = platform.policy(&mut transport).expect("bootstrap policy");

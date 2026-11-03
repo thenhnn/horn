@@ -13,7 +13,7 @@ pub fn start(manager: &mut Manager) {
     launch.ram_limit = definition.ram;
     let process = manager
         .ctx
-        .interface::<ProcessFactory>("supervisor.factory")
+        .object::<ProcessHostTag>("supervisor.factory")
         .unwrap()
         .prepare(&mut *io, &image, launch, definition.bootstrap.clone())
         .unwrap();

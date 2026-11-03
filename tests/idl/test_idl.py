@@ -263,6 +263,8 @@ use protocol::*;
 pub fn client<T: Transport>(owner: &OwnedCap<CounterServiceTag>, io: &mut T)
     -> Result<CounterValue, RpcError>
 {
+    fn require_object<T: RpcObject>() {}
+    require_object::<CounterServiceTag>();
     let _ = owner.borrow().version(io)?;
     owner.add(io, 1)
 }

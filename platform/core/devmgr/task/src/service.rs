@@ -1050,7 +1050,7 @@ impl DeviceControlServer for Caller<'_> {
         let sid = self.service.devices[d].sid;
         let domain = self.service.devices[d].domain;
         let io = self.service.io();
-        let factory = io.ctx.interface::<VmFactory>("horn.vm").unwrap();
+        let factory = io.ctx.object::<VmServiceTag>("horn.vm").unwrap();
         let lease = factory
             .delegate(&mut io.transport, 12)
             .expect("IRQ Untyped");

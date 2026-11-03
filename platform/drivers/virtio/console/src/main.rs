@@ -38,7 +38,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     #[cfg(feature = "dma-probe")]
     hal::with(|state| {
         let _now = ctx
-            .interface::<ClockInterface>("devmgr.clock")
+            .object::<ClockHostTag>("devmgr.clock")
             .unwrap()
             .now(state.session.transport())
             .expect("named monotonic clock");

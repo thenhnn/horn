@@ -79,7 +79,7 @@ impl Drivers {
         let boot = parent.boot;
         let root = parent.transport.space.root;
         let io = &mut parent.transport;
-        let directory = ctx.interface::<r::RegistryDirectory>("clocks").unwrap();
+        let directory = ctx.object::<r::RegistryNodeTag>("clocks").unwrap();
         let generation = r::RegistryDirectory::from_ref(directory.as_ref())
             .list(&mut *io, 0, false)
             .unwrap()
@@ -143,7 +143,7 @@ impl Drivers {
             reply: d::DEVICE_DRIVER_CAPS_REPLY_SLOT,
         };
         let managed = ctx
-            .interface::<s::SupervisorFactory>("supervisor")
+            .object::<s::SupervisorHostTag>("supervisor")
             .unwrap()
             .prepare(&mut *io, &image, request, slots)
             .unwrap();

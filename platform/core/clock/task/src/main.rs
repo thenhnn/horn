@@ -157,7 +157,7 @@ impl AlarmInterfaceServer for Caller<'_> {
 fn main(mut ctx: horn_runtime::Context) -> ! {
     let mut io = ctx.transport().unwrap();
     let placement = ctx
-        .interface::<horn_supervisor::protocol::ProcessLifecycle>("horn.lifecycle")
+        .object::<horn_supervisor::protocol::ProcessSelfTag>("horn.lifecycle")
         .unwrap()
         .placement(&mut io)
         .unwrap();

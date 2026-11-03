@@ -105,7 +105,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     let mut io = ctx.transport().unwrap();
     let signal = ctx.cap::<Notification>("signal").unwrap();
     let listener = ctx
-        .interface::<TcpFactory>("tcp")
+        .object::<TcpHostTag>("tcp")
         .unwrap()
         .listen(&mut io, 80)
         .unwrap();

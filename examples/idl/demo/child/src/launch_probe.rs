@@ -11,11 +11,9 @@ fn request(ram_limit: u64) -> ProcessLaunch {
     ProcessLaunch { name, ram_limit }
 }
 pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>) {
-    let factory = ctx.interface::<ProcessFactory>("process_factory").unwrap();
-    let observer = ctx
-        .interface::<ProcessObserver>("process_observer")
-        .unwrap();
-    let memory = ctx.interface::<vm::VmFactory>("horn.vm").unwrap();
+    let factory = ctx.object::<ProcessHostTag>("process_factory").unwrap();
+    let observer = ctx.object::<ProcessHostTag>("process_observer").unwrap();
+    let memory = ctx.object::<vm::VmServiceTag>("horn.vm").unwrap();
     let elf = &ctx.cap("elf").unwrap();
     let initial = vm::VmFactory::from_ref(memory.as_ref())
         .info(&mut t)

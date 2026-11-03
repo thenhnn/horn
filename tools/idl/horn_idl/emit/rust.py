@@ -903,6 +903,7 @@ class RustEmitter:
         self.add('    const KERNEL: &\'static str = "Endpoint";')
         self.add("}")
         self.add("")
+        self.add(f"impl horn_ipc::RpcObject for {marker} {{}}")
         for interface in object_.implements:
             self.emit_client_bindings(interface, marker)
         self.add("#[derive(Debug)]")

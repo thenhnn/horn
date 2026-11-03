@@ -16,7 +16,7 @@ pub struct Mapping {
 pub struct Io {
     pub ctx: horn_runtime::Context,
     pub boot: horn_supervisor::client::Bootstrap,
-    pub platform: DevicePlatform,
+    pub platform: Cap<DevicePlatformObjectTag>,
     pub transport: Sel4Transport<Sel4CapSpace>,
     pub registers: Option<Mapping>,
     pub base: u64,
@@ -31,7 +31,7 @@ fn vm_error(error: CallError<VmError>) -> vtd::Error {
 impl Io {
     pub fn new(
         transport: Sel4Transport<Sel4CapSpace>,
-        platform: DevicePlatform,
+        platform: Cap<DevicePlatformObjectTag>,
         ctx: horn_runtime::Context,
     ) -> Self {
         let boot = horn_supervisor::client::Bootstrap {
@@ -65,7 +65,7 @@ impl Io {
     ) -> vtd::Result<Mapping> {
         let region = self
             .ctx
-            .interface::<VmAddressSpace>("horn.address-space")
+            .object::<VmAddressSpaceObjectTag>("horn.address-space")
             .unwrap()
             .reserve(
                 &mut self.transport,
@@ -207,7 +207,7 @@ unsafe impl Hardware for Io {
             .map_err(|_| vtd::Error::Exhausted)?;
         let memory = self
             .ctx
-            .interface::<VmFactory>("horn.vm")
+            .object::<VmServiceTag>("horn.vm")
             .unwrap()
             .allocate(
                 &mut self.transport,

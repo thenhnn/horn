@@ -6,8 +6,7 @@ mod ethernet;
 mod tcp;
 use alloc::vec;
 use horn_clock::{
-    AlarmInterfaceClient, Clock, ClockInterfaceClient, DefaultTimeManager, DefaultTimePage,
-    TimeManager,
+    AlarmInterfaceClient, ClockInterfaceClient, DefaultTimeManager, DefaultTimePage, TimeManager,
 };
 use horn_ipc::*;
 use horn_net::protocol::*;
@@ -25,21 +24,23 @@ horn_runtime::task!(main);
 type Io = Sel4Transport<Sel4CapSpace>;
 struct Time {
     page: *const DefaultTimePage,
-    clock: Clock,
+    clock: Cap<horn_clock::protocol::ClockHostTag>,
     _memory: OwnedCap<v::VmMemoryObjectTag>,
     _region: OwnedCap<v::VmRegionObjectTag>,
 }
 impl Time {
     fn new(io: &mut Io, ctx: &horn_runtime::Context) -> Self {
-        let clock = ctx.interface::<Clock>("clock").unwrap();
+        let clock = ctx
+            .object::<horn_clock::protocol::ClockHostTag>("clock")
+            .unwrap();
         let page = DefaultTimePage::from(clock.calibration(io).unwrap());
         let memory = ctx
-            .interface::<v::VmFactory>("horn.vm")
+            .object::<v::VmServiceTag>("horn.vm")
             .unwrap()
             .allocate(&mut *io, 4096, v::VmBacking::Resident, v::VmProtection(3))
             .unwrap();
         let writable = ctx
-            .interface::<v::VmAddressSpace>("horn.address-space")
+            .object::<v::VmAddressSpaceObjectTag>("horn.address-space")
             .unwrap()
             .reserve(
                 &mut *io,
@@ -79,7 +80,7 @@ impl Time {
         drop(writable);
         memory.add_seals(&mut *io, v::VmSeals(15)).unwrap();
         let region = ctx
-            .interface::<v::VmAddressSpace>("horn.address-space")
+            .object::<v::VmAddressSpaceObjectTag>("horn.address-space")
             .unwrap()
             .reserve(
                 &mut *io,

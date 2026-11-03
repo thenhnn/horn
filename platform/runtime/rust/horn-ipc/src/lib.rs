@@ -96,6 +96,10 @@ pub trait CapType {
     const KERNEL: &'static str;
 }
 
+/// Marker for generated IDL object tags and their supported interfaces.
+/// This is a deployment contract, not remote type authentication.
+pub trait RpcObject: CapType {}
+
 /// Selects the capability marker for an explicit RPC protocol view.
 /// Views do not validate a remote interface, copy kernel capabilities, or retain
 /// a transport. Generated client traits provide the RPC methods.

@@ -60,7 +60,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     launch_probe::run(&ctx, &mut io);
     vm_probe::run(&mut ctx, &mut io);
     let process = ctx
-        .interface::<horn_procd::protocol::ProcessLifecycle>("horn.lifecycle")
+        .object::<horn_procd::protocol::ProcessSelfTag>("horn.lifecycle")
         .unwrap();
     assert!(process.info(&mut io).unwrap().charged_bytes > 0);
     process.exit(&mut io, 0).unwrap();

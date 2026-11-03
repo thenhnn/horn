@@ -39,7 +39,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         Err(CallError::Remote(DeviceError::Denied))
     ));
     sel4::debug_println!("DEVMGR_AUTH_PASS observer_rebadge=false");
-    let client = ctx.interface::<DeviceObserver>("devmgr.observer").unwrap();
+    let client = ctx.object::<DeviceDiscoveryTag>("devmgr.observer").unwrap();
     let status = client.status(&mut io).unwrap();
     assert_eq!(status.iommu, IommuState::NotInitialized);
     assert!(status.pci_devices >= 5);
@@ -79,7 +79,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     );
     ctx.notify_ready().unwrap();
     let _ = ctx
-        .interface::<horn_supervisor::protocol::ProcessLifecycle>("horn.lifecycle")
+        .object::<horn_supervisor::protocol::ProcessSelfTag>("horn.lifecycle")
         .unwrap()
         .exit(&mut io, 0);
     panic!("exit returned");

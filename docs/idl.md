@@ -64,7 +64,7 @@ transport-bound client structs.
 use horn_clock::{AlarmInterfaceClient, ClockInterfaceClient};
 
 let mut io = ctx.transport()?;
-let clock = ctx.interface::<horn_clock::Clock>("clock")?;
+let clock = ctx.object::<horn_clock::protocol::ClockHostTag>("clock")?;
 let now = clock.now(&mut io)?;
 let alarm = clock.alarm(&mut io)?; // OwnedCap<AlarmObjectTag>
 alarm.cancel(&mut io)?;           // direct typed-object call
@@ -74,7 +74,11 @@ Every call takes an explicit transport; handles retain no transport or context.
 When interfaces share method names, use qualified calls such as
 `VmMemoryClient::info(&memory, &mut io)`.
 
-`Context::interface(name)` selects a protocol for an immutable startup binding.
+`Context::object::<SomeObjectTag>(name)` returns a non-owning `Cap<SomeObjectTag>`
+with every client interface declared by that object. Its tag must implement
+`RpcObject`, which is generated only for IDL objects, not interface tags.
+
+`Context::interface(name)` remains available for explicit protocol selection.
 `owner.interface::<Foo>()` selects a protocol for an untyped or differently
 marked owner and returns `BorrowedCap<'_, FooTag>`. Its lifetime is tied to
 the owner, not the transport. Ordinary typed-object calls need neither cast.

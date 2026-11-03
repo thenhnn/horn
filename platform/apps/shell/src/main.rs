@@ -22,10 +22,7 @@ struct Shell {
 }
 impl Shell {
     fn wait(&mut self, events: c::ConsoleEvents) {
-        let client = self
-            .ctx
-            .interface::<c::ConsoleInterface>("console")
-            .unwrap();
+        let client = self.ctx.object::<c::ConsoleObjectTag>("console").unwrap();
         let status = client.status(&mut self.io).expect("console status");
         assert_eq!(
             status.events.0 & c::ConsoleEvents::CLOSED.0,
@@ -66,7 +63,7 @@ impl Shell {
             bytes.data[..count].copy_from_slice(&self.output[offset..self.output_len]);
             match self
                 .ctx
-                .interface::<c::ConsoleInterface>("console")
+                .object::<c::ConsoleObjectTag>("console")
                 .unwrap()
                 .write(&mut self.io, bytes)
             {
@@ -89,7 +86,7 @@ impl Shell {
         loop {
             match self
                 .ctx
-                .interface::<c::ConsoleInterface>("console")
+                .object::<c::ConsoleObjectTag>("console")
                 .unwrap()
                 .read(&mut self.io, 256)
             {
@@ -118,7 +115,7 @@ impl Shell {
         loop {
             let page = match self
                 .ctx
-                .interface::<horn_registry::protocol::RegistryDirectory>(name)
+                .object::<horn_registry::protocol::RegistryNodeTag>(name)
                 .unwrap()
                 .list(&mut self.io, cursor, true)
             {
@@ -157,7 +154,7 @@ impl Shell {
         loop {
             let page = match self
                 .ctx
-                .interface::<d::DeviceObserver>("pci")
+                .object::<d::DeviceDiscoveryTag>("pci")
                 .unwrap()
                 .list(&mut self.io, cursor)
             {
@@ -198,7 +195,7 @@ impl Shell {
         loop {
             let page = match self
                 .ctx
-                .interface::<p::ProcessObserver>("processes")
+                .object::<p::ProcessHostTag>("processes")
                 .unwrap()
                 .list(&mut self.io, cursor)
             {

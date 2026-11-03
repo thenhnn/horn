@@ -10,7 +10,7 @@ use horn_smp_probe::{ADDRESS, Shared};
 horn_runtime::task!(main);
 fn main(mut ctx: horn_runtime::Context) -> ! {
     let mut io = ctx.transport().unwrap();
-    let task = ctx.interface::<ProcessLifecycle>("horn.lifecycle").unwrap();
+    let task = ctx.object::<ProcessSelfTag>("horn.lifecycle").unwrap();
     let placement = task.placement(&mut io).unwrap();
     assert!(placement.cpu_count >= 2);
     let before = task.info(&mut io).unwrap().charged_bytes;

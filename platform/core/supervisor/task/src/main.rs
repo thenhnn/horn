@@ -266,7 +266,7 @@ impl SupervisorFactoryServer for Caller<'_> {
         let process = self
             .manager
             .ctx
-            .interface::<ProcessFactory>("supervisor.factory")
+            .object::<ProcessHostTag>("supervisor.factory")
             .unwrap()
             .prepare(&mut self.manager.io, &elf, request, bootstrap)
             .map_err(|e| match e {
@@ -623,7 +623,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
             .slot,
     };
     let ticks = ctx
-        .interface::<SystemControl>("supervisor.system")
+        .object::<SystemHostTag>("supervisor.system")
         .unwrap()
         .ticks_per_us(&mut io)
         .unwrap();
@@ -635,7 +635,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         CHILD_EXIT,
         Rights::WRITE,
     );
-    ctx.interface::<ProcessFactory>("supervisor.factory")
+    ctx.object::<ProcessHostTag>("supervisor.factory")
         .unwrap()
         .watch(&mut io, &exits)
         .unwrap();
@@ -697,7 +697,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
             manager.namespace.tree.ready(0);
             manager
                 .ctx
-                .interface::<SystemControl>("supervisor.system")
+                .object::<SystemHostTag>("supervisor.system")
                 .unwrap()
                 .ready(&mut manager.io)
                 .unwrap();

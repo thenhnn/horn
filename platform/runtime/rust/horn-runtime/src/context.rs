@@ -46,6 +46,11 @@ impl Context {
         let slot = self.record.lookup(name).ok_or(Error::Invalid)?;
         Ok(bootstrap_cap(self.root, slot as u32))
     }
+    /// Obtain a non-owning initial object handle with all its client interfaces.
+    /// The deployment contract supplies its type; no remote check is performed.
+    pub fn object<T: RpcObject>(&self, name: &str) -> Result<Cap<T>, Error> {
+        self.cap::<T>(name)
+    }
     /// View a named initial capability as an IDL interface, without IPC or
     /// ownership transfer. The deployment contract supplies the interface type;
     /// this lookup is not a runtime server-type check.
