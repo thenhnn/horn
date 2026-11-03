@@ -31,7 +31,7 @@ impl Device {
         !self.tx.is_empty()
     }
     pub fn receive_rpc(&mut self, io: &mut Io) {
-        let ethernet = EthernetInterfaceReceiver::from_cap(self.endpoint);
+        let ethernet = EthernetInterface::from_ref(self.endpoint.as_ref());
         self.generation = ethernet.info(io).unwrap().generation;
         self.more_rx = true; // A full work budget does not prove the driver queue is empty.
         for _ in 0..8 {
@@ -62,7 +62,7 @@ impl Device {
         }
     }
     pub fn transmit_rpc(&mut self, io: &mut Io) {
-        let ethernet = EthernetInterfaceReceiver::from_cap(self.endpoint);
+        let ethernet = EthernetInterface::from_ref(self.endpoint.as_ref());
         while let Some(packet) = self.tx.front() {
             match ethernet.begin(io, packet.len() as u32) {
                 Ok(()) => {}

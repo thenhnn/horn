@@ -101,11 +101,11 @@ impl DeviceSession {
         &mut self.transport
     }
     /// Scoped control only; never assignment, writable ECAM or RAM paddr access.
-    pub fn control(&self) -> DeviceControlReceiver {
-        DeviceControlReceiver::from_cap(Cap::from_ref(self.device.as_ref()))
+    pub fn control(&self) -> DeviceControl {
+        DeviceControl::from_ref(self.device.as_ref())
     }
     fn map_cpu(&mut self, memory: OwnedCap<VmMemoryObjectTag>, length: usize) -> CpuMapping {
-        let region = VmAddressSpaceReceiver::from_cap(Cap::from_ref(self.space.as_ref()))
+        let region = VmAddressSpace::from_ref(self.space.as_ref())
             .reserve(
                 &mut self.transport,
                 VmRegionRequest {
@@ -118,7 +118,6 @@ impl DeviceSession {
             )
             .expect("CPU region");
         let address = region
-            .interface::<VmRegionReceiver>()
             .info(&mut self.transport)
             .expect("CPU region info")
             .address
@@ -137,7 +136,6 @@ impl DeviceSession {
             protection: VmProtection(3),
         });
         region
-            .interface::<VmRegionReceiver>()
             .apply(
                 &mut self.transport,
                 Some(Cap::from_ref(memory.cap_ref())),
@@ -207,7 +205,6 @@ impl DeviceSession {
             .map_bar_window(self.transport(), index, offset, length as _, &space)
             .expect("scoped MMIO window");
         let memory = grant
-            .interface::<DeviceMmioReceiver>()
             .memory(&mut self.transport)
             .expect("MMIO memory grant");
         let cpu = self.map_cpu(memory, length);
@@ -219,13 +216,11 @@ impl DeviceSession {
     pub fn close_window(&mut self, window: MmioWindow) {
         window
             .lease
-            .interface::<DeviceMmioReceiver>()
             .close(&mut self.transport)
             .expect("MMIO window revoke acknowledgement");
         window
             .cpu
             .region
-            .interface::<VmRegionReceiver>()
             .destroy(&mut self.transport)
             .expect("MMIO virtual reservation release");
         // Root already revoked the memory and lease. Drop only retires local
@@ -323,7 +318,7 @@ impl DeviceSession {
         if trace {
             sel4::debug_println!("HORN_DMA_ALLOC begin pages={} bytes={}", pages, length);
         }
-        let memory = VmFactoryReceiver::from_cap(self.factory)
+        let memory = VmFactory::from_ref(self.factory.as_ref())
             .allocate(
                 &mut self.transport,
                 length as _,
@@ -360,7 +355,7 @@ impl DeviceSession {
                 let mut offset = 0;
                 while offset < length {
                     let chunk = (length - offset).min(MAX_PAGES * PAGE);
-                    let populated = dma.mapping.interface::<DeviceMappingReceiver>().append(
+                    let populated = dma.mapping.append(
                         &mut self.transport,
                         &Cap::from_ref(cpu.memory.cap_ref()),
                         offset as _,
@@ -372,13 +367,10 @@ impl DeviceSession {
                         sel4::debug_println!("HORN_DMA_ALLOC appended={}", offset);
                     }
                 }
-                dma.mapping
-                    .interface::<DeviceMappingReceiver>()
-                    .finish(&mut self.transport)
+                dma.mapping.finish(&mut self.transport)
             })();
             if result.is_err() {
                 dma.mapping
-                    .interface::<DeviceMappingReceiver>()
                     .close(&mut self.transport)
                     .expect("partial DMA rollback/drain");
                 drop(dma);
@@ -454,7 +446,6 @@ impl DeviceSession {
         // Leave the record and all CPU backing retained on uncertain close.
         buffer
             .mapping
-            .interface::<DeviceMappingReceiver>()
             .close(&mut self.transport)
             .expect("DMA invalidate/drain");
         // Local owners stay in the record through unmap and authority close.
@@ -471,13 +462,9 @@ impl DeviceSession {
             }
         }
         let cpu = &buffer.cpu;
-        cpu.region
-            .interface::<VmRegionReceiver>()
-            .destroy(&mut self.transport)
-            .expect("CPU unmap");
+        cpu.region.destroy(&mut self.transport).expect("CPU unmap");
 
         cpu.memory
-            .interface::<VmMemoryReceiver>()
             .close(&mut self.transport)
             .expect("RAM authority close");
 

@@ -28,7 +28,7 @@ impl Service {
         }
     }
 }
-impl c::ConsoleInterface for Service {
+impl c::ConsoleInterfaceServer for Service {
     fn read(&mut self, maximum: u32) -> Result<List<u8, 256>, c::ConsoleError> {
         self.console.read(maximum)
     }

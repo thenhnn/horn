@@ -639,7 +639,7 @@ impl Caller<'_> {
             .ok_or(protocol::ProcessError::Denied)
     }
 }
-impl protocol::ProcessLifecycle for Caller<'_> {
+impl protocol::ProcessLifecycleServer for Caller<'_> {
     fn placement(&mut self) -> Result<protocol::ProcessPlacement, protocol::ProcessError> {
         let cpu = self
             .manager

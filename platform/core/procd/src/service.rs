@@ -234,7 +234,12 @@ impl Manager {
                 sel4::cap::Notification::from_bits(slot as _).signal();
                 return true;
             }
-            if let Some(slot) = p.parent.and_then(|id| self.process(id).ok()).and_then(|p| p.launch.as_ref()).and_then(|g| g.events) {
+            if let Some(slot) = p
+                .parent
+                .and_then(|id| self.process(id).ok())
+                .and_then(|p| p.launch.as_ref())
+                .and_then(|g| g.events)
+            {
                 sel4::cap::Notification::from_bits(slot as _).signal();
                 return true;
             }
@@ -272,7 +277,11 @@ impl Manager {
     ) -> Result<(), Error> {
         let values = [slots.vm, slots.address_space, slots.lifecycle, slots.reply];
         if values.iter().any(|s| *s == 0 || *s >= 128)
-            || values.iter().enumerate().any(|(i, s)| values[..i].contains(s)) {
+            || values
+                .iter()
+                .enumerate()
+                .any(|(i, s)| values[..i].contains(s))
+        {
             return Err(Error::Denied);
         }
         let mut allocator = self.allocator(id)?;
@@ -431,32 +440,71 @@ impl Caller<'_> {
             .ok_or(ProcessError::Denied)
     }
 }
-impl ProcessFactory for Caller<'_> {
+impl ProcessFactoryServer for Caller<'_> {
     fn launch(
         &mut self,
         elf: Cap<VmMemoryObjectTag>,
         request: ProcessLaunch,
     ) -> Result<Cap<ProcessObjectTag>, ProcessError> {
-        self.manager
-            .launch(self.scope(true)?, elf.as_ref(), request, ProcessBootstrap {
-                vm: PROCESS_CAPS_VM_SLOT, address_space: PROCESS_CAPS_ADDRESS_SPACE_SLOT,
-                lifecycle: PROCESS_CAPS_LIFECYCLE_SLOT, reply: PROCESS_CAPS_REPLY_SLOT,
-            })
+        self.manager.launch(
+            self.scope(true)?,
+            elf.as_ref(),
+            request,
+            ProcessBootstrap {
+                vm: PROCESS_CAPS_VM_SLOT,
+                address_space: PROCESS_CAPS_ADDRESS_SPACE_SLOT,
+                lifecycle: PROCESS_CAPS_LIFECYCLE_SLOT,
+                reply: PROCESS_CAPS_REPLY_SLOT,
+            },
+        )
     }
-    fn prepare(&mut self, elf: Cap<VmMemoryObjectTag>, request: ProcessLaunch, bootstrap: ProcessBootstrap)
-        -> Result<Cap<ProcessObjectTag>, ProcessError> {
-        self.manager.launch(self.scope(true)?, elf.as_ref(), request, bootstrap)
+    fn prepare(
+        &mut self,
+        elf: Cap<VmMemoryObjectTag>,
+        request: ProcessLaunch,
+        bootstrap: ProcessBootstrap,
+    ) -> Result<Cap<ProcessObjectTag>, ProcessError> {
+        self.manager
+            .launch(self.scope(true)?, elf.as_ref(), request, bootstrap)
     }
     fn watch(&mut self, notification: Cap<Notification>) -> Result<(), ProcessError> {
         let owner = self.scope(true)?;
-        if notification.as_ref().unwrapped_badge().is_some() || self.manager.process(owner).map_err(error)?.launch.as_ref().unwrap().events.is_some() { return Err(ProcessError::Denied); }
-        let slot = self.manager.allocator.reserve_slot().map_err(|e| error(e.into()))?;
+        if notification.as_ref().unwrapped_badge().is_some()
+            || self
+                .manager
+                .process(owner)
+                .map_err(error)?
+                .launch
+                .as_ref()
+                .unwrap()
+                .events
+                .is_some()
+        {
+            return Err(ProcessError::Denied);
+        }
+        let slot = self
+            .manager
+            .allocator
+            .reserve_slot()
+            .map_err(|e| error(e.into()))?;
         let root = self.manager.allocator.root();
-        if let Err(e) = root.absolute_cptr(sel4::CPtr::from_bits(slot as _)).copy(&root.absolute_cptr(sel4::CPtr::from_bits(notification.as_ref().slot as _)), sel4::CapRights::all()) {
-            self.manager.allocator.release_slot(slot).map_err(|e| error(e.into()))?;
+        if let Err(e) = root.absolute_cptr(sel4::CPtr::from_bits(slot as _)).copy(
+            &root.absolute_cptr(sel4::CPtr::from_bits(notification.as_ref().slot as _)),
+            sel4::CapRights::all(),
+        ) {
+            self.manager
+                .allocator
+                .release_slot(slot)
+                .map_err(|e| error(e.into()))?;
             return Err(error(e.into()));
         }
-        self.manager.process_mut(owner).map_err(error)?.launch.as_mut().unwrap().events = Some(slot);
+        self.manager
+            .process_mut(owner)
+            .map_err(error)?
+            .launch
+            .as_mut()
+            .unwrap()
+            .events = Some(slot);
         Ok(())
     }
     fn open(&mut self, id: u64) -> Result<Cap<ProcessObjectTag>, ProcessError> {
@@ -468,7 +516,7 @@ impl ProcessFactory for Caller<'_> {
         self.manager.export_control(id).map_err(error)
     }
 }
-impl ProcessObserver for Caller<'_> {
+impl ProcessObserverServer for Caller<'_> {
     fn list(&mut self, after: u64) -> Result<ProcessPage, ProcessError> {
         let owner = self.scope(false)?;
         let mut entries = List::default();
@@ -489,10 +537,15 @@ impl ProcessObserver for Caller<'_> {
         Ok(ProcessPage { entries, next })
     }
 }
-impl ProcessControl for Caller<'_> {
-    fn startup_context(&mut self, descriptor: Cap<VmMemoryObjectTag>, length: u64) -> Result<(), ProcessError> {
+impl ProcessControlServer for Caller<'_> {
+    fn startup_context(
+        &mut self,
+        descriptor: Cap<VmMemoryObjectTag>,
+        length: u64,
+    ) -> Result<(), ProcessError> {
         let id = self.control()?;
-        self.manager.provision_context(id, descriptor.as_ref(), length)
+        self.manager
+            .provision_context(id, descriptor.as_ref(), length)
     }
     fn info(&mut self) -> Result<ProcessInfo, ProcessError> {
         Ok(wire_info(
@@ -531,75 +584,183 @@ impl ProcessControl for Caller<'_> {
     }
     fn kernel_object(&mut self, kind: ProcessKernelObject) -> Result<Cap<AnyCap>, ProcessError> {
         let id = self.control()?;
-        if self.manager.process(id).map_err(error)?.state != State::Created { return Err(ProcessError::State); }
+        if self.manager.process(id).map_err(error)?.state != State::Created {
+            return Err(ProcessError::State);
+        }
         let blueprint = match kind {
             ProcessKernelObject::Endpoint => sel4::ObjectBlueprint::Endpoint,
             ProcessKernelObject::Notification => sel4::ObjectBlueprint::Notification,
         };
-        let object = self.manager.allocator(id).map_err(error)?.allocate(blueprint).map_err(|e| error(e.into()))?;
-        if self.manager.outgoing.is_some() { return Err(ProcessError::State); }
-        let slot = self.manager.allocator.reserve_slot().map_err(|e| error(e.into()))?;
+        let object = self
+            .manager
+            .allocator(id)
+            .map_err(error)?
+            .allocate(blueprint)
+            .map_err(|e| error(e.into()))?;
+        if self.manager.outgoing.is_some() {
+            return Err(ProcessError::State);
+        }
+        let slot = self
+            .manager
+            .allocator
+            .reserve_slot()
+            .map_err(|e| error(e.into()))?;
         let root = self.manager.allocator.root();
-        root.absolute_cptr(sel4::CPtr::from_bits(slot as _)).copy(&root.absolute_cptr(object.cptr()), sel4::CapRights::all()).map_err(|e| error(e.into()))?;
+        root.absolute_cptr(sel4::CPtr::from_bits(slot as _))
+            .copy(&root.absolute_cptr(object.cptr()), sel4::CapRights::all())
+            .map_err(|e| error(e.into()))?;
         self.manager.outgoing = Some(slot);
-        Ok(Cap::new(root.bits() as _, slot as _, sel4::WORD_SIZE as _, 0, CapMode::MOVE, Rights::ALL))
+        Ok(Cap::new(
+            root.bits() as _,
+            slot as _,
+            sel4::WORD_SIZE as _,
+            0,
+            CapMode::MOVE,
+            Rights::ALL,
+        ))
     }
-    fn install(&mut self, source: Cap<CNode>, source_bits: u32, source_slot: u32,
-        target_slot: u32, badge: Option<u64>, rights: u32) -> Result<(), ProcessError> {
+    fn install(
+        &mut self,
+        source: Cap<CNode>,
+        source_bits: u32,
+        source_slot: u32,
+        target_slot: u32,
+        badge: Option<u64>,
+        rights: u32,
+    ) -> Result<(), ProcessError> {
         let id = self.control()?;
-        if self.manager.process(id).map_err(error)?.state != State::Created || self.manager.process(id).map_err(error)?.startup_attempted { return Err(ProcessError::State); }
-        if source.as_ref().unwrapped_badge().is_some() || source_bits == 0 || source_bits > 32
-            || source_slot as u64 >= 1u64 << source_bits || target_slot == 0 || target_slot >= 128 || rights & !15 != 0 {
+        if self.manager.process(id).map_err(error)?.state != State::Created
+            || self.manager.process(id).map_err(error)?.startup_attempted
+        {
+            return Err(ProcessError::State);
+        }
+        if source.as_ref().unwrapped_badge().is_some()
+            || source_bits == 0
+            || source_bits > 32
+            || source_slot as u64 >= 1u64 << source_bits
+            || target_slot == 0
+            || target_slot >= 128
+            || rights & !15 != 0
+        {
             return Err(ProcessError::Invalid);
         }
         let source = sel4::cap::CNode::from_bits(source.as_ref().slot as _)
             .absolute_cptr_from_bits_with_depth(source_slot as _, source_bits as _);
-        let target = self.manager.cnode(id).map_err(error)?.absolute_cptr_from_bits_with_depth(target_slot as _, PROCESS_CAPS_SIZE_BITS as _);
-        let rights = sel4::CapRights::new(rights & 8 != 0, rights & 4 != 0, rights & 1 != 0, rights & 2 != 0);
-        match badge { Some(badge) => target.mint(&source, rights, badge as _), None => target.copy(&source, rights) }.map_err(|e| error(e.into()))?;
+        let target = self
+            .manager
+            .cnode(id)
+            .map_err(error)?
+            .absolute_cptr_from_bits_with_depth(target_slot as _, PROCESS_CAPS_SIZE_BITS as _);
+        let rights = sel4::CapRights::new(
+            rights & 8 != 0,
+            rights & 4 != 0,
+            rights & 1 != 0,
+            rights & 2 != 0,
+        );
+        match badge {
+            Some(badge) => target.mint(&source, rights, badge as _),
+            None => target.copy(&source, rights),
+        }
+        .map_err(|e| error(e.into()))?;
         let p = self.manager.process_mut(id).map_err(error)?;
         p.bootstrap_end = p.bootstrap_end.max(target_slot + 1);
         Ok(())
     }
-    fn fault_handler(&mut self, source: Cap<CNode>, source_bits:u32, source_slot:u32) -> Result<(), ProcessError> {
+    fn fault_handler(
+        &mut self,
+        source: Cap<CNode>,
+        source_bits: u32,
+        source_slot: u32,
+    ) -> Result<(), ProcessError> {
         let id = self.control()?;
-        if self.manager.process(id).map_err(error)?.state != State::Created || self.manager.process(id).map_err(error)?.fault_endpoint.is_some() { return Err(ProcessError::State); }
-        if source.as_ref().unwrapped_badge().is_some() || source_bits==0 || source_bits>32 || source_slot as u64>=1u64<<source_bits {return Err(ProcessError::Denied);}
-        let mut allocator=self.manager.allocator(id).map_err(error)?;
-        let slot=allocator.reserve_slot().map_err(|e|error(e.into()))?;
-        let root=allocator.root();
-        if let Err(e)=root.absolute_cptr(sel4::CPtr::from_bits(slot as _)).copy(
-            &sel4::cap::CNode::from_bits(source.as_ref().slot as _).absolute_cptr_from_bits_with_depth(source_slot as _,source_bits as _),sel4::CapRights::all()) {
-            allocator.release_slot(slot).map_err(|e|error(e.into()))?;return Err(error(e.into()));
+        if self.manager.process(id).map_err(error)?.state != State::Created
+            || self
+                .manager
+                .process(id)
+                .map_err(error)?
+                .fault_endpoint
+                .is_some()
+        {
+            return Err(ProcessError::State);
         }
-        let result=self.manager.tcb(id).map_err(error)?.tcb_set_space(
-            sel4::CPtr::from_bits(slot as _), self.manager.cnode(id).map_err(error)?,
+        if source.as_ref().unwrapped_badge().is_some()
+            || source_bits == 0
+            || source_bits > 32
+            || source_slot as u64 >= 1u64 << source_bits
+        {
+            return Err(ProcessError::Denied);
+        }
+        let mut allocator = self.manager.allocator(id).map_err(error)?;
+        let slot = allocator.reserve_slot().map_err(|e| error(e.into()))?;
+        let root = allocator.root();
+        if let Err(e) = root.absolute_cptr(sel4::CPtr::from_bits(slot as _)).copy(
+            &sel4::cap::CNode::from_bits(source.as_ref().slot as _)
+                .absolute_cptr_from_bits_with_depth(source_slot as _, source_bits as _),
+            sel4::CapRights::all(),
+        ) {
+            allocator.release_slot(slot).map_err(|e| error(e.into()))?;
+            return Err(error(e.into()));
+        }
+        let result = self.manager.tcb(id).map_err(error)?.tcb_set_space(
+            sel4::CPtr::from_bits(slot as _),
+            self.manager.cnode(id).map_err(error)?,
             sel4::CNodeCapData::new(0, sel4::WORD_SIZE - PROCESS_CAPS_SIZE_BITS as usize),
-            self.manager.vspace(id).map_err(error)?);
-        if let Err(e)=result {allocator.release_slot(slot).map_err(|e|error(e.into()))?;return Err(error(e.into()));}
-        self.manager.process_mut(id).map_err(error)?.fault_endpoint=Some(slot);Ok(())
-    }
-    fn exit_signal(&mut self, notification:Cap<Notification>) -> Result<(),ProcessError> {
-        let id=self.control()?;
-        if self.manager.process(id).map_err(error)?.state!=State::Created || self.manager.process(id).map_err(error)?.exit_signal.is_some() {return Err(ProcessError::State);}
-        if notification.as_ref().unwrapped_badge().is_some() {return Err(ProcessError::Denied);}
-        let mut allocator=self.manager.allocator(id).map_err(error)?;
-        let slot=allocator.reserve_slot().map_err(|e|error(e.into()))?;
-        let root=allocator.root();
-        if let Err(e)=root.absolute_cptr(sel4::CPtr::from_bits(slot as _)).copy(&root.absolute_cptr(sel4::CPtr::from_bits(notification.as_ref().slot as _)),sel4::CapRights::all()) {
-            allocator.release_slot(slot).map_err(|e|error(e.into()))?;return Err(error(e.into()));
+            self.manager.vspace(id).map_err(error)?,
+        );
+        if let Err(e) = result {
+            allocator.release_slot(slot).map_err(|e| error(e.into()))?;
+            return Err(error(e.into()));
         }
-        self.manager.process_mut(id).map_err(error)?.exit_signal=Some(slot);Ok(())
+        self.manager.process_mut(id).map_err(error)?.fault_endpoint = Some(slot);
+        Ok(())
+    }
+    fn exit_signal(&mut self, notification: Cap<Notification>) -> Result<(), ProcessError> {
+        let id = self.control()?;
+        if self.manager.process(id).map_err(error)?.state != State::Created
+            || self
+                .manager
+                .process(id)
+                .map_err(error)?
+                .exit_signal
+                .is_some()
+        {
+            return Err(ProcessError::State);
+        }
+        if notification.as_ref().unwrapped_badge().is_some() {
+            return Err(ProcessError::Denied);
+        }
+        let mut allocator = self.manager.allocator(id).map_err(error)?;
+        let slot = allocator.reserve_slot().map_err(|e| error(e.into()))?;
+        let root = allocator.root();
+        if let Err(e) = root.absolute_cptr(sel4::CPtr::from_bits(slot as _)).copy(
+            &root.absolute_cptr(sel4::CPtr::from_bits(notification.as_ref().slot as _)),
+            sel4::CapRights::all(),
+        ) {
+            allocator.release_slot(slot).map_err(|e| error(e.into()))?;
+            return Err(error(e.into()));
+        }
+        self.manager.process_mut(id).map_err(error)?.exit_signal = Some(slot);
+        Ok(())
     }
     fn bind_notification(&mut self, notification: Cap<Notification>) -> Result<(), ProcessError> {
         let id = self.control()?;
-        if self.manager.process(id).map_err(error)?.state != State::Created { return Err(ProcessError::State); }
-        if notification.as_ref().unwrapped_badge().is_some() { return Err(ProcessError::Denied); }
-        self.manager.tcb(id).map_err(error)?.tcb_bind_notification(sel4::cap::Notification::from_bits(notification.as_ref().slot as _)).map_err(|e| error(e.into()))
+        if self.manager.process(id).map_err(error)?.state != State::Created {
+            return Err(ProcessError::State);
+        }
+        if notification.as_ref().unwrapped_badge().is_some() {
+            return Err(ProcessError::Denied);
+        }
+        self.manager
+            .tcb(id)
+            .map_err(error)?
+            .tcb_bind_notification(sel4::cap::Notification::from_bits(
+                notification.as_ref().slot as _,
+            ))
+            .map_err(|e| error(e.into()))
     }
     fn terminate(&mut self) -> Result<(), ProcessError> {
         let id = self.control()?;
-        if self.manager.process(id).map_err(error)?.state!=State::Stopping {
+        if self.manager.process(id).map_err(error)?.state != State::Stopping {
             self.manager.stop(id, Exit::Killed).map_err(error)?;
         }
         self.manager.finish(id).map_err(error)

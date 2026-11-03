@@ -2,6 +2,7 @@
 #![no_main]
 use horn_devmgr::protocol::*;
 use horn_ipc::*;
+use horn_supervisor::protocol::ProcessLifecycleClient as _;
 horn_runtime::task!(main);
 fn main(mut ctx: horn_runtime::Context) -> ! {
     let mut io = ctx.transport().unwrap();
@@ -32,13 +33,13 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         ))
         .unwrap();
     assert!(matches!(
-        DeviceAssignmentReceiver::from_cap(ctx.cap("devmgr.observer").unwrap()).claim(&mut io, 33),
+        ctx.interface::<DeviceAssignment>("devmgr.observer")
+            .unwrap()
+            .claim(&mut io, 33),
         Err(CallError::Remote(DeviceError::Denied))
     ));
     sel4::debug_println!("DEVMGR_AUTH_PASS observer_rebadge=false");
-    let client = ctx
-        .interface::<DeviceObserverReceiver>("devmgr.observer")
-        .unwrap();
+    let client = ctx.interface::<DeviceObserver>("devmgr.observer").unwrap();
     let status = client.status(&mut io).unwrap();
     assert_eq!(status.iommu, IommuState::NotInitialized);
     assert!(status.pci_devices >= 5);
@@ -78,7 +79,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     );
     ctx.notify_ready().unwrap();
     let _ = ctx
-        .interface::<horn_supervisor::protocol::ProcessLifecycleReceiver>("horn.lifecycle")
+        .interface::<horn_supervisor::protocol::ProcessLifecycle>("horn.lifecycle")
         .unwrap()
         .exit(&mut io, 0);
     panic!("exit returned");

@@ -24,7 +24,7 @@ struct Request<'a> {
     service: &'a mut Service,
     badge: u64,
 }
-impl LogFactory for Request<'_> {
+impl LogFactoryServer for Request<'_> {
     fn create_sink(&mut self, name: List<u8, 64>) -> Result<Cap<LogSinkObjectTag>, LogError> {
         if self.badge != FACTORY {
             return Err(LogError::Denied);
@@ -76,7 +76,7 @@ impl LogFactory for Request<'_> {
         Ok(Cap::from_ref(exported.as_ref()))
     }
 }
-impl LogSink for Request<'_> {
+impl LogSinkServer for Request<'_> {
     fn write(&mut self, record: LogRecord) -> Result<(), LogError> {
         let index = self.badge.checked_sub(FIRST_SINK).ok_or(LogError::Denied)?;
         let binding = self

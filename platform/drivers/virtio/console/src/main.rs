@@ -38,7 +38,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     #[cfg(feature = "dma-probe")]
     hal::with(|state| {
         let _now = ctx
-            .interface::<ClockInterfaceReceiver>("devmgr.clock")
+            .interface::<ClockInterface>("devmgr.clock")
             .unwrap()
             .now(state.session.transport())
             .expect("named monotonic clock");
@@ -80,7 +80,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
                 .cap::<VmAddressSpaceObjectTag>("horn.address-space")
                 .unwrap();
             assert!(matches!(
-                DeviceMmioReceiver::from_cap(ctx.cap("devmgr.device").unwrap())
+                DeviceMmio::from_ref(ctx.cap("devmgr.device").unwrap().as_ref())
                     .close(state.session.transport(),),
                 Err(CallError::Remote(DeviceError::Denied))
             ));
@@ -90,30 +90,19 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
                 .control()
                 .map_bar_window(state.session.transport(), bar, 0, 4096, &space)
                 .unwrap();
-            unopened
-                .interface::<DeviceMmioReceiver>()
-                .close(state.session.transport())
-                .unwrap();
+            unopened.close(state.session.transport()).unwrap();
             drop(unopened);
             let lease = state
                 .session
                 .control()
                 .map_bar_window(state.session.transport(), bar, 0, 4096, &space)
                 .unwrap();
-            let memory = lease
-                .interface::<DeviceMmioReceiver>()
-                .memory(state.session.transport())
-                .unwrap();
+            let memory = lease.memory(state.session.transport()).unwrap();
             assert!(matches!(
-                lease
-                    .interface::<DeviceMmioReceiver>()
-                    .memory(state.session.transport()),
+                lease.memory(state.session.transport()),
                 Err(CallError::Remote(DeviceError::NotFound))
             ));
-            lease
-                .interface::<DeviceMmioReceiver>()
-                .close(state.session.transport())
-                .unwrap();
+            lease.close(state.session.transport()).unwrap();
             drop(memory);
             drop(lease);
             let mut windows = alloc::vec::Vec::new();

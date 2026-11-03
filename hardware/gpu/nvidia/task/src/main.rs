@@ -70,7 +70,7 @@ struct Reader<'a> {
     snapshot: &'a p::ProbeSnapshot,
     stopped: bool,
 }
-impl p::NvidiaProbe for Reader<'_> {
+impl p::NvidiaProbeServer for Reader<'_> {
     fn snapshot(&mut self) -> Result<p::ProbeSnapshot, p::ProbeError> {
         if self.stopped {
             Err(p::ProbeError::Stopped)

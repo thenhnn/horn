@@ -183,8 +183,7 @@ mod tests {
     #[test]
     fn receivers_use_the_wire_and_error_paths() {
         let target = cap::<ProbeTag>(CapMode::COPY, Rights::WRITE);
-        let receiver = ProbeReceiver::from_cap(target);
-        assert_eq!(receiver.as_cap(), target);
+        let receiver = Probe::from_ref(target.as_ref());
         let copied_view = receiver;
         let mut io = ReplyTransport::new(ProbeCheckReply { value: Ok(()) });
         assert_eq!(receiver.check(&mut io), Ok(()));
@@ -226,7 +225,7 @@ mod tests {
 
     #[test]
     fn result_receivers_separate_application_and_rpc_errors() {
-        let receiver = ProbeReceiver::from_cap(Cap::default());
+        let receiver = Probe::default();
         for value in [
             Ok(Event::Data(payload())),
             Err(Event::Number(7)),
@@ -307,7 +306,7 @@ mod tests {
         let mut transport = ReplyTransport::new(ProbeOutcomesReply { value });
         assert_eq!(&transport.bytes[..4], &1u32.to_le_bytes());
         assert_eq!(transport.caps.0.len(), 2);
-        let receiver = ProbeReceiver::from_cap(Cap::default());
+        let receiver = Probe::default();
         assert_eq!(
             receiver
                 .outcomes(&mut transport, Outcomes::default())
@@ -319,7 +318,7 @@ mod tests {
 
     #[test]
     fn decoded_results_own_caps_on_success_and_remote_error() {
-        let receiver = ProbeReceiver::from_cap(Cap::default());
+        let receiver = Probe::default();
         let mut io = ReplyTransport::new(ProbeEchoReply {
             value: Event::Link(cap(CapMode::MOVE, Rights::WRITE)),
         });
@@ -380,7 +379,7 @@ mod tests {
 
     #[test]
     fn finish_failure_retires_an_otherwise_decoded_reply() {
-        let receiver = ProbeReceiver::from_cap(Cap::default());
+        let receiver = Probe::default();
         let mut io = ReplyTransport::new(ProbeEchoReply {
             value: Event::Signal(cap(CapMode::COPY, Rights::ALL)),
         });

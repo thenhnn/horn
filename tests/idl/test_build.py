@@ -135,7 +135,6 @@ def test_owned_interface_lifetimes_compile(tmp_path):
         "reject_copy": "E0382",
         "reject_send": "E0277",
         "reject_borrowed_send": "E0277",
-        "reject_erase": "E0599",
     }
     dependency = json.dumps(str(ROOT / "platform/runtime/rust/horn-ipc"))
     features = "\n".join(f"{name} = []" for name in failures)

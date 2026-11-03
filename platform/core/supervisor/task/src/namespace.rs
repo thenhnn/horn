@@ -179,7 +179,7 @@ fn text<const N: usize>(s: &str) -> List<u8, N> {
     result.data[..s.len()].copy_from_slice(s.as_bytes());
     result
 }
-impl r::RegistryDirectory for DirectoryCaller<'_> {
+impl r::RegistryDirectoryServer for DirectoryCaller<'_> {
     fn list(&mut self, after: u64, recursive: bool) -> Result<r::RegistryPage, r::RegistryError> {
         let scope = self.manager.namespace.grants[self.index()?]
             .as_ref()

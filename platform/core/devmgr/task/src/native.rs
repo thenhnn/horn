@@ -16,7 +16,7 @@ pub struct Mapping {
 pub struct Io {
     pub ctx: horn_runtime::Context,
     pub boot: horn_supervisor::client::Bootstrap,
-    pub platform: DevicePlatformReceiver,
+    pub platform: DevicePlatform,
     pub transport: Sel4Transport<Sel4CapSpace>,
     pub registers: Option<Mapping>,
     pub base: u64,
@@ -31,7 +31,7 @@ fn vm_error(error: CallError<VmError>) -> vtd::Error {
 impl Io {
     pub fn new(
         transport: Sel4Transport<Sel4CapSpace>,
-        platform: DevicePlatformReceiver,
+        platform: DevicePlatform,
         ctx: horn_runtime::Context,
     ) -> Self {
         let boot = horn_supervisor::client::Bootstrap {
@@ -65,7 +65,7 @@ impl Io {
     ) -> vtd::Result<Mapping> {
         let region = self
             .ctx
-            .interface::<VmAddressSpaceReceiver>("horn.address-space")
+            .interface::<VmAddressSpace>("horn.address-space")
             .unwrap()
             .reserve(
                 &mut self.transport,
@@ -78,11 +78,7 @@ impl Io {
                 },
             )
             .map_err(vm_error)?;
-        let address = region
-            .interface::<VmRegionReceiver>()
-            .info(&mut self.transport)
-            .map_err(vm_error)?
-            .address as usize;
+        let address = region.info(&mut self.transport).map_err(vm_error)?.address as usize;
         let mut updates = List::default();
         updates.len = 2;
         updates.data[0] = VmUpdate::Prepare(VmRange {
@@ -96,7 +92,6 @@ impl Io {
             protection: VmProtection(3),
         });
         region
-            .interface::<VmRegionReceiver>()
             .apply(
                 &mut self.transport,
                 Some(Cap::from_ref(memory.cap_ref())),
@@ -119,12 +114,10 @@ impl Io {
         token: u64,
     ) {
         region
-            .interface::<VmRegionReceiver>()
             .destroy(&mut self.transport)
             .expect("internal MMIO CPU unmap");
         drop(region);
         memory
-            .interface::<VmMemoryReceiver>()
             .close(&mut self.transport)
             .expect("internal MMIO memory close");
         drop(memory);
@@ -214,7 +207,7 @@ unsafe impl Hardware for Io {
             .map_err(|_| vtd::Error::Exhausted)?;
         let memory = self
             .ctx
-            .interface::<VmFactoryReceiver>("horn.vm")
+            .interface::<VmFactory>("horn.vm")
             .unwrap()
             .allocate(
                 &mut self.transport,

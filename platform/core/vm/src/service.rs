@@ -1134,7 +1134,7 @@ struct Caller<'a> {
     service: &'a mut Service,
     badge: ::sel4::Word,
 }
-impl VmFactory for Caller<'_> {
+impl VmFactoryServer for Caller<'_> {
     fn info(&mut self) -> Result<VmInfo, VmError> {
         if self.badge != self.service.badges[FACTORY] {
             return Err(VmError::Denied);
@@ -1226,7 +1226,7 @@ impl VmFactory for Caller<'_> {
         Err(VmError::Unsupported)
     }
 }
-impl VmUntyped for Caller<'_> {
+impl VmUntypedServer for Caller<'_> {
     fn capability(&mut self) -> Result<VmUntypedGrant, VmError> {
         let index = self.service.delegation_index(self.badge)?;
         let lease = self.service.delegations[index]
@@ -1252,7 +1252,7 @@ impl VmUntyped for Caller<'_> {
         self.service.close_delegation(index)
     }
 }
-impl VmMemory for Caller<'_> {
+impl VmMemoryServer for Caller<'_> {
     fn info(&mut self) -> Result<VmMemoryInfo, VmError> {
         let index = self.service.memory_index(self.badge)?;
         let memory = self.service.memory(index);
@@ -1281,7 +1281,7 @@ impl VmMemory for Caller<'_> {
         self.service.close(index)
     }
 }
-impl VmAddressSpace for Caller<'_> {
+impl VmAddressSpaceServer for Caller<'_> {
     fn reserve(&mut self, request: VmRegionRequest) -> Result<Cap<VmRegionObjectTag>, VmError> {
         if self.badge != self.service.badges[SPACE] {
             return Err(VmError::Denied);
@@ -1295,7 +1295,7 @@ impl VmAddressSpace for Caller<'_> {
         Err(VmError::Busy)
     }
 }
-impl VmRegion for Caller<'_> {
+impl VmRegionServer for Caller<'_> {
     fn info(&mut self) -> Result<VmRegionInfo, VmError> {
         let index = self.service.region_index(self.badge)?;
         let region = self.service.region(index);
@@ -1328,7 +1328,7 @@ impl VmRegion for Caller<'_> {
         self.service.destroy_region(region)
     }
 }
-impl VmPager for Caller<'_> {
+impl VmPagerServer for Caller<'_> {
     fn drain(&mut self) -> Result<Parcel<List<VmFault, 16>>, VmError> {
         Err(VmError::Denied)
     }

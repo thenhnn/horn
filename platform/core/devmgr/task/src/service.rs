@@ -112,7 +112,7 @@ impl Service {
     /// Trusted in-process driver policy owns this grant; wire IDs alone never
     /// authorize close. Keep the private badge only after a successful claim.
     pub fn claim_driver(&mut self, id: u64) -> Result<(Cap<DeviceObjectTag>, u64), DeviceError> {
-        let grant = DeviceAssignment::claim(
+        let grant = DeviceAssignmentServer::claim(
             &mut Caller {
                 service: self,
                 badge: horn_devmgr::ASSIGNMENT_BADGE,
@@ -131,7 +131,7 @@ impl Service {
         Ok(())
     }
     pub fn revoke_driver(&mut self, badge: u64) -> Result<(), DeviceError> {
-        DeviceControl::close(&mut Caller {
+        DeviceControlServer::close(&mut Caller {
             service: self,
             badge,
         })
@@ -624,7 +624,7 @@ impl Service {
         Ok(populated + length)
     }
 }
-impl ClockSource for Caller<'_> {
+impl ClockSourceServer for Caller<'_> {
     fn source_now(&mut self) -> Result<u64, ClockError> {
         if self.badge != horn_devmgr::CLOCK_SOURCE_BADGE {
             return Err(ClockError::Denied);
@@ -658,7 +658,7 @@ impl ClockSource for Caller<'_> {
         Ok(())
     }
 }
-impl DeviceObserver for Caller<'_> {
+impl DeviceObserverServer for Caller<'_> {
     fn status(&mut self) -> Result<DeviceStatus, DeviceError> {
         self.service.inventory.status()
     }
@@ -669,7 +669,7 @@ impl DeviceObserver for Caller<'_> {
         self.service.inventory.info(id)
     }
 }
-impl DeviceAssignment for Caller<'_> {
+impl DeviceAssignmentServer for Caller<'_> {
     fn claim(&mut self, id: u64) -> Result<Cap<DeviceObjectTag>, DeviceError> {
         if self.badge != horn_devmgr::ASSIGNMENT_BADGE
             || !matches!(self.service.hardware, Hardware::Remapping(_))
@@ -806,7 +806,7 @@ impl DeviceAssignment for Caller<'_> {
         Ok(Cap::from_ref(exported))
     }
 }
-impl DeviceControl for Caller<'_> {
+impl DeviceControlServer for Caller<'_> {
     fn resources(&mut self) -> Result<PciResources, DeviceError> {
         let d = self.service.device(self.badge)?;
         let device = &self.service.devices[d];
@@ -1050,12 +1050,11 @@ impl DeviceControl for Caller<'_> {
         let sid = self.service.devices[d].sid;
         let domain = self.service.devices[d].domain;
         let io = self.service.io();
-        let factory = io.ctx.interface::<VmFactoryReceiver>("horn.vm").unwrap();
+        let factory = io.ctx.interface::<VmFactory>("horn.vm").unwrap();
         let lease = factory
             .delegate(&mut io.transport, 12)
             .expect("IRQ Untyped");
         let grant = lease
-            .interface::<VmUntypedReceiver>()
             .capability(&mut io.transport)
             .expect("IRQ Untyped cap");
         let untyped = grant.capability;
@@ -1238,7 +1237,6 @@ impl DeviceControl for Caller<'_> {
             self.service.retire(irq.notification);
             if let Some((lease, untyped)) = irq.backing {
                 lease
-                    .interface::<VmUntypedReceiver>()
                     .close(&mut self.service.io().transport)
                     .expect("notification backing revoke");
                 drop(untyped);
@@ -1281,7 +1279,7 @@ impl DeviceControl for Caller<'_> {
         Ok(())
     }
 }
-impl DeviceMmio for Caller<'_> {
+impl DeviceMmioServer for Caller<'_> {
     fn memory(&mut self) -> Result<Cap<VmMemoryObjectTag>, DeviceError> {
         let (device, index) = self.service.mmio_index(self.badge)?;
         self.service.devices[device].mmios[index]
@@ -1297,7 +1295,7 @@ impl DeviceMmio for Caller<'_> {
         Ok(())
     }
 }
-impl DeviceMapping for Caller<'_> {
+impl DeviceMappingServer for Caller<'_> {
     fn append(
         &mut self,
         memory: Cap<VmMemoryObjectTag>,

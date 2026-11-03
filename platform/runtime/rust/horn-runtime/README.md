@@ -34,9 +34,12 @@ can use `OwnedCap` RAII; generated RPC replies already return owning capabilitie
 and recursive owning records/enums. Initial grants are not adoptable owning handles. See
 `docs/capability-ownership.md`.
 
-`interface::<I>(name)` returns a generated non-owning RPC interface view:
+`interface::<I>(name)` returns a non-owning typed capability. Import the client
+trait to call it; owned RPC results support direct calls too:
 
 ```rust
+use horn_clock::ClockInterfaceClient;
+
 let clock = ctx.interface::<horn_clock::Clock>("clock")?;
 let now = clock.now(&mut io)?;
 let events = ctx.cap::<horn_ipc::Notification>("events")?;

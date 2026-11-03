@@ -6,6 +6,7 @@ mod catalog;
 mod namespace;
 use alloc::vec::Vec;
 use horn_ipc::*;
+use horn_log::protocol::LogFactoryClient;
 use horn_supervisor::{
     client::{Bootstrap, Io, copy, mint},
     protocol::*,
@@ -73,7 +74,6 @@ impl Manager {
             .process
             .as_ref()
             .unwrap()
-            .interface::<ProcessControlReceiver>()
             .info(&mut self.io)
             .unwrap();
         if info.state != ProcessState::Stopping {
@@ -81,7 +81,6 @@ impl Manager {
                 .process
                 .as_ref()
                 .unwrap()
-                .interface::<ProcessControlReceiver>()
                 .suspend(&mut self.io)
                 .expect("stop execution, retain VM");
         }
@@ -141,7 +140,6 @@ impl Manager {
                     .process
                     .as_ref()
                     .unwrap()
-                    .interface::<ProcessControlReceiver>()
                     .info(&mut self.io)
                     .unwrap()
                     .state
@@ -219,7 +217,7 @@ impl Caller<'_> {
         Ok(copy(&mut self.manager.io, self.manager.cspace, &cap))
     }
 }
-impl SupervisorFactory for Caller<'_> {
+impl SupervisorFactoryServer for Caller<'_> {
     fn core_log_sink(&mut self) -> Result<Cap<LogSinkObjectTag>, SupervisorError> {
         if self.badge != FACTORY_BADGE {
             return Err(SupervisorError::Denied);
@@ -243,7 +241,7 @@ impl SupervisorFactory for Caller<'_> {
         let mut name = List::default();
         name.len = source.len() as _;
         name.data[..source.len()].copy_from_slice(source);
-        horn_log::protocol::LogFactoryReceiver::from_cap(Cap::from_ref(factory.as_ref()))
+        horn_log::protocol::LogFactory::from_ref(factory.as_ref())
             .create_sink(&mut self.manager.io, name)
             .map(|sink| Cap::from_ref(sink.into_raw().as_ref()))
             .map_err(|_| SupervisorError::Backend)
@@ -268,7 +266,7 @@ impl SupervisorFactory for Caller<'_> {
         let process = self
             .manager
             .ctx
-            .interface::<ProcessFactoryReceiver>("supervisor.factory")
+            .interface::<ProcessFactory>("supervisor.factory")
             .unwrap()
             .prepare(&mut self.manager.io, &elf, request, bootstrap)
             .map_err(|e| match e {
@@ -294,7 +292,6 @@ impl SupervisorFactory for Caller<'_> {
             Rights::ALL,
         );
         process
-            .interface::<ProcessControlReceiver>()
             .fault_handler(
                 &mut self.manager.io,
                 &self.manager.boot.cap(self.manager.boot.cnode),
@@ -332,7 +329,7 @@ impl SupervisorFactory for Caller<'_> {
         Ok(Cap::from_ref(exported.as_ref()))
     }
 }
-impl SupervisorJob for Caller<'_> {
+impl SupervisorJobServer for Caller<'_> {
     fn publish(
         &mut self,
         path: List<u8, 96>,
@@ -406,7 +403,6 @@ impl SupervisorJob for Caller<'_> {
             .process
             .as_ref()
             .unwrap()
-            .interface::<ProcessControlReceiver>()
             .install(
                 &mut self.manager.io,
                 &self.manager.boot.cap(self.manager.boot.cnode),
@@ -510,11 +506,10 @@ impl SupervisorJob for Caller<'_> {
             .process
             .as_ref()
             .unwrap()
-            .interface::<ProcessControlReceiver>()
             .info(&mut self.manager.io)
             .map_err(|_| SupervisorError::Invalid)?
             .name;
-        horn_log::protocol::LogFactoryReceiver::from_cap(Cap::from_ref(factory.as_ref()))
+        horn_log::protocol::LogFactory::from_ref(factory.as_ref())
             .create_sink(&mut self.manager.io, name)
             .map(|sink| Cap::from_ref(sink.into_raw().as_ref()))
             .map_err(|_| SupervisorError::Busy)
@@ -530,7 +525,6 @@ impl SupervisorJob for Caller<'_> {
             .process
             .as_ref()
             .unwrap()
-            .interface::<ProcessControlReceiver>()
             .start(&mut self.manager.io)
             .expect("start process");
         Ok(())
@@ -556,7 +550,6 @@ impl SupervisorJob for Caller<'_> {
             .process
             .as_ref()
             .unwrap()
-            .interface::<ProcessControlReceiver>()
             .terminate(&mut self.manager.io)
             .expect("owner ACK before backing release");
         #[cfg(feature = "boot-tests")]
@@ -565,7 +558,6 @@ impl SupervisorJob for Caller<'_> {
                 .process
                 .as_ref()
                 .unwrap()
-                .interface::<ProcessControlReceiver>()
                 .info(&mut self.manager.io)
                 .unwrap();
             assert_eq!(info.state, ProcessState::Exited);
@@ -576,7 +568,6 @@ impl SupervisorJob for Caller<'_> {
             .process
             .as_ref()
             .unwrap()
-            .interface::<ProcessControlReceiver>()
             .close(&mut self.manager.io)
             .unwrap();
         drop(self.manager.jobs[i].process.take());
@@ -595,7 +586,7 @@ impl SupervisorJob for Caller<'_> {
         Ok(())
     }
 }
-impl SupervisorRuntime for Caller<'_> {
+impl SupervisorRuntimeServer for Caller<'_> {
     fn status(&mut self) -> Result<ServiceStatus, SupervisorError> {
         let i = self.runtime()?;
         Ok(self.manager.jobs[i].lifecycle.state)
@@ -632,7 +623,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
             .slot,
     };
     let ticks = ctx
-        .interface::<SystemControlReceiver>("supervisor.system")
+        .interface::<SystemControl>("supervisor.system")
         .unwrap()
         .ticks_per_us(&mut io)
         .unwrap();
@@ -644,7 +635,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         CHILD_EXIT,
         Rights::WRITE,
     );
-    ctx.interface::<ProcessFactoryReceiver>("supervisor.factory")
+    ctx.interface::<ProcessFactory>("supervisor.factory")
         .unwrap()
         .watch(&mut io, &exits)
         .unwrap();
@@ -675,7 +666,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     let mut name = List::default();
     name.len = 10;
     name.data[..10].copy_from_slice(b"supervisor");
-    let sink = horn_log::protocol::LogFactoryReceiver::from_cap(Cap::from_ref(factory.as_ref()))
+    let sink = horn_log::protocol::LogFactory::from_ref(factory.as_ref())
         .create_sink(&mut log_io, name)
         .unwrap();
     // Dedicated logger transport, initialized IPC/heap, process-lifetime sink.
@@ -706,7 +697,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
             manager.namespace.tree.ready(0);
             manager
                 .ctx
-                .interface::<SystemControlReceiver>("supervisor.system")
+                .interface::<SystemControl>("supervisor.system")
                 .unwrap()
                 .ready(&mut manager.io)
                 .unwrap();

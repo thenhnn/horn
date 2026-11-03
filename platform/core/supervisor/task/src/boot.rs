@@ -13,7 +13,7 @@ pub fn start(manager: &mut Manager) {
     launch.ram_limit = definition.ram;
     let process = manager
         .ctx
-        .interface::<ProcessFactoryReceiver>("supervisor.factory")
+        .interface::<ProcessFactory>("supervisor.factory")
         .unwrap()
         .prepare(&mut *io, &image, launch, definition.bootstrap.clone())
         .unwrap();
@@ -84,7 +84,7 @@ pub fn start(manager: &mut Manager) {
         })
         .collect();
     boot.context(io, &process, &mut entries);
-    let control = process.interface::<ProcessControlReceiver>();
+    let control = &process;
     control
         .fault_handler(
             io,

@@ -15,6 +15,7 @@ mod protocol {
 }
 
 use horn_ipc::*;
+use horn_procd::protocol::ProcessLifecycleClient;
 use protocol::*;
 
 struct CounterHandler {
@@ -22,7 +23,7 @@ struct CounterHandler {
     wake: Cap<Notification>,
 }
 
-impl Counter for CounterHandler {
+impl CounterServer for CounterHandler {
     fn add(&mut self, amount: u64) -> CounterValue {
         self.value = self.value.wrapping_add(amount);
         CounterValue {
@@ -59,7 +60,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     launch_probe::run(&ctx, &mut io);
     vm_probe::run(&mut ctx, &mut io);
     let process = ctx
-        .interface::<horn_procd::protocol::ProcessLifecycleReceiver>("horn.lifecycle")
+        .interface::<horn_procd::protocol::ProcessLifecycle>("horn.lifecycle")
         .unwrap();
     assert!(process.info(&mut io).unwrap().charged_bytes > 0);
     process.exit(&mut io, 0).unwrap();

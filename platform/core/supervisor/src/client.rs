@@ -23,7 +23,7 @@ impl Bootstrap {
         let mut bytes = alloc::vec![0; size];
         libhorn::bindings::encode(entries, &mut bytes).unwrap();
         let descriptor = self.upload(io, &bytes);
-        ProcessControlReceiver::from_cap(Cap::from_ref(process.cap_ref()))
+        ProcessControl::from_ref(process.cap_ref())
             .startup_context(&mut *io, &descriptor, size as u64)
             .unwrap();
         close_image(io, descriptor);
@@ -47,7 +47,7 @@ impl Bootstrap {
         badge: Option<u64>,
         rights: Rights,
     ) {
-        ProcessControlReceiver::from_cap(Cap::from_ref(process.cap_ref()))
+        ProcessControl::from_ref(process.cap_ref())
             .install(
                 io,
                 &self.cap(self.cnode),
@@ -62,10 +62,12 @@ impl Bootstrap {
     pub fn upload(self, io: &mut Io, bytes: &[u8]) -> OwnedCap<VmMemoryObjectTag> {
         assert!(!bytes.is_empty());
         let length = bytes.len().next_multiple_of(4096);
-        let memory = VmFactoryReceiver::from_cap(self.cap(self.vm))
+        let memory = self
+            .cap::<VmFactoryTag>(self.vm)
             .allocate(&mut *io, length as _, VmBacking::Resident, VmProtection(3))
             .unwrap();
-        let region = VmAddressSpaceReceiver::from_cap(self.cap(self.space))
+        let region = self
+            .cap::<VmAddressSpaceTag>(self.space)
             .reserve(
                 &mut *io,
                 VmRegionRequest {
@@ -77,11 +79,7 @@ impl Bootstrap {
                 },
             )
             .unwrap();
-        let address = region
-            .interface::<VmRegionReceiver>()
-            .info(&mut *io)
-            .unwrap()
-            .address;
+        let address = region.info(&mut *io).unwrap().address;
         let mut updates = List::default();
         updates.len = 2;
         updates.data[0] = VmUpdate::Prepare(VmRange {
@@ -95,7 +93,6 @@ impl Bootstrap {
             protection: VmProtection(3),
         });
         region
-            .interface::<VmRegionReceiver>()
             .apply(
                 &mut *io,
                 Some(Cap::from_ref(memory.cap_ref())),
@@ -105,20 +102,14 @@ impl Bootstrap {
         unsafe {
             core::ptr::copy_nonoverlapping(bytes.as_ptr(), address as *mut u8, bytes.len());
         }
-        region
-            .interface::<VmRegionReceiver>()
-            .destroy(&mut *io)
-            .unwrap();
+        region.destroy(&mut *io).unwrap();
         drop(region);
-        memory
-            .interface::<VmMemoryReceiver>()
-            .add_seals(&mut *io, VmSeals::WRITE)
-            .unwrap();
+        memory.add_seals(&mut *io, VmSeals::WRITE).unwrap();
         memory
     }
 }
 pub fn close_image(io: &mut Io, memory: OwnedCap<VmMemoryObjectTag>) {
-    let result = memory.interface::<VmMemoryReceiver>().close(&mut *io);
+    let result = memory.close(&mut *io);
     drop(memory);
     // Retire the local slot even if reporting failure aborts instead of unwinding.
     result.unwrap();

@@ -60,7 +60,9 @@ Initial named grants remain process-lifetime non-owning views, not owned replies
 ## Borrowed views
 
 `owner.borrow()` returns `BorrowedCap<'_, T>`. `owner.interface::<Protocol>()`
-returns a generated receiver specialized to a borrowed capability. Its lifetime
+returns `BorrowedCap<'_, Protocol::Tag>` for explicit protocol selection.
+Typed raw, owned and borrowed handles implement the generated `FooClient`
+traits directly, so ordinary object calls need no interface view. Its lifetime
 is tied to the owner, not to a transport. Views may coexist and use different
 explicit transports, but cannot survive moving/dropping the owner.
 
@@ -70,9 +72,8 @@ raw caps, owners and borrowed caps can be passed without relinquishing ownership
 Explicit `owner.borrow().cast()` selects a different marker while retaining the
 borrow, including across crates which independently generate the same IDL tag.
 
-Existing raw receivers and Context's process-lifetime initial views remain
-available. Borrowed receivers do not implement the raw `RpcInterface::as_cap`
-bridge: copying a borrowed receiver does not erase its lifetime. Explicit
+Context's process-lifetime initial handles are non-owning. Copying a borrowed
+handle does not erase its lifetime; there is no receiver-to-raw conversion API. Explicit
 low-level `CapView::cap_ref` access does not retain ownership and must not be
 used after deletion/transfer. An interface cast is not a remote type check or
 an authority restriction. Owners and borrowed views are not Send/Sync; this
@@ -108,6 +109,6 @@ work; deleting a client capability does not notify timerd of last-reference loss
 Ownership/drop, raw handoff, failed ownership import and nested/partial reply
 decode unit sources are compile-only. The IDL ownership fixture compiles owning
 reply types and rejects outliving the owner, use after move, cross-thread
-owner/view transfer and lifetime erasure through as_cap. Generated Rust/C checks
+owner/view transfer. Generated Rust/C checks
 and pc-dev deployment builds cover consumers; Python generator tests run.
 No Rust test binaries, QEMU or NVIDIA hardware are run by this validation.

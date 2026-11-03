@@ -4,7 +4,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 use horn_ipc::*;
-use protocol::{LogSinkReceiver, LogSinkTag};
+use protocol::{LogSink, LogSinkClient, LogSinkTag};
 
 struct Client {
     io: Sel4Transport<Sel4CapSpace>,
@@ -64,7 +64,7 @@ pub fn emit(level: log::Level, target: &str, args: fmt::Arguments<'_>) -> Result
         .as_mut()
         .ok_or(Error::Unavailable)?;
     let record = record(level, target, args)?;
-    LogSinkReceiver::from_cap(Cap::from_ref(client.sink.as_ref()))
+    LogSink::from_ref(client.sink.as_ref())
         .write(&mut client.io, record)
         .map_err(Error::Rpc)
 }

@@ -235,7 +235,7 @@ impl Platform {
         );
     }
 }
-impl DevicePlatform for Platform {
+impl DevicePlatformServer for Platform {
     fn rsdp(&mut self) -> Result<List<u8, 36>, DeviceError> {
         Ok(self.rsdp.clone())
     }

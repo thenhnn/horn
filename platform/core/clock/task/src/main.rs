@@ -10,11 +10,12 @@ use horn_clock::{
     x86_64::{TscClockPage, TscTimeManager, cycles, invariant_tsc},
 };
 use horn_ipc::*;
+use horn_supervisor::protocol::ProcessLifecycleClient;
 horn_runtime::task!(main);
 
 type Io = Sel4Transport<Sel4CapSpace>;
 fn hardware_now(io: &mut Io, ctx: &horn_runtime::Context) -> u64 {
-    ctx.interface::<ClockSourceReceiver>("source")
+    ctx.interface::<ClockSource>("source")
         .unwrap()
         .source_now(io)
         .unwrap()
@@ -56,7 +57,7 @@ impl Service {
         if next != self.programmed {
             let hardware = hardware_now(&mut self.io, &self.ctx);
             let now = self.now();
-            let source = self.ctx.interface::<ClockSourceReceiver>("source").unwrap();
+            let source = self.ctx.interface::<ClockSource>("source").unwrap();
             if let Some(deadline) = next {
                 source
                     .source_arm(
@@ -85,7 +86,7 @@ impl Caller<'_> {
         Ok(i)
     }
 }
-impl ClockInterface for Caller<'_> {
+impl ClockInterfaceServer for Caller<'_> {
     fn now(&mut self) -> Result<u64, ClockError> {
         if self.badge != 16 {
             return Err(ClockError::Denied);
@@ -131,7 +132,7 @@ impl ClockInterface for Caller<'_> {
         Ok(Cap::from_ref(exported.as_ref()))
     }
 }
-impl AlarmInterface for Caller<'_> {
+impl AlarmInterfaceServer for Caller<'_> {
     fn arm(&mut self, deadline_us: u64, signal: Cap<Notification>) -> Result<(), ClockError> {
         let i = self.index()?;
         if signal.as_ref().unwrapped_badge().is_some() {
@@ -156,13 +157,13 @@ impl AlarmInterface for Caller<'_> {
 fn main(mut ctx: horn_runtime::Context) -> ! {
     let mut io = ctx.transport().unwrap();
     let placement = ctx
-        .interface::<horn_supervisor::protocol::ProcessLifecycleReceiver>("horn.lifecycle")
+        .interface::<horn_supervisor::protocol::ProcessLifecycle>("horn.lifecycle")
         .unwrap()
         .placement(&mut io)
         .unwrap();
     let start = hardware_now(&mut io, &ctx);
     let t0 = cycles();
-    ctx.interface::<ClockSourceReceiver>("source")
+    ctx.interface::<ClockSource>("source")
         .unwrap()
         .source_arm(&mut io, start + 100_000, &ctx.cap("signal").unwrap())
         .unwrap();

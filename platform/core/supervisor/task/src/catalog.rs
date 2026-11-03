@@ -70,7 +70,7 @@ impl Manager {
         owner: u64,
     ) {
         for object in definition.objects {
-            let capability = ProcessControlReceiver::from_cap(Cap::from_ref(process.as_ref()))
+            let capability = ProcessControl::from_ref(process.as_ref())
                 .kernel_object(&mut self.io, object.kind.clone())
                 .unwrap();
             for binding in object.slots {
@@ -84,7 +84,7 @@ impl Manager {
                 );
             }
             if object.bind {
-                ProcessControlReceiver::from_cap(Cap::from_ref(process.as_ref()))
+                ProcessControl::from_ref(process.as_ref())
                     .bind_notification(&mut self.io, &Cap::from_ref(capability.cap_ref()))
                     .unwrap();
             }
@@ -220,11 +220,9 @@ impl Manager {
                     name.len = definition.name.len() as _;
                     name.data[..definition.name.len()].copy_from_slice(definition.name.as_bytes());
                     Some(
-                        horn_log::protocol::LogFactoryReceiver::from_cap(Cap::from_ref(
-                            endpoint.as_ref(),
-                        ))
-                        .create_sink(&mut self.io, name)
-                        .unwrap(),
+                        horn_log::protocol::LogFactory::from_ref(endpoint.as_ref())
+                            .create_sink(&mut self.io, name)
+                            .unwrap(),
                     )
                 } else {
                     None
@@ -277,7 +275,6 @@ impl Manager {
                 .process
                 .as_ref()
                 .unwrap()
-                .interface::<ProcessControlReceiver>()
                 .start(&mut self.io)
                 .unwrap();
             self.io.space.delete(owner.as_ref()).unwrap();

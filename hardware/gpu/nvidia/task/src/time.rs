@@ -23,7 +23,7 @@ impl Time {
                 .as_ref()
                 .slot as _,
         );
-        let alarm = ClockInterfaceReceiver::from_cap(clock)
+        let alarm = ClockInterface::from_ref(clock.as_ref())
             .alarm(session.transport())
             .map_err(|_| Error::Backend)?;
         Ok(Self {
@@ -36,7 +36,7 @@ impl Time {
         })
     }
     pub fn now(&mut self, session: &mut DeviceSession) -> Result<u64> {
-        let now = ClockInterfaceReceiver::from_cap(self.clock)
+        let now = ClockInterface::from_ref(self.clock.as_ref())
             .now(session.transport())
             .map_err(|_| Error::Backend)?;
         if now < self.last {
@@ -47,14 +47,12 @@ impl Time {
     }
     pub fn cancel(&mut self, session: &mut DeviceSession) -> Result<()> {
         self.alarm
-            .interface::<AlarmInterfaceReceiver>()
             .cancel(session.transport())
             .map_err(|_| Error::Backend)
     }
     /// Arm without waiting; the bound wake notification also wakes endpoint recv.
     pub fn arm(&mut self, session: &mut DeviceSession, deadline: u64) -> Result<()> {
         self.alarm
-            .interface::<AlarmInterfaceReceiver>()
             .arm(session.transport(), deadline, &self.signal)
             .map_err(|_| Error::Backend)
     }

@@ -14,13 +14,11 @@ use alloc::alloc::{alloc, dealloc, handle_alloc_error};
 use core::{alloc::Layout, cell::RefCell, mem, ptr::NonNull};
 use horn_devmgr::{Inventory, firmware, pci::ConfigRead, protocol::*};
 use horn_ipc::*;
+use horn_supervisor::protocol::SupervisorFactoryClient as _;
 horn_runtime::task!(main);
 
 #[derive(Clone)]
-struct Firmware<'a>(
-    DevicePlatformReceiver,
-    &'a RefCell<Sel4Transport<Sel4CapSpace>>,
-);
+struct Firmware<'a>(DevicePlatform, &'a RefCell<Sel4Transport<Sel4CapSpace>>);
 impl Firmware<'_> {
     fn read(&self, mut address: u64, bytes: &mut [u8]) {
         for chunk in bytes.chunks_mut(256) {
@@ -75,7 +73,7 @@ impl ConfigRead for Firmware<'_> {
 fn main(mut ctx: horn_runtime::Context) -> ! {
     let mut log_io = ctx.logging_transport().unwrap();
     let sink = ctx
-        .interface::<horn_supervisor::protocol::SupervisorFactoryReceiver>("supervisor")
+        .interface::<horn_supervisor::protocol::SupervisorFactory>("supervisor")
         .unwrap()
         .core_log_sink(&mut log_io)
         .unwrap();
@@ -86,7 +84,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     }
     let mut transport = ctx.transport().expect("devmgr transport");
     let mut inbox = ctx.inbox("service").unwrap();
-    let platform = ctx.interface::<DevicePlatformReceiver>("platform").unwrap();
+    let platform = ctx.interface::<DevicePlatform>("platform").unwrap();
     #[cfg(feature = "boot-tests")]
     boot_tests::allocator();
     let policy = platform.policy(&mut transport).expect("bootstrap policy");

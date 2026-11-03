@@ -86,12 +86,12 @@ pub fn probe_for_test() {
     use horn_supervisor::protocol::*;
     with(|state| {
         assert!(matches!(
-            SupervisorJobReceiver::from_cap(Cap::from_ref(state.supervisor.as_ref()))
+            SupervisorJob::from_ref(state.supervisor.as_ref())
                 .cleanup_done(state.session.transport(),),
             Err(CallError::Remote(SupervisorError::Denied))
         ));
         assert!(matches!(
-            SupervisorFactoryReceiver::from_cap(Cap::from_ref(state.supervisor.as_ref()))
+            SupervisorFactory::from_ref(state.supervisor.as_ref())
                 .core_log_sink(state.session.transport(),),
             Err(CallError::Remote(SupervisorError::Denied))
         ));
@@ -101,7 +101,7 @@ pub fn probe_for_test() {
 pub fn stop_for_test(force: bool) {
     use horn_supervisor::protocol::*;
     with(|state| {
-        let client = SupervisorRuntimeReceiver::from_cap(Cap::from_ref(state.supervisor.as_ref()));
+        let client = SupervisorRuntime::from_ref(state.supervisor.as_ref());
         // READY is asynchronous; request_stop is legal during startup as well.
         assert!(matches!(
             client.status(state.session.transport()).unwrap(),
@@ -122,10 +122,8 @@ pub fn stop_for_test(force: bool) {
 #[cfg(feature = "lifecycle-test")]
 pub fn exit_for_test() -> ! {
     with(|state| {
-        let _ = horn_procd::protocol::ProcessLifecycleReceiver::from_cap(Cap::from_ref(
-            state.lifecycle.as_ref(),
-        ))
-        .exit(state.session.transport(), 0);
+        let _ = horn_procd::protocol::ProcessLifecycle::from_ref(state.lifecycle.as_ref())
+            .exit(state.session.transport(), 0);
         panic!("exit unexpectedly returned");
     })
 }

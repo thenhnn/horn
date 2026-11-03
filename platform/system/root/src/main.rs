@@ -51,7 +51,7 @@ struct System<'a> {
     platform: &'a mut platform::Platform,
     reset: usize,
 }
-impl SystemControl for System<'_> {
+impl SystemControlServer for System<'_> {
     fn ticks_per_us(&mut self) -> Result<u64, SystemError> {
         Ok(self.platform.ticks_per_us())
     }

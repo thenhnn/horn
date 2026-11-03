@@ -49,8 +49,8 @@ impl Context {
     /// View a named initial capability as an IDL interface, without IPC or
     /// ownership transfer. The deployment contract supplies the interface type;
     /// this lookup is not a runtime server-type check.
-    pub fn interface<I: RpcInterface>(&self, name: &str) -> Result<I, Error> {
-        Ok(I::from_cap(self.cap::<I::Tag>(name)?))
+    pub fn interface<I: RpcInterface>(&self, name: &str) -> Result<Cap<I::Tag>, Error> {
+        self.cap::<I::Tag>(name)
     }
     pub fn cspace_bits(&self) -> u8 {
         self.record.header().cspace_bits as u8
@@ -245,20 +245,7 @@ mod interface_tests {
     use super::*;
     use libhorn::startup::{Entry, RuntimeConfig, encode};
 
-    struct View(Cap<Endpoint>);
-    impl RpcInterface for View {
-        type Tag = Endpoint;
-        type Borrowed<'a> = BorrowedCap<'a, Endpoint>;
-        fn from_borrowed<'a>(cap: BorrowedCap<'a, Endpoint>) -> Self::Borrowed<'a> {
-            cap
-        }
-        fn from_cap(cap: Cap<Endpoint>) -> Self {
-            Self(cap)
-        }
-        fn as_cap(&self) -> Cap<Endpoint> {
-            self.0
-        }
-    }
+    type View = Cap<Endpoint>;
 
     #[test]
     fn named_interface_is_an_initial_view_without_reserving_transport() {
@@ -292,8 +279,7 @@ mod interface_tests {
         let application = ctx.application.clone();
         let heap = ctx.heap.clone();
         let clock = ctx.interface::<View>("clock").unwrap();
-        assert_eq!(clock.as_cap(), ctx.cap::<Endpoint>("clock").unwrap());
-        assert_eq!(clock.as_cap().as_ref().slot, 3);
+        assert_eq!(clock.as_ref().slot, 3);
         assert_eq!(ctx.cap::<Notification>("events").unwrap().as_ref().slot, 4);
         assert!(matches!(
             ctx.interface::<View>("missing"),

@@ -56,7 +56,7 @@ impl Service {
         }
     }
 }
-impl EthernetInterface for Service {
+impl EthernetInterfaceServer for Service {
     fn info(&mut self) -> Result<EthernetInfo, NetError> {
         self.open()?;
         let mut mac = List::default();

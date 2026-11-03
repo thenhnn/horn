@@ -9,9 +9,7 @@ horn_runtime::task!(main);
 
 fn main(mut ctx: horn_runtime::Context) -> ! {
     let mut io = ctx.transport().unwrap();
-    let lifecycle = ctx
-        .interface::<ProcessLifecycleReceiver>("horn.lifecycle")
-        .unwrap();
+    let lifecycle = ctx.interface::<ProcessLifecycle>("horn.lifecycle").unwrap();
     assert!(lifecycle.info(&mut io).unwrap().charged_bytes > 0);
     sel4::debug_println!("LAUNCH_CHILD_PASS bootstrap=true");
     lifecycle.exit(&mut io, 7).unwrap();

@@ -313,7 +313,7 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
         Cap::<CounterTag>::from_ref(space.register(counter).unwrap().with_mode(CapMode::COPY));
     let recv = space.reserve_slot().unwrap();
     let mut transport = Sel4Transport::new(root, recv, space);
-    let client = CounterReceiver::from_cap(target);
+    let client = Counter::from_ref(target.as_ref());
     assert!(matches!(
         client.add(&mut transport, 0).unwrap().state,
         CounterStateOwned::Empty

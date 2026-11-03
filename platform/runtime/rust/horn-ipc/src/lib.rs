@@ -96,15 +96,14 @@ pub trait CapType {
     const KERNEL: &'static str;
 }
 
-/// A typed, non-owning RPC interface view over an existing capability.
-/// Constructing/copying a view does not copy a kernel capability, validate the
-/// server's interface, or close anything. Each call borrows its transport.
+/// Selects the capability marker for an explicit RPC protocol view.
+/// Views do not validate a remote interface, copy kernel capabilities, or retain
+/// a transport. Generated client traits provide the RPC methods.
 pub trait RpcInterface: Sized {
     type Tag: CapType;
-    type Borrowed<'a>;
-    fn from_borrowed<'a>(cap: BorrowedCap<'a, Self::Tag>) -> Self::Borrowed<'a>;
-    fn from_cap(cap: Cap<Self::Tag>) -> Self;
-    fn as_cap(&self) -> Cap<Self::Tag>;
+}
+impl<T: CapType> RpcInterface for Cap<T> {
+    type Tag = T;
 }
 
 macro_rules! kernel_cap {

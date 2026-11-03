@@ -5,7 +5,10 @@ extern crate alloc;
 mod ethernet;
 mod tcp;
 use alloc::vec;
-use horn_clock::{Alarm, Clock, DefaultTimeManager, DefaultTimePage, TimeManager};
+use horn_clock::{
+    AlarmInterfaceClient, Clock, ClockInterfaceClient, DefaultTimeManager, DefaultTimePage,
+    TimeManager,
+};
 use horn_ipc::*;
 use horn_net::protocol::*;
 use horn_vm::protocol as v;
@@ -14,6 +17,9 @@ use smoltcp::{
     socket::dhcpv4,
     time::Instant,
     wire::{EthernetAddress, IpCidr},
+};
+use v::{
+    VmAddressSpaceClient as _, VmFactoryClient as _, VmMemoryClient as _, VmRegionClient as _,
 };
 horn_runtime::task!(main);
 type Io = Sel4Transport<Sel4CapSpace>;
@@ -28,12 +34,12 @@ impl Time {
         let clock = ctx.interface::<Clock>("clock").unwrap();
         let page = DefaultTimePage::from(clock.calibration(io).unwrap());
         let memory = ctx
-            .interface::<v::VmFactoryReceiver>("horn.vm")
+            .interface::<v::VmFactory>("horn.vm")
             .unwrap()
             .allocate(&mut *io, 4096, v::VmBacking::Resident, v::VmProtection(3))
             .unwrap();
         let writable = ctx
-            .interface::<v::VmAddressSpaceReceiver>("horn.address-space")
+            .interface::<v::VmAddressSpace>("horn.address-space")
             .unwrap()
             .reserve(
                 &mut *io,
@@ -46,11 +52,7 @@ impl Time {
                 },
             )
             .unwrap();
-        let address = writable
-            .interface::<v::VmRegionReceiver>()
-            .info(&mut *io)
-            .unwrap()
-            .address;
+        let address = writable.info(&mut *io).unwrap().address;
         let mut updates = List::default();
         updates.len = 2;
         updates.data[0] = v::VmUpdate::Prepare(v::VmRange {
@@ -64,7 +66,6 @@ impl Time {
             protection: v::VmProtection(3),
         });
         writable
-            .interface::<v::VmRegionReceiver>()
             .apply(
                 &mut *io,
                 Some(Cap::from_ref(memory.cap_ref())),
@@ -74,17 +75,11 @@ impl Time {
         unsafe {
             (address as *mut DefaultTimePage).write(page);
         }
-        writable
-            .interface::<v::VmRegionReceiver>()
-            .destroy(&mut *io)
-            .unwrap();
+        writable.destroy(&mut *io).unwrap();
         drop(writable);
-        memory
-            .interface::<v::VmMemoryReceiver>()
-            .add_seals(&mut *io, v::VmSeals(15))
-            .unwrap();
+        memory.add_seals(&mut *io, v::VmSeals(15)).unwrap();
         let region = ctx
-            .interface::<v::VmAddressSpaceReceiver>("horn.address-space")
+            .interface::<v::VmAddressSpace>("horn.address-space")
             .unwrap()
             .reserve(
                 &mut *io,
@@ -97,11 +92,7 @@ impl Time {
                 },
             )
             .unwrap();
-        let address = region
-            .interface::<v::VmRegionReceiver>()
-            .info(&mut *io)
-            .unwrap()
-            .address;
+        let address = region.info(&mut *io).unwrap().address;
         let mut updates = List::default();
         updates.len = 2;
         updates.data[0] = v::VmUpdate::Prepare(v::VmRange {
@@ -115,7 +106,6 @@ impl Time {
             protection: v::VmProtection::READ,
         });
         region
-            .interface::<v::VmRegionReceiver>()
             .apply(
                 &mut *io,
                 Some(Cap::from_ref(memory.cap_ref())),
@@ -143,7 +133,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     let time = Time::new(&mut io, &ctx);
     let alarm = time.clock.alarm(&mut io).unwrap();
     let mut armed = None;
-    let info = EthernetInterfaceReceiver::from_cap(ethernet)
+    let info = EthernetInterface::from_ref(ethernet.as_ref())
         .info(&mut io)
         .unwrap();
     assert!(info.mac.len == 6 && info.mtu == 1500);
@@ -217,7 +207,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         if device.local_work() {
             sel4::cap::Notification::from_bits(ethernet_signal.as_ref().slot as _).signal();
         }
-        EthernetInterfaceReceiver::from_cap(ethernet)
+        EthernetInterface::from_ref(ethernet.as_ref())
             .watch(&mut service.io, &ethernet_signal, device.generation)
             .unwrap();
         let deadline = iface.poll_delay(timestamp, &service.sockets).and_then(|d| {
@@ -229,12 +219,9 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         });
         if deadline != armed {
             if let Some(d) = deadline {
-                alarm
-                    .interface::<Alarm>()
-                    .arm(&mut service.io, d, &timer_signal)
-                    .unwrap();
+                alarm.arm(&mut service.io, d, &timer_signal).unwrap();
             } else {
-                alarm.interface::<Alarm>().cancel(&mut service.io).unwrap();
+                alarm.cancel(&mut service.io).unwrap();
             }
             armed = deadline;
         }

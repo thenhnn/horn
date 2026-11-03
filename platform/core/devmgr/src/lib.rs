@@ -57,7 +57,7 @@ impl Inventory {
         self.iommu = IommuState::Enabled;
     }
 }
-impl DeviceObserver for Inventory {
+impl DeviceObserverServer for Inventory {
     fn status(&mut self) -> Result<DeviceStatus, DeviceError> {
         Ok(DeviceStatus {
             phase: DevicePhase::DiscoveryReady,

@@ -103,8 +103,8 @@ impl<T: CapType> OwnedCap<T> {
             lifetime: PhantomData,
         }
     }
-    pub fn interface<I: RpcInterface>(&self) -> I::Borrowed<'_> {
-        I::from_borrowed(self.borrow().cast())
+    pub fn interface<I: RpcInterface>(&self) -> BorrowedCap<'_, I::Tag> {
+        self.borrow().cast()
     }
 }
 impl<T: CapType> CapView<T> for OwnedCap<T> {

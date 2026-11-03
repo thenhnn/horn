@@ -334,7 +334,7 @@ impl Manager {
         Ok(true)
     }
 }
-impl ProcessExecution for Caller<'_> {
+impl ProcessExecutionServer for Caller<'_> {
     fn execution_configure(
         &mut self,
         base: u64,

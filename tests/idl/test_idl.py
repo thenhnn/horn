@@ -52,67 +52,6 @@ def test_labels_are_deterministic_and_schema_local():
     assert labels == [method.label for _, method in again.methods()]
 
 
-def test_rust_and_c_glue_reference_runtime():
-    schema = compile_path(ROOT / "examples/idl/schema.py")
-    rust = emit_rust(schema)
-    assert "use horn_ipc::*;" in rust
-    assert "pub const COUNTER_ADD_LABEL" in rust
-    assert "pub struct CounterTag;" in rust
-    assert "pub struct CounterReceiver" in rust
-    assert "CounterClient" not in rust
-    assert "pub struct CounterServiceTag;" in rust
-    assert "pub fn counter_service_dispatch" in rust
-    assert "pub fn counter_service_request_layout" in rust
-    assert "pub fn counter_service_recv<S: AsyncServer>" in rust
-    assert "pub fn counter_service_reply<S: CapSpace, R: AsyncReply>" in rust
-    assert "pub fn counter_service_serve_one" not in rust
-    assert "recv_request_dynamic" in rust
-    assert "horn_tag!" not in rust
-    header, source = emit_c(schema)
-    assert "#include <horn_ipc.h>" in header
-    assert "horn_counter_add" in header
-    assert "horn_counter_service_dispatch" in header
-    assert "void horn_encoder_u64(" not in source
-
-
-def test_receiver_views_forward_borrow_move_and_oneway_without_new_wire(tmp_path):
-    schema = load_source(
-        tmp_path,
-        "receiver_views",
-        """
-from horn_idl import Cap, Copy, Borrow, Move, U64, Result, iface, method, sel4
-@iface("test.receiver")
-class Sender:
-    @method
-    def call(self, transport: U64, target: U64,
-             moved: Cap[sel4.Endpoint, Move],
-             borrowed: Cap[sel4.Notification, Borrow],
-             copied: Cap[sel4.Notification, Copy]) -> Result[U64, U64]: ...
-    @method(oneway=True)
-    def notify(self, transport: U64) -> None: ...
-""",
-    )
-    rust = emit_rust(schema)
-    view = rust[rust.index("pub struct SenderReceiver") :]
-    assert "impl horn_ipc::RpcInterface for SenderReceiver" in view
-    assert "type Tag = SenderTag;" in view
-    assert "moved: Cap<Endpoint>" in view
-    assert "borrowed: &impl CapView<Notification>" in view
-    assert "copied: &impl CapView<Notification>" in view
-    assert "Result<u64, CallError<u64>>" in view
-    assert "__horn_transport.call(self.target.cap_ref(), SENDER_CALL_LABEL" in view
-    assert "__horn_transport.send(self.target.cap_ref(), SENDER_NOTIFY_LABEL" in view
-    for name, mode in (("moved", "MOVE"), ("borrowed", "BORROW"), ("copied", "COPY")):
-        accessor = "as_ref" if mode == "MOVE" else "cap_ref"
-        assert (
-            f"{name}: Cap::from_ref({name}.{accessor}().with_mode(CapMode::{mode}))"
-            in view
-        )
-    assert "SenderClient" not in rust
-    assert "CapPacker" not in view
-    assert "impl Drop for SenderReceiver" not in view
-
-
 def test_c_parameters_do_not_collide_with_client_or_vtable_locals(tmp_path):
     schema = load_source(
         tmp_path,
@@ -281,16 +220,15 @@ def test_generated_c_compiles_against_runtime(tmp_path):
     )
 
 
-def test_generated_rust_compiles_against_runtime(tmp_path):
+def check_rust(schema, tmp_path, usage="#![no_std]\npub mod protocol;\n"):
     import shutil
     import subprocess
 
     cargo = shutil.which("cargo")
     if cargo is None:
         pytest.skip("no cargo")
-    schema = compile_path(ROOT / "examples/idl/schema.py")
     (tmp_path / "src").mkdir()
-    (tmp_path / "src/lib.rs").write_text("#![no_std]\npub mod protocol;\n")
+    (tmp_path / "src/lib.rs").write_text(usage)
     (tmp_path / "src/protocol.rs").write_text(emit_rust(schema))
     runtime = ROOT / "platform/runtime/rust/horn-ipc"
     (tmp_path / "Cargo.toml").write_text(
@@ -308,6 +246,40 @@ def test_generated_rust_compiles_against_runtime(tmp_path):
         [cargo, "check", "--quiet", "--offline"],
         cwd=tmp_path,
         check=True,
+    )
+
+
+def test_generated_rust_compiles_against_runtime(tmp_path):
+    schema = compile_path(ROOT / "examples/idl/schema.py")
+    check_rust(
+        schema,
+        tmp_path,
+        """#![no_std]
+pub mod protocol;
+use horn_ipc::*;
+use protocol::*;
+
+// The same owned object implements both interfaces, without a receiver wrapper.
+pub fn client<T: Transport>(owner: &OwnedCap<CounterServiceTag>, io: &mut T)
+    -> Result<CounterValue, RpcError>
+{
+    let _ = owner.borrow().version(io)?;
+    owner.add(io, 1)
+}
+struct Service;
+impl CounterServer for Service {
+    fn add(&mut self, amount: u64) -> CounterValue {
+        CounterValue { value: amount, generation: 1 }
+    }
+    fn exchange(&mut self, _: Connection) -> Cap<Notification> { Cap::default() }
+}
+impl ControlServer for Service {
+    fn version(&mut self) -> u32 { 1 }
+}
+pub fn dispatch(request: CounterServiceRequest) -> CounterServiceResponse {
+    counter_service_dispatch(request, &mut Service)
+}
+""",
     )
 
 
@@ -354,18 +326,7 @@ class AsyncObject:
     pass
 """,
     )
-    rust = emit_rust(schema)
-    assert "pub fn async_work_recv_async<S: AsyncServer>" in rust
-    assert "pub fn async_work_reply_async<S: CapSpace, R: AsyncReply>" in rust
-    assert "let (_label, args, reply) = server.recv_request" in rust
-    assert "reply.reply_wire(space, &AsyncWorkReply { value: *result }" in rust
-    assert "result: &u32" in rust
-    assert "reply.reply_error" not in rust
-    assert "pub fn async_object_recv<S: AsyncServer>" in rust
-    assert "pub fn async_object_reply<S: CapSpace, R: AsyncReply>" in rust
-    assert "fn work(&mut self, value: u32) -> u32" in rust
-    assert "-> AsyncObjectResponse" in rust
-    assert "Async::work(handler, args.value))" in rust
+    check_rust(schema, tmp_path)
 
 
 def test_object_reply_skips_oneway_methods(tmp_path):
@@ -478,8 +439,6 @@ def test_result_is_a_tagged_specialization():
     assert method.result_layout().cnode.slot_count == 4
     rust = emit_rust(schema)
     assert "-> Result<Event, Event>;" in rust
-    assert "-> Result<EventOwned, CallError<EventOwned>>" in rust
-    assert "reply.value.map_err(CallError::Remote)" in rust
     header, _ = emit_c(schema)
     assert "horn_probe_try_echo_result_t;" in header
 
@@ -682,7 +641,7 @@ def test_object_dispatch_keeps_interface_qualified_method_names():
     assert len(list(host.methods())) == 22
     rust = emit_rust(schema)
     for interface in ("VmFactory", "VmMemory", "VmRegion"):
-        assert f"{interface}::info(handler)" in rust
+        assert f"{interface}Server::info(handler)" in rust
     header, _ = emit_c(schema)
     for interface in ("vm_factory", "vm_memory", "vm_region"):
         assert f"horn_{interface}_vtable_t {interface};" in header

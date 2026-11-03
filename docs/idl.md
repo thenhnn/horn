@@ -52,42 +52,42 @@ class CounterService:
     pass
 ```
 
-## Rust interface views
+## Rust client and server traits
 
-Each interface emits a server trait and a non-owning `FooReceiver`
-implementing `horn_ipc::RpcInterface`. The receiver
-keeps only a typed capability; each method takes an explicit `&mut transport`.
-Clock provides short public aliases `horn_clock::{Clock, Alarm}`:
+Each interface emits `FooServer` for handlers, `FooClient` for RPC callers,
+and `Foo = Cap<FooTag>` for non-owning initial handles. Client traits are
+implemented for raw, owned and borrowed typed capabilities, including every
+interface implemented by an IDL object. There are no receiver wrappers or
+transport-bound client structs.
 
 ```rust
+use horn_clock::{AlarmInterfaceClient, ClockInterfaceClient};
+
 let mut io = ctx.transport()?;
 let clock = ctx.interface::<horn_clock::Clock>("clock")?;
 let now = clock.now(&mut io)?;
-let events = ctx.cap::<horn_ipc::Notification>("events")?;
+let alarm = clock.alarm(&mut io)?; // OwnedCap<AlarmObjectTag>
+alarm.cancel(&mut io)?;           // direct typed-object call
 ```
 
-`interface(name)` views an existing immutable startup binding. It does not
-create an object, query the server's type, reduce authority, copy a kernel cap,
-or reserve a transport. The deployment supplies the interface contract.
-Several views can coexist; only the call borrows `io`. Receivers directly
-invoke the transport using generated layouts and wire values: labels,
-encoding, Copy/Move/Borrow, errors, one-way sends and synchronous blocking
-behavior are unchanged.
-Neither constructing, copying nor dropping a receiver closes a remote object.
+Every call takes an explicit transport; handles retain no transport or context.
+When interfaces share method names, use qualified calls such as
+`VmMemoryClient::info(&memory, &mut io)`.
 
-For an explicitly obtained capability, `RpcInterface::from_cap` and
-`as_cap` bridge the receiver and `Cap<InterfaceTag>`; retain the capability's
-original ownership/cleanup discipline. `ctx.cap::<InterfaceTag>` remains
-available; there are no generated transport-bound `Client` types. C wire
-bindings are unchanged.
+`Context::interface(name)` selects a protocol for an immutable startup binding.
+`owner.interface::<Foo>()` selects a protocol for an untyped or differently
+marked owner and returns `BorrowedCap<'_, FooTag>`. Its lifetime is tied to
+the owner, not the transport. Ordinary typed-object calls need neither cast.
+These views do not query a remote type, reduce authority, copy a kernel cap,
+or close a remote object when dropped. The deployment supplies the protocol
+contract.
 
-`OwnedCap::interface` also produces a receiver tied to the local owner's
-lifetime. Its capability view is borrowed; copying that receiver does not erase
-the lifetime or retain a transport. See `docs/capability-ownership.md` for the
-owning replies, explicit raw boundaries and cleanup policy. Generated receiver
-results use `OwnedCap<T>` and recursive `FooOwned` values wherever capabilities
-occur, including application errors. Raw Wire/server types stay unchanged;
-direct Copy/Borrow parameters accept `&impl CapView<T>` without moving owners.
+Client results use `OwnedCap<T>` and recursive `FooOwned` values wherever
+capabilities occur, including application errors. Raw Wire/server types,
+labels, encoding, transfer modes, one-way sends and blocking behavior stay
+unchanged. Direct Copy/Borrow parameters accept `&impl CapView<T>` without
+moving owners. See `docs/capability-ownership.md` for ownership and cleanup.
+C bindings are unchanged.
 
 ## Payload enums
 
@@ -486,7 +486,7 @@ the tag and ELF at runtime before launching the process.
   `ChildCaps` capset.
 - Root-hosted `procd` creates the child's accounted CNode/VSpace/TCB. `root`
   installs bootstrap capabilities in generated named slots, starts the child,
-  and calls the generated `CounterReceiver`.
+  and calls the generated `CounterClient` methods on the typed capability.
 - `child` serves counter requests, signals a wake notification, exercises VM
   and mimalloc, then exits through its lifecycle capability.
 - `root/build.rs` and `child/build.rs` run the Python IDL generator and

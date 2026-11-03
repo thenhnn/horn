@@ -4,9 +4,13 @@
 
 use core::fmt::{self, Write};
 use horn_console::protocol as c;
+use horn_console::protocol::ConsoleInterfaceClient;
 use horn_devmgr::protocol as d;
+use horn_devmgr::protocol::DeviceObserverClient;
 use horn_ipc::*;
 use horn_procd::protocol as p;
+use horn_procd::protocol::ProcessObserverClient;
+use horn_registry::protocol::RegistryDirectoryClient;
 use owo_colors::OwoColorize;
 
 horn_runtime::task!(main);
@@ -20,7 +24,7 @@ impl Shell {
     fn wait(&mut self, events: c::ConsoleEvents) {
         let client = self
             .ctx
-            .interface::<c::ConsoleInterfaceReceiver>("console")
+            .interface::<c::ConsoleInterface>("console")
             .unwrap();
         let status = client.status(&mut self.io).expect("console status");
         assert_eq!(
@@ -62,7 +66,7 @@ impl Shell {
             bytes.data[..count].copy_from_slice(&self.output[offset..self.output_len]);
             match self
                 .ctx
-                .interface::<c::ConsoleInterfaceReceiver>("console")
+                .interface::<c::ConsoleInterface>("console")
                 .unwrap()
                 .write(&mut self.io, bytes)
             {
@@ -85,7 +89,7 @@ impl Shell {
         loop {
             match self
                 .ctx
-                .interface::<c::ConsoleInterfaceReceiver>("console")
+                .interface::<c::ConsoleInterface>("console")
                 .unwrap()
                 .read(&mut self.io, 256)
             {
@@ -114,7 +118,7 @@ impl Shell {
         loop {
             let page = match self
                 .ctx
-                .interface::<horn_registry::protocol::RegistryDirectoryReceiver>(name)
+                .interface::<horn_registry::protocol::RegistryDirectory>(name)
                 .unwrap()
                 .list(&mut self.io, cursor, true)
             {
@@ -153,7 +157,7 @@ impl Shell {
         loop {
             let page = match self
                 .ctx
-                .interface::<d::DeviceObserverReceiver>("pci")
+                .interface::<d::DeviceObserver>("pci")
                 .unwrap()
                 .list(&mut self.io, cursor)
             {
@@ -194,7 +198,7 @@ impl Shell {
         loop {
             let page = match self
                 .ctx
-                .interface::<p::ProcessObserverReceiver>("processes")
+                .interface::<p::ProcessObserver>("processes")
                 .unwrap()
                 .list(&mut self.io, cursor)
             {

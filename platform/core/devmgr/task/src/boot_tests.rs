@@ -4,6 +4,7 @@ use horn_supervisor::{
     client::{Io, close_image, mint},
     protocol as s,
 };
+use s::{ProcessControlClient as _, SupervisorFactoryClient as _, SupervisorJobClient as _};
 static ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/probe.elf"));
 pub struct Observer {
     job: Option<OwnedCap<s::SupervisedJobTag>>,
@@ -29,23 +30,16 @@ impl Observer {
             reply: 4,
         };
         let managed = ctx
-            .interface::<s::SupervisorFactoryReceiver>("supervisor")
+            .interface::<s::SupervisorFactory>("supervisor")
             .unwrap()
             .prepare(&mut *io, &image, request, slots)
             .unwrap();
         close_image(io, image);
-        let process = managed
-            .interface::<s::SupervisorJobReceiver>()
-            .process(&mut *io)
-            .unwrap();
+        let process = managed.process(&mut *io).unwrap();
         managed
-            .interface::<s::SupervisorJobReceiver>()
             .watch(&mut *io, &ctx.cap("events").unwrap())
             .unwrap();
-        let ready = managed
-            .interface::<s::SupervisorJobReceiver>()
-            .signal(&mut *io, s::ServiceSignal::Ready)
-            .unwrap();
+        let ready = managed.signal(&mut *io, s::ServiceSignal::Ready).unwrap();
         let observer = mint(
             io,
             root,
@@ -91,10 +85,7 @@ impl Observer {
             },
         ];
         boot.context(io, &process, &mut entries);
-        managed
-            .interface::<s::SupervisorJobReceiver>()
-            .start(&mut *io)
-            .unwrap();
+        managed.start(&mut *io).unwrap();
         Self {
             job: Some(managed),
             process: Some(process),
@@ -105,32 +96,14 @@ impl Observer {
         if self.finished {
             return;
         }
-        if self
-            .job
-            .as_ref()
-            .unwrap()
-            .interface::<s::SupervisorJobReceiver>()
-            .status(&mut *io)
-            .unwrap()
-            != s::ServiceStatus::AwaitingCleanup
+        if self.job.as_ref().unwrap().status(&mut *io).unwrap() != s::ServiceStatus::AwaitingCleanup
         {
             return;
         }
-        let info = self
-            .process
-            .as_ref()
-            .unwrap()
-            .interface::<s::ProcessControlReceiver>()
-            .info(&mut *io)
-            .unwrap();
+        let info = self.process.as_ref().unwrap().info(&mut *io).unwrap();
         assert_eq!(info.state, s::ProcessState::Stopping);
         assert!(matches!(info.exit, Some(s::ProcessExit::Code(0))));
-        self.job
-            .as_ref()
-            .unwrap()
-            .interface::<s::SupervisorJobReceiver>()
-            .cleanup_done(&mut *io)
-            .unwrap();
+        self.job.as_ref().unwrap().cleanup_done(&mut *io).unwrap();
         drop(self.process.take());
         drop(self.job.take());
         self.finished = true;

@@ -38,7 +38,7 @@ from ..types import (
 from .rust_owned import emit_owned, owned_type
 
 
-def receiver_parameters(method: Method) -> list[str]:
+def client_parameters(method: Method) -> list[str]:
     return [
         f"{snake(param.name)}: "
         + (
@@ -51,7 +51,7 @@ def receiver_parameters(method: Method) -> list[str]:
     ]
 
 
-def receiver_result(method: Method) -> tuple[str, str]:
+def client_result(method: Method) -> tuple[str, str]:
     if isinstance(method.result, ResultType):
         return owned_type(
             method.result.ok
@@ -641,7 +641,7 @@ class RustEmitter:
                     )
                 )
         self.add("")
-        self.add(f"pub trait {interface.python_name} {{")
+        self.add(f"pub trait {interface.python_name}Server {{")
         for method in interface.all_methods():
             params = ", ".join(
                 f"{snake(param.name)}: {rust_type(param.type)}"
@@ -650,7 +650,7 @@ class RustEmitter:
             result = "()" if method.result is None else rust_type(method.result)
             self.add(f"    fn {snake(method.name)}(&mut self, {params}) -> {result};")
         self.add("}")
-        self.emit_receiver(interface)
+        self.emit_client(interface)
 
     def emit_method_types(self, interface: Interface, method: Method) -> None:
         args_name = method_args_name(interface, method)
@@ -789,7 +789,7 @@ class RustEmitter:
             args_type = method_args_name(interface, method)
             result_type = "()" if method.result is None else rust_type(method.result)
             self.add("")
-            self.add(f"pub fn {prefix}_recv_async<S: AsyncServer>(")
+            self.add(f"pub fn {prefix}_recv_async<S: horn_ipc::AsyncServer>(")
             self.add("    server: &mut S,")
             self.add("    authority: S::Authority,")
             self.add(f") -> Result<({args_type}, S::Reply), RpcError> {{")
@@ -814,35 +814,28 @@ class RustEmitter:
             )
             self.add("}")
 
-    def emit_receiver(self, interface: Interface) -> None:
-        name = f"{interface.python_name}Receiver"
-        marker = f"{interface.python_name}Tag"
+    def emit_client(self, interface: Interface) -> None:
+        name = interface.python_name
+        marker = f"{name}Tag"
+        target = f"__horn_{snake(name)}_target"
+        while target in {snake(m.name) for m in interface.all_methods()}:
+            target += "_"
         self.add(
-            "", "/// Non-owning interface view; calls borrow an explicit transport."
+            "", "/// Non-owning typed handle; RPC methods come from the client trait."
         )
-        self.add("#[derive(Debug, Clone, Copy, PartialEq, Eq)]")
-        self.add(f"pub struct {name}<C = Cap<{marker}>> {{ target: C }}")
-        self.add(f"impl horn_ipc::RpcInterface for {name} {{")
-        self.add(f"    type Tag = {marker};")
-        self.add(f"    type Borrowed<'a> = {name}<BorrowedCap<'a, {marker}>>;")
-        self.add(
-            f"    fn from_borrowed<'a>(target: BorrowedCap<'a, {marker}>) -> Self::Borrowed<'a> {{ {name} {{ target }} }}"
-        )
-        self.add(
-            f"    fn from_cap(target: Cap<{marker}>) -> Self {{ Self {{ target }} }}"
-        )
-        self.add(f"    fn as_cap(&self) -> Cap<{marker}> {{ self.target }}")
-        self.add("}")
-        self.add(f"impl<C: CapView<{marker}>> {name}<C> {{")
+        self.add(f"pub type {name} = Cap<{marker}>;")
+        self.add(f"pub trait {name}Client {{")
+        self.add("    #[doc(hidden)]")
+        self.add(f"    fn {target}(&self) -> CapRef;")
         for method in interface.all_methods():
             used = {snake(p.name) for p in method.params}
             transport = "__horn_transport"
             while transport in used:
                 transport += "_"
-            params = [f"{transport}: &mut T", *receiver_parameters(method)]
-            result, error_type = receiver_result(method)
+            params = [f"{transport}: &mut T", *client_parameters(method)]
+            result, error_type = client_result(method)
             self.add(
-                f"    pub fn {snake(method.name)}<T: Transport>(&self, {', '.join(params)})"
+                f"    fn {snake(method.name)}<T: Transport>(&self, {', '.join(params)})"
                 f" -> Result<{result}, {error_type}> {{"
             )
             self.add(f"        let args = {method_args_name(interface, method)} {{")
@@ -863,12 +856,12 @@ class RustEmitter:
             label = method_label_name(interface, method)
             if method.oneway:
                 self.add(
-                    f"        {transport}.send(self.target.cap_ref(), {label}, &args, "
+                    f"        {transport}.send(self.{target}(), {label}, &args, "
                     f"&{upper(interface.python_name)}_{upper(method.name)}_REQ_LAYOUT)"
                 )
             else:
                 call = (
-                    f"{transport}.call(self.target.cap_ref(), {label}, &args, "
+                    f"{transport}.call(self.{target}(), {label}, &args, "
                     f"&{upper(interface.python_name)}_{upper(method.name)}_REQ_LAYOUT, "
                     f"&{upper(interface.python_name)}_{upper(method.name)}_RESULT_LAYOUT)"
                 )
@@ -886,6 +879,22 @@ class RustEmitter:
             self.add("    }")
         self.add("}")
 
+        self.emit_client_bindings(interface, marker)
+
+    def emit_client_bindings(self, interface: Interface, marker: str) -> None:
+        name = interface.python_name
+        target = f"__horn_{snake(name)}_target"
+        while target in {snake(m.name) for m in interface.all_methods()}:
+            target += "_"
+        for handle in (
+            f"Cap<{marker}>",
+            f"OwnedCap<{marker}>",
+            f"BorrowedCap<'_, {marker}>",
+        ):
+            self.add(f"impl {name}Client for {handle} {{")
+            self.add(f"    fn {target}(&self) -> CapRef {{ self.cap_ref() }}")
+            self.add("}")
+
     def emit_object(self, object_: Object) -> None:
         marker = f"{object_.python_name}Tag"
         self.add("", f"pub struct {marker};")
@@ -894,6 +903,8 @@ class RustEmitter:
         self.add('    const KERNEL: &\'static str = "Endpoint";')
         self.add("}")
         self.add("")
+        for interface in object_.implements:
+            self.emit_client_bindings(interface, marker)
         self.add("#[derive(Debug)]")
         self.add(f"pub enum {object_.python_name}Request {{")
         for interface, method in self._object_methods(object_):
@@ -971,7 +982,7 @@ class RustEmitter:
         self.add("    }")
         self.add("}")
         self.add("")
-        self.add(f"pub fn {prefix}_recv<S: AsyncServer>(")
+        self.add(f"pub fn {prefix}_recv<S: horn_ipc::AsyncServer>(")
         self.add("    server: &mut S,")
         self.add("    authority: S::Authority,")
         self.add(f") -> Result<({object_.python_name}Request, S::Reply), RpcError> {{")
@@ -1005,7 +1016,9 @@ class RustEmitter:
         self.add("    }")
         self.add("}")
         self.add("")
-        bounds = " + ".join(interface.python_name for interface in object_.implements)
+        bounds = " + ".join(
+            interface.python_name + "Server" for interface in object_.implements
+        )
         self.add(
             f"pub fn {prefix}_dispatch<T: {bounds}>(request: {object_.python_name}Request, handler: &mut T) -> {object_.python_name}Response {{"
         )
@@ -1014,7 +1027,7 @@ class RustEmitter:
             variant = method_variant_name(interface, method)
             pattern = "args" if method.params else "_args"
             args = [f"args.{snake(param.name)}" for param in method.params]
-            call = f"{interface.python_name}::{snake(method.name)}(handler"
+            call = f"{interface.python_name}Server::{snake(method.name)}(handler"
             if args:
                 call += ", " + ", ".join(args)
             call += ")"

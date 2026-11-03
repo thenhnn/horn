@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn unsupported_is_an_application_error_and_batch_errors_keep_progress() {
-        let receiver = VmFactoryReceiver::from_cap(Cap::default());
+        let receiver = VmFactory::default();
         let mut io = Unsupported;
         assert_eq!(
             receiver.create_address_space(&mut io),

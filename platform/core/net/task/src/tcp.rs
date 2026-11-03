@@ -271,7 +271,7 @@ impl Caller<'_> {
             .get_mut::<tcp::Socket>(self.service.slots[i].as_ref().unwrap().handle))
     }
 }
-impl TcpFactory for Caller<'_> {
+impl TcpFactoryServer for Caller<'_> {
     fn listen(&mut self, port: u32) -> Result<Cap<TcpServerObjectTag>, NetError> {
         if self.badge != 16 {
             return Err(NetError::Denied);
@@ -300,7 +300,7 @@ impl TcpFactory for Caller<'_> {
         Ok(Cap::from_ref(exported.as_ref()))
     }
 }
-impl TcpServer for Caller<'_> {
+impl TcpServerServer for Caller<'_> {
     fn accept(&mut self) -> Result<Cap<TcpConnectionObjectTag>, NetError> {
         let server = self.server()?;
         if self.service.connections == self.service.limits.connections {
@@ -346,7 +346,7 @@ impl TcpServer for Caller<'_> {
         )
     }
 }
-impl TcpConnection for Caller<'_> {
+impl TcpConnectionServer for Caller<'_> {
     fn read(&mut self) -> Result<List<u8, 256>, NetError> {
         let socket = self.socket()?;
         if !socket.can_recv() {

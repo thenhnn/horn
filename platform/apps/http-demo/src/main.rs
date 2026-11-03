@@ -32,49 +32,42 @@ impl Connection {
                     Phase::Done => return,
                 };
                 self.tcp
-                    .interface::<TcpConnectionReceiver>()
                     .watch(io, &signal, TcpEvents(events | TcpEvents::CLOSED.0))
                     .unwrap();
                 return;
             }
             budget -= 1;
             let interest = match self.phase {
-                Phase::Headers(used) => {
-                    match self.tcp.interface::<TcpConnectionReceiver>().read(&mut *io) {
-                        Ok(data) => {
-                            let n = data.len as usize;
-                            if n == 0 || n > self.header.len() - used {
-                                self.phase = Phase::Done;
-                                continue;
-                            }
-                            self.header[used..used + n].copy_from_slice(&data.data[..n]);
-                            if self.header[..used + n].windows(4).any(|w| w == b"\r\n\r\n") {
-                                self.phase = Phase::Response(0);
-                            } else if used + n == self.header.len() {
-                                self.phase = Phase::Done;
-                            } else {
-                                self.phase = Phase::Headers(used + n);
-                            }
-                            continue;
-                        }
-                        Err(CallError::Remote(NetError::WouldBlock)) => TcpEvents::READABLE.0,
-                        Err(CallError::Remote(NetError::Closed)) => {
+                Phase::Headers(used) => match self.tcp.read(&mut *io) {
+                    Ok(data) => {
+                        let n = data.len as usize;
+                        if n == 0 || n > self.header.len() - used {
                             self.phase = Phase::Done;
                             continue;
                         }
-                        Err(e) => panic!("HTTP read: {:?}", e),
+                        self.header[used..used + n].copy_from_slice(&data.data[..n]);
+                        if self.header[..used + n].windows(4).any(|w| w == b"\r\n\r\n") {
+                            self.phase = Phase::Response(0);
+                        } else if used + n == self.header.len() {
+                            self.phase = Phase::Done;
+                        } else {
+                            self.phase = Phase::Headers(used + n);
+                        }
+                        continue;
                     }
-                }
+                    Err(CallError::Remote(NetError::WouldBlock)) => TcpEvents::READABLE.0,
+                    Err(CallError::Remote(NetError::Closed)) => {
+                        self.phase = Phase::Done;
+                        continue;
+                    }
+                    Err(e) => panic!("HTTP read: {:?}", e),
+                },
                 Phase::Response(offset) => {
                     let n = (RESPONSE.len() - offset).min(256);
                     let mut data = List::default();
                     data.len = n as _;
                     data.data[..n].copy_from_slice(&RESPONSE[offset..offset + n]);
-                    match self
-                        .tcp
-                        .interface::<TcpConnectionReceiver>()
-                        .write(&mut *io, data)
-                    {
+                    match self.tcp.write(&mut *io, data) {
                         Ok(written) => {
                             assert!(written > 0 && written as usize <= n);
                             let next = offset + written as usize;
@@ -96,17 +89,13 @@ impl Connection {
                 Phase::Done => return,
             };
             self.tcp
-                .interface::<TcpConnectionReceiver>()
                 .watch(io, &signal, TcpEvents(interest | TcpEvents::CLOSED.0))
                 .unwrap();
             return;
         }
     }
     fn close(self, io: &mut Io) {
-        let result = self
-            .tcp
-            .interface::<TcpConnectionReceiver>()
-            .finish(&mut *io);
+        let result = self.tcp.finish(&mut *io);
         drop(self);
         // Local cleanup precedes a possible abort when reporting RPC failure.
         result.unwrap();
@@ -116,7 +105,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     let mut io = ctx.transport().unwrap();
     let signal = ctx.cap::<Notification>("signal").unwrap();
     let listener = ctx
-        .interface::<TcpFactoryReceiver>("tcp")
+        .interface::<TcpFactory>("tcp")
         .unwrap()
         .listen(&mut io, 80)
         .unwrap();
@@ -128,7 +117,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
             connections
                 .try_reserve(1)
                 .expect("HTTP connection metadata quota");
-            match listener.interface::<TcpServerReceiver>().accept(&mut io) {
+            match listener.accept(&mut io) {
                 Ok(tcp) => connections.push(Connection {
                     tcp,
                     header: [0; 1024],
@@ -148,10 +137,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
             }
         }
         if connections.len() < MAX_CONNECTIONS {
-            listener
-                .interface::<TcpServerReceiver>()
-                .watch(&mut io, &signal, TcpEvents::ACCEPT)
-                .unwrap();
+            listener.watch(&mut io, &signal, TcpEvents::ACCEPT).unwrap();
         }
         // All active streams were driven to WouldBlock and armed. Notifications
         // coalesce; re-scan conditions after waking instead of trusting a token.

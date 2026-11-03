@@ -5,6 +5,7 @@ use core::{
     ptr::NonNull,
     sync::atomic::{AtomicBool, Ordering},
 };
+use horn_devmgr::protocol::DeviceControlClient;
 use horn_virtio::{
     BufferDirection, Hal, IommuPciTransport, PhysAddr,
     config::ConfigSnapshot,
