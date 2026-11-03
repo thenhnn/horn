@@ -13,6 +13,14 @@ pub struct SlotRef {
 }
 
 pub trait CapSpace {
+    /// # Safety
+    /// cap must be a fresh, exclusively owned localization from this space.
+    unsafe fn own_localized(
+        &mut self,
+        _cap: CapRef,
+    ) -> Result<crate::OwnedCap<crate::Endpoint>, RpcError> {
+        Err(RpcError::NotLocal)
+    }
     fn alloc_cnode(&mut self, parent: Option<SlotRef>, size_bits: u8) -> Result<CapRef, RpcError>;
     fn free_cnode(&mut self, cnode: CapRef) -> Result<(), RpcError>;
     fn copy_into(&mut self, dest: SlotRef, src: CapRef, rights: Rights) -> Result<(), RpcError>;
@@ -25,6 +33,12 @@ pub trait CapSpace {
 }
 
 impl<S: CapSpace + ?Sized> CapSpace for &mut S {
+    unsafe fn own_localized(
+        &mut self,
+        cap: CapRef,
+    ) -> Result<crate::OwnedCap<crate::Endpoint>, RpcError> {
+        unsafe { (**self).own_localized(cap) }
+    }
     fn alloc_cnode(&mut self, parent: Option<SlotRef>, bits: u8) -> Result<CapRef, RpcError> {
         (**self).alloc_cnode(parent, bits)
     }
@@ -188,6 +202,24 @@ impl<'a, S: CapSpace> CapUnpacker<'a, S> {
 }
 
 impl<S: CapSpace> CapSource for CapUnpacker<'_, S> {
+    fn pop_owned(
+        &mut self,
+        mode: CapMode,
+        rights: Rights,
+    ) -> Result<crate::OwnedCap<crate::Endpoint>, RpcError> {
+        if !self.localize || mode == CapMode::BORROW {
+            return Err(RpcError::NotLocal);
+        }
+        let cap = self.pop_typed(mode, rights)?;
+        // Fresh localization has a private slot; no application raw alias exists.
+        match unsafe { self.space.own_localized(cap) } {
+            Ok(owner) => Ok(owner),
+            Err(error) => {
+                self.space.delete(cap).expect("failed owned import cleanup");
+                Err(error)
+            }
+        }
+    }
     fn pop(&mut self) -> Result<CapRef, RpcError> {
         let slots = match self.layout.cnode {
             Some(node) => node.slots,

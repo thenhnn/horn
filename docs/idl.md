@@ -84,7 +84,10 @@ bindings are unchanged.
 `OwnedCap::interface` also produces a receiver tied to the local owner's
 lifetime. Its capability view is borrowed; copying that receiver does not erase
 the lifetime or retain a transport. See `docs/capability-ownership.md` for the
-first local-RAII implementation, raw adoption boundary and cleanup policy.
+owning replies, explicit raw boundaries and cleanup policy. Generated receiver
+results use `OwnedCap<T>` and recursive `FooOwned` values wherever capabilities
+occur, including application errors. Raw Wire/server types stay unchanged;
+direct Copy/Borrow parameters accept `&impl CapView<T>` without moving owners.
 
 ## Payload enums
 

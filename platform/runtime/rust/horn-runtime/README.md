@@ -30,7 +30,8 @@ Driver names use the `devmgr.` prefix.
 proof of the kernel object's type. `copy`/`mint` allocate through the explicitly
 provided transport; `revoke` preserves an anchor while revoking descendants.
 Raw imports/deletion use the IPC cap-space API. Explicitly owned local imports
-can use `OwnedCap` RAII; initial grants are not adoptable owning handles. See
+can use `OwnedCap` RAII; generated RPC replies already return owning capabilities
+and recursive owning records/enums. Initial grants are not adoptable owning handles. See
 `docs/capability-ownership.md`.
 
 `interface::<I>(name)` returns a generated non-owning RPC interface view:

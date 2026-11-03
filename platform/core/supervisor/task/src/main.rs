@@ -33,7 +33,7 @@ fn stopped_bit(i: usize) -> u64 {
 }
 struct Job {
     name: List<u8, 64>,
-    process: Cap<ProcessObjectTag>,
+    process: Option<OwnedCap<ProcessObjectTag>>,
     // Keep the owner capability's derivation anchor for the instance lifetime.
     _authority: Cap<Endpoint>,
     lifecycle: Lifecycle,
@@ -62,9 +62,6 @@ impl Manager {
         let name = &self.jobs[i].name;
         core::str::from_utf8(&name.data[..name.len as usize]).unwrap()
     }
-    fn process(&self, i: usize) -> ProcessControlReceiver {
-        ProcessControlReceiver::from_cap(Cap::from_ref(self.jobs[i].process.as_ref()))
-    }
     fn stopped(&mut self, i: usize) {
         if matches!(
             self.jobs[i].lifecycle.state,
@@ -72,9 +69,19 @@ impl Manager {
         ) {
             return;
         }
-        let info = self.process(i).info(&mut self.io).unwrap();
+        let info = self.jobs[i]
+            .process
+            .as_ref()
+            .unwrap()
+            .interface::<ProcessControlReceiver>()
+            .info(&mut self.io)
+            .unwrap();
         if info.state != ProcessState::Stopping {
-            self.process(i)
+            self.jobs[i]
+                .process
+                .as_ref()
+                .unwrap()
+                .interface::<ProcessControlReceiver>()
                 .suspend(&mut self.io)
                 .expect("stop execution, retain VM");
         }
@@ -130,7 +137,16 @@ impl Manager {
                     ServiceStatus::Created | ServiceStatus::AwaitingCleanup | ServiceStatus::Exited
                 )
             {
-                if self.process(i).info(&mut self.io).unwrap().state != ProcessState::Active {
+                if self.jobs[i]
+                    .process
+                    .as_ref()
+                    .unwrap()
+                    .interface::<ProcessControlReceiver>()
+                    .info(&mut self.io)
+                    .unwrap()
+                    .state
+                    != ProcessState::Active
+                {
                     self.stopped(i);
                 }
             }
@@ -200,7 +216,7 @@ impl Caller<'_> {
         if cap.as_ref().unwrapped_badge().is_some() {
             return Err(SupervisorError::Denied);
         }
-        Ok(copy(&mut self.manager.io, self.manager.cspace, cap))
+        Ok(copy(&mut self.manager.io, self.manager.cspace, &cap))
     }
 }
 impl SupervisorFactory for Caller<'_> {
@@ -229,7 +245,7 @@ impl SupervisorFactory for Caller<'_> {
         name.data[..source.len()].copy_from_slice(source);
         horn_log::protocol::LogFactoryReceiver::from_cap(Cap::from_ref(factory.as_ref()))
             .create_sink(&mut self.manager.io, name)
-            .map(|cap| Cap::from_ref(cap.as_ref()))
+            .map(|sink| Cap::from_ref(sink.into_raw().as_ref()))
             .map_err(|_| SupervisorError::Backend)
     }
     fn prepare(
@@ -269,14 +285,16 @@ impl SupervisorFactory for Caller<'_> {
         let fault = mint(
             &mut self.manager.io,
             self.manager.cspace,
-            self.manager
+            &self
+                .manager
                 .ctx
                 .cap::<Endpoint>("supervisor.service")
                 .unwrap(),
             fault_badge(i),
             Rights::ALL,
         );
-        ProcessControlReceiver::from_cap(Cap::from_ref(process.as_ref()))
+        process
+            .interface::<ProcessControlReceiver>()
             .fault_handler(
                 &mut self.manager.io,
                 &self.manager.boot.cap(self.manager.boot.cnode),
@@ -288,17 +306,18 @@ impl SupervisorFactory for Caller<'_> {
         let authority = mint(
             &mut self.manager.io,
             self.manager.cspace,
-            self.manager
+            &self
+                .manager
                 .ctx
                 .cap::<Endpoint>("supervisor.service")
                 .unwrap(),
             owner_badge(i),
             Rights::ALL,
         );
-        let exported = copy(&mut self.manager.io, self.manager.cspace, authority);
+        let exported = copy(&mut self.manager.io, self.manager.cspace, &authority);
         self.manager.jobs.push(Job {
             name,
-            process,
+            process: Some(process),
             _authority: authority,
             lifecycle: Lifecycle::new(),
             owner: None,
@@ -336,7 +355,7 @@ impl SupervisorJob for Caller<'_> {
         }) {
             return Err(SupervisorError::Denied);
         }
-        let retained = copy(&mut self.manager.io, self.manager.cspace, endpoint);
+        let retained = copy(&mut self.manager.io, self.manager.cspace, &endpoint);
         if self
             .manager
             .namespace
@@ -383,7 +402,11 @@ impl SupervisorJob for Caller<'_> {
                 .try_reserve(1)
                 .map_err(|_| SupervisorError::Exhausted)?;
         }
-        ProcessControlReceiver::from_cap(Cap::from_ref(self.manager.jobs[i].process.as_ref()))
+        self.manager.jobs[i]
+            .process
+            .as_ref()
+            .unwrap()
+            .interface::<ProcessControlReceiver>()
             .install(
                 &mut self.manager.io,
                 &self.manager.boot.cap(self.manager.boot.cnode),
@@ -404,7 +427,8 @@ impl SupervisorJob for Caller<'_> {
         let cap = mint(
             &mut self.manager.io,
             self.manager.cspace,
-            self.manager
+            &self
+                .manager
                 .ctx
                 .cap::<Endpoint>("supervisor.service")
                 .unwrap(),
@@ -422,7 +446,7 @@ impl SupervisorJob for Caller<'_> {
         Ok(copy(
             &mut self.manager.io,
             self.manager.cspace,
-            self.manager.jobs[i].process,
+            self.manager.jobs[i].process.as_ref().unwrap(),
         ))
     }
     fn signal(&mut self, kind: ServiceSignal) -> Result<Cap<Notification>, SupervisorError> {
@@ -437,7 +461,7 @@ impl SupervisorJob for Caller<'_> {
         Ok(mint(
             &mut self.manager.io,
             self.manager.cspace,
-            self.manager.ctx.cap("supervisor.events").unwrap(),
+            &self.manager.ctx.cap("supervisor.events").unwrap(),
             bit,
             Rights::WRITE,
         ))
@@ -482,15 +506,17 @@ impl SupervisorJob for Caller<'_> {
             .tree
             .value(node)
             .ok_or(SupervisorError::Busy)?;
-        let name = self
-            .manager
-            .process(i)
+        let name = self.manager.jobs[i]
+            .process
+            .as_ref()
+            .unwrap()
+            .interface::<ProcessControlReceiver>()
             .info(&mut self.manager.io)
             .map_err(|_| SupervisorError::Invalid)?
             .name;
         horn_log::protocol::LogFactoryReceiver::from_cap(Cap::from_ref(factory.as_ref()))
             .create_sink(&mut self.manager.io, name)
-            .map(|cap| Cap::from_ref(cap.as_ref()))
+            .map(|sink| Cap::from_ref(sink.into_raw().as_ref()))
             .map_err(|_| SupervisorError::Busy)
     }
     fn start(&mut self) -> Result<(), SupervisorError> {
@@ -500,8 +526,11 @@ impl SupervisorJob for Caller<'_> {
         }
         self.manager.jobs[i].lifecycle.start()?;
         self.manager.jobs[i].deadline = now().wrapping_add(self.manager.ticks * ready_timeout_us());
-        self.manager
-            .process(i)
+        self.manager.jobs[i]
+            .process
+            .as_ref()
+            .unwrap()
+            .interface::<ProcessControlReceiver>()
             .start(&mut self.manager.io)
             .expect("start process");
         Ok(())
@@ -523,23 +552,34 @@ impl SupervisorJob for Caller<'_> {
         if !self.manager.jobs[i].lifecycle.can_release() {
             return Err(SupervisorError::Busy);
         }
-        self.manager
-            .process(i)
+        self.manager.jobs[i]
+            .process
+            .as_ref()
+            .unwrap()
+            .interface::<ProcessControlReceiver>()
             .terminate(&mut self.manager.io)
             .expect("owner ACK before backing release");
         #[cfg(feature = "boot-tests")]
         {
-            let info = self.manager.process(i).info(&mut self.manager.io).unwrap();
+            let info = self.manager.jobs[i]
+                .process
+                .as_ref()
+                .unwrap()
+                .interface::<ProcessControlReceiver>()
+                .info(&mut self.manager.io)
+                .unwrap();
             assert_eq!(info.state, ProcessState::Exited);
             assert_eq!(info.ram.charged_bytes, 0);
             assert_eq!(info.ram.quarantined_bytes, 0);
         }
-        self.manager.process(i).close(&mut self.manager.io).unwrap();
-        self.manager
-            .io
-            .space
-            .delete(self.manager.jobs[i].process.as_ref())
+        self.manager.jobs[i]
+            .process
+            .as_ref()
+            .unwrap()
+            .interface::<ProcessControlReceiver>()
+            .close(&mut self.manager.io)
             .unwrap();
+        drop(self.manager.jobs[i].process.take());
         if let Some(note) = self.manager.jobs[i].stop.take() {
             self.manager.io.space.delete(note.as_ref()).unwrap();
         }
@@ -600,7 +640,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     let exits = mint(
         &mut io,
         cspace,
-        ctx.cap::<Notification>("supervisor.events").unwrap(),
+        &ctx.cap::<Notification>("supervisor.events").unwrap(),
         CHILD_EXIT,
         Rights::WRITE,
     );
@@ -640,7 +680,8 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         .unwrap();
     // Dedicated logger transport, initialized IPC/heap, process-lifetime sink.
     unsafe {
-        horn_log::install(log_io, Cap::from_ref(sink.as_ref())).unwrap();
+        // The static logger takes a process-lifetime raw grant.
+        horn_log::install(log_io, Cap::from_ref(sink.into_raw().as_ref())).unwrap();
     }
     loop {
         let mut received = if manager.polling() {

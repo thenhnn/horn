@@ -9,8 +9,22 @@ mod tests {
     use horn_ipc::*;
     use std::vec;
 
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     #[derive(Default)]
-    struct Caps(std::collections::VecDeque<CapRef>);
+    struct Local(AtomicUsize);
+    impl LocalCapSpace for Local {
+        fn return_raw(&self, _: CapRef) {}
+        fn delete_owned(&self, _: CapRef) -> Result<(), RpcError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+    #[derive(Default)]
+    struct Caps(std::collections::VecDeque<CapRef>, Arc<Local>);
     impl CapSink for Caps {
         fn push(&mut self, cap: CapRef) -> Result<(), RpcError> {
             self.0.push_back(cap);
@@ -18,6 +32,19 @@ mod tests {
         }
     }
     impl CapSource for Caps {
+        fn pop_owned(
+            &mut self,
+            mode: CapMode,
+            rights: Rights,
+        ) -> Result<OwnedCap<Endpoint>, RpcError> {
+            if mode == CapMode::BORROW {
+                return Err(RpcError::NotLocal);
+            }
+            let cap = self.pop_typed(mode, rights)?;
+            // This mock owns the received descriptors; Local counts retirement
+            // instead of issuing kernel operations. No raw aliases escape.
+            Ok(unsafe { OwnedCap::from_raw_in(Cap::from_ref(cap), self.1.clone()) })
+        }
         fn pop(&mut self) -> Result<CapRef, RpcError> {
             self.0.pop_front().ok_or(RpcError::MissingCap)
         }
@@ -109,7 +136,7 @@ mod tests {
     }
 
     impl Transport for ReplyTransport {
-        fn call<A: Wire, R: Wire>(
+        fn call<A: Wire, R: ReplyDecode>(
             &mut self,
             target: CapRef,
             label: u64,
@@ -123,8 +150,10 @@ mod tests {
             if let Some(error) = self.error {
                 return Err(error);
             }
-            let result = R::decode(&mut Decoder::new(&self.bytes, &mut self.caps))?;
-            assert!(self.caps.0.is_empty());
+            let result = R::decode_reply(&mut Decoder::new(&self.bytes, &mut self.caps))?;
+            if !self.caps.0.is_empty() {
+                return Err(RpcError::TooManyCaps);
+            }
             Ok(result)
         }
         fn send<A: Wire>(
@@ -136,6 +165,19 @@ mod tests {
         ) -> Result<(), RpcError> {
             unreachable!()
         }
+    }
+
+    // Only wire-value comparison tests deliberately hand owners back to raw
+    // descriptors. Cleanup behavior is checked separately without this bridge.
+    fn raw_event(
+        result: Result<EventOwned, CallError<EventOwned>>,
+    ) -> Result<Event, CallError<Event>> {
+        result
+            .map(EventOwned::into_raw)
+            .map_err(|error| match error {
+                CallError::Remote(value) => CallError::Remote(value.into_raw()),
+                CallError::Rpc(error) => CallError::Rpc(error),
+            })
     }
 
     #[test]
@@ -152,7 +194,9 @@ mod tests {
             value: Event::Empty,
         });
         assert_eq!(
-            copied_view.echo(&mut io, Event::Link(cap(CapMode::COPY, Rights::ALL))),
+            copied_view
+                .echo(&mut io, Event::Link(cap(CapMode::COPY, Rights::ALL)))
+                .map(EventOwned::into_raw),
             Ok(Event::Empty)
         );
         assert_eq!(io.seen, Some((target.as_ref(), PROBE_ECHO_LABEL)));
@@ -161,7 +205,7 @@ mod tests {
         for value in [Ok(Event::Number(9)), Err(Event::Number(7))] {
             let mut io = ReplyTransport::new(ProbeTryEchoReply { value });
             assert_eq!(
-                receiver.try_echo(&mut io, Event::Empty),
+                raw_event(receiver.try_echo(&mut io, Event::Empty)),
                 value.map_err(CallError::Remote)
             );
             assert_eq!(io.seen, Some((target.as_ref(), PROBE_TRY_ECHO_LABEL)));
@@ -190,7 +234,7 @@ mod tests {
         ] {
             let mut io = ReplyTransport::new(ProbeTryEchoReply { value });
             assert_eq!(
-                receiver.try_echo(&mut io, Event::Empty),
+                raw_event(receiver.try_echo(&mut io, Event::Empty)),
                 value.map_err(CallError::Remote)
             );
         }
@@ -199,7 +243,13 @@ mod tests {
         });
         io.caps.0.front_mut().unwrap().mode = CapMode::MOVE;
         assert_eq!(
-            receiver.handoff(&mut io),
+            receiver
+                .handoff(&mut io)
+                .map(OwnedCap::into_raw)
+                .map_err(|error| match error {
+                    CallError::Remote(value) => CallError::Remote(value.into_raw()),
+                    CallError::Rpc(error) => CallError::Rpc(error),
+                }),
             Err(CallError::Remote(cap(CapMode::COPY, Rights::ALL)))
         );
         io = ReplyTransport::new(ProbeCheckReply { value: Ok(()) });
@@ -240,7 +290,14 @@ mod tests {
         let value = Outcomes {
             primary: Err(Event::Signal(cap(CapMode::COPY, Rights::ALL))),
             nested: Ok(Err(Event::Data(payload()))),
-            optional: Some(Err(Event::Link(cap(CapMode::MOVE, Rights::WRITE)))),
+            optional: Some(Err(Event::Link(Cap::new(
+                0,
+                43,
+                64,
+                0,
+                CapMode::MOVE,
+                Rights::WRITE,
+            )))),
             array: [Ok(11), Err(Event::Empty)],
             sequence: List {
                 len: 1,
@@ -254,9 +311,88 @@ mod tests {
         assert_eq!(
             receiver
                 .outcomes(&mut transport, Outcomes::default())
-                .unwrap(),
+                .unwrap()
+                .into_raw(),
             value
         );
+    }
+
+    #[test]
+    fn decoded_results_own_caps_on_success_and_remote_error() {
+        let receiver = ProbeReceiver::from_cap(Cap::default());
+        let mut io = ReplyTransport::new(ProbeEchoReply {
+            value: Event::Link(cap(CapMode::MOVE, Rights::WRITE)),
+        });
+        let local = io.caps.1.clone();
+        let value = receiver.echo(&mut io, Event::Empty).unwrap();
+        assert!(matches!(&value, EventOwned::Link(_)));
+        assert_eq!(local.0.load(Ordering::Relaxed), 0);
+        drop(value);
+        assert_eq!(local.0.load(Ordering::Relaxed), 1);
+
+        let mut io = ReplyTransport::new(ProbeTryEchoReply {
+            value: Err(Event::Signal(cap(CapMode::COPY, Rights::ALL))),
+        });
+        let local = io.caps.1.clone();
+        let error = receiver.try_echo(&mut io, Event::Empty).unwrap_err();
+        assert!(matches!(&error, CallError::Remote(EventOwned::Signal(_))));
+        assert_eq!(local.0.load(Ordering::Relaxed), 0);
+        drop(error);
+        assert_eq!(local.0.load(Ordering::Relaxed), 1);
+    }
+
+    fn nested_owners() -> Nested {
+        Nested {
+            prefix: 5,
+            event: Event::Many(core::array::from_fn(|i| {
+                Cap::new(0, 42 + i as u32, 64, 0, CapMode::MOVE, Rights::ALL)
+            })),
+            suffix: 99,
+        }
+    }
+
+    #[test]
+    fn failed_nested_and_array_decode_retires_partial_owners() {
+        let value = nested_owners();
+        let mut bytes = vec![0; Nested::SIZE];
+        value.encode(&mut Encoder::new(&mut bytes));
+        let mut caps = Caps::default();
+        value.caps(&mut caps).unwrap();
+        let local = caps.1.clone();
+        // Decode all four array owners, then fail while reading the suffix.
+        assert!(
+            NestedOwned::decode_reply(&mut Decoder::new(&bytes[..bytes.len() - 1], &mut caps,))
+                .is_err()
+        );
+        assert_eq!(local.0.load(Ordering::Relaxed), 4);
+
+        let mut caps = Caps::default();
+        value.caps(&mut caps).unwrap();
+        caps.0.truncate(2);
+        let local = caps.1.clone();
+        // Fail inside the array after accepting just two capabilities.
+        assert_eq!(
+            NestedOwned::decode_reply(&mut Decoder::new(&bytes, &mut caps)),
+            Err(RpcError::MissingCap)
+        );
+        assert_eq!(local.0.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn finish_failure_retires_an_otherwise_decoded_reply() {
+        let receiver = ProbeReceiver::from_cap(Cap::default());
+        let mut io = ReplyTransport::new(ProbeEchoReply {
+            value: Event::Signal(cap(CapMode::COPY, Rights::ALL)),
+        });
+        io.caps
+            .0
+            .push_back(CapRef::new(0, 43, 64, 0, CapMode::MOVE, Rights::ALL));
+        let local = io.caps.1.clone();
+        assert_eq!(
+            receiver.echo(&mut io, Event::Empty),
+            Err(RpcError::TooManyCaps)
+        );
+        assert_eq!(local.0.load(Ordering::Relaxed), 1);
     }
 
     #[test]

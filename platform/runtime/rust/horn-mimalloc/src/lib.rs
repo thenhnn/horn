@@ -40,12 +40,11 @@ impl From<RpcError> for Error {
     }
 }
 
-#[derive(Clone, Copy)]
 struct Allocation {
     address: usize,
     size: usize,
-    region: Cap<VmRegionObjectTag>,
-    memory: Option<Cap<VmMemoryObjectTag>>,
+    region: OwnedCap<VmRegionObjectTag>,
+    memory: Option<OwnedCap<VmMemoryObjectTag>>,
 }
 
 pub struct VmHeap {
@@ -66,7 +65,7 @@ impl VmHeap {
             transport,
             factory: Cap::from_ref(factory),
             space: Cap::from_ref(space),
-            allocations: [None; 128],
+            allocations: [const { None }; 128],
             page_size: 0,
             limit: 0,
         };
@@ -84,9 +83,10 @@ impl VmHeap {
     fn info(&mut self) -> Result<VmInfo, Error> {
         Ok(VmFactoryReceiver::from_cap(self.factory).info(&mut self.transport)?)
     }
-    fn close(&mut self, memory: Cap<VmMemoryObjectTag>) -> Result<(), Error> {
-        VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref())).close(&mut self.transport)?;
-        self.transport.space.delete(memory.as_ref())?;
+    fn close(&mut self, memory: OwnedCap<VmMemoryObjectTag>) -> Result<(), Error> {
+        memory
+            .interface::<VmMemoryReceiver>()
+            .close(&mut self.transport)?;
         Ok(())
     }
     pub fn allocate(&mut self, size: usize, alignment: usize) -> Result<NonNull<u8>, Error> {
@@ -131,7 +131,10 @@ impl VmHeap {
             memory: Some(memory),
         });
         let result = (|| {
-            let info = VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+            let allocation = self.allocations[index].as_ref().unwrap();
+            let info = allocation
+                .region
+                .interface::<VmRegionReceiver>()
                 .info(&mut self.transport)?;
             let address = usize::try_from(info.address).map_err(|_| Error::Invalid)?;
             if address == 0
@@ -154,13 +157,19 @@ impl VmHeap {
                 memory_offset: 0,
                 protection,
             });
-            VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref())).apply(
+            let allocation = self.allocations[index].as_ref().unwrap();
+            allocation.region.interface::<VmRegionReceiver>().apply(
                 &mut self.transport,
-                Some(memory),
+                Some(Cap::from_ref(allocation.memory.as_ref().unwrap().cap_ref())),
                 Parcel::inline(updates),
             )?;
+            let memory = self.allocations[index]
+                .as_mut()
+                .unwrap()
+                .memory
+                .take()
+                .unwrap();
             self.close(memory)?;
-            self.allocations[index].as_mut().unwrap().memory = None;
             NonNull::new(address as *mut u8).ok_or(Error::Invalid)
         })();
         if result.is_err() {
@@ -169,12 +178,15 @@ impl VmHeap {
         result
     }
     fn release(&mut self, index: usize) -> Result<(), Error> {
-        let allocation = self.allocations[index].unwrap();
-        VmRegionReceiver::from_cap(Cap::from_ref(allocation.region.as_ref()))
+        self.allocations[index]
+            .as_ref()
+            .unwrap()
+            .region
+            .interface::<VmRegionReceiver>()
             .destroy(&mut self.transport)?;
-        self.transport.space.delete(allocation.region.as_ref())?;
-        // The region is gone, even if closing an unpublished backing later fails.
-        self.allocations[index] = None;
+        // Retain the owner if destroy fails; remove it only after acknowledgement.
+        let allocation = self.allocations[index].take().unwrap();
+        drop(allocation.region);
         if let Some(memory) = allocation.memory {
             self.close(memory)?;
         }
@@ -185,7 +197,9 @@ impl VmHeap {
             .allocations
             .iter()
             .position(|entry| {
-                entry.is_some_and(|a| a.address == address && (a.size == size || size == 0))
+                entry
+                    .as_ref()
+                    .is_some_and(|a| a.address == address && (a.size == size || size == 0))
             })
             .ok_or(Error::Invalid)?;
         self.release(index)

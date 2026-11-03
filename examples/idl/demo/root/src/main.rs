@@ -316,15 +316,15 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
     let client = CounterReceiver::from_cap(target);
     assert!(matches!(
         client.add(&mut transport, 0).unwrap().state,
-        CounterState::Empty
+        CounterStateOwned::Empty
     ));
     let value = client.add(&mut transport, 41).unwrap();
-    let CounterState::Ready(signal) = value.state else {
+    let CounterStateOwned::Ready(signal) = value.state else {
         panic!("missing notification")
     };
     transport
         .space
-        .cap::<::sel4::cap_type::Notification>(signal.as_ref())
+        .cap::<::sel4::cap_type::Notification>(signal.cap_ref())
         .unwrap()
         .signal();
     wake.wait();

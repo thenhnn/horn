@@ -18,7 +18,7 @@ pub fn start(manager: &mut Manager) {
         .prepare(&mut *io, &image, launch, definition.bootstrap.clone())
         .unwrap();
     horn_supervisor::client::close_image(io, image);
-    manager.objects(process, definition, 0);
+    manager.objects(Cap::from_ref(process.cap_ref()), definition, 0);
     for grant in definition.namespaces {
         assert_eq!(grant.min_ready, 0, "boot namespace cannot wait for READY");
         let node = manager
@@ -29,9 +29,9 @@ pub fn start(manager: &mut Manager) {
         let directory = manager.namespace.create(&mut manager.io, node, 0).unwrap();
         boot.install(
             &mut manager.io,
-            process,
+            &process,
             grant.slot,
-            directory,
+            &directory,
             None,
             Rights(Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0),
         );
@@ -41,31 +41,38 @@ pub fn start(manager: &mut Manager) {
     let ready = mint(
         io,
         root,
-        manager
+        &manager
             .ctx
             .cap::<Notification>("supervisor.events")
             .unwrap(),
         CORE_READY,
         Rights::WRITE,
     );
-    boot.install(io, process, definition.ready, ready, None, Rights::WRITE);
+    boot.install(io, &process, definition.ready, &ready, None, Rights::WRITE);
     io.space.delete(ready.as_ref()).unwrap();
     for grant in definition.grants {
         let source = match grant.source {
             BootSource::Platform => copy(
                 io,
                 root,
-                manager.ctx.cap::<Endpoint>("supervisor.platform").unwrap(),
+                &manager.ctx.cap::<Endpoint>("supervisor.platform").unwrap(),
             ),
             BootSource::SupervisorFactory => mint(
                 io,
                 root,
-                manager.ctx.cap::<Endpoint>("supervisor.service").unwrap(),
+                &manager.ctx.cap::<Endpoint>("supervisor.service").unwrap(),
                 FACTORY_BADGE,
                 Rights::ALL,
             ),
         };
-        boot.install(io, process, grant.slot, source, None, Rights(grant.rights));
+        boot.install(
+            io,
+            &process,
+            grant.slot,
+            &source,
+            None,
+            Rights(grant.rights),
+        );
         io.space.delete(source.as_ref()).unwrap();
     }
     let mut entries: Vec<_> = definition
@@ -76,8 +83,8 @@ pub fn start(manager: &mut Manager) {
             selector: b.slot as u64,
         })
         .collect();
-    boot.context(io, process, &mut entries);
-    let control = ProcessControlReceiver::from_cap(Cap::from_ref(process.as_ref()));
+    boot.context(io, &process, &mut entries);
+    let control = process.interface::<ProcessControlReceiver>();
     control
         .fault_handler(
             io,
@@ -97,5 +104,5 @@ pub fn start(manager: &mut Manager) {
     if !(cfg!(feature = "boot-tests") && option_env!("SUPERVISOR_STALL") == Some("1")) {
         control.start(io).unwrap();
     }
-    io.space.delete(process.as_ref()).unwrap();
+    drop(process);
 }

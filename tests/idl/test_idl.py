@@ -97,14 +97,16 @@ class Sender:
     assert "impl horn_ipc::RpcInterface for SenderReceiver" in view
     assert "type Tag = SenderTag;" in view
     assert "moved: Cap<Endpoint>" in view
-    assert "borrowed: &Cap<Notification>" in view
-    assert "copied: &Cap<Notification>" in view
+    assert "borrowed: &impl CapView<Notification>" in view
+    assert "copied: &impl CapView<Notification>" in view
     assert "Result<u64, CallError<u64>>" in view
     assert "__horn_transport.call(self.target.cap_ref(), SENDER_CALL_LABEL" in view
     assert "__horn_transport.send(self.target.cap_ref(), SENDER_NOTIFY_LABEL" in view
     for name, mode in (("moved", "MOVE"), ("borrowed", "BORROW"), ("copied", "COPY")):
+        accessor = "as_ref" if mode == "MOVE" else "cap_ref"
         assert (
-            f"{name}: Cap::from_ref({name}.as_ref().with_mode(CapMode::{mode}))" in view
+            f"{name}: Cap::from_ref({name}.{accessor}().with_mode(CapMode::{mode}))"
+            in view
         )
     assert "SenderClient" not in rust
     assert "CapPacker" not in view
@@ -476,7 +478,7 @@ def test_result_is_a_tagged_specialization():
     assert method.result_layout().cnode.slot_count == 4
     rust = emit_rust(schema)
     assert "-> Result<Event, Event>;" in rust
-    assert "-> Result<Event, CallError<Event>>" in rust
+    assert "-> Result<EventOwned, CallError<EventOwned>>" in rust
     assert "reply.value.map_err(CallError::Remote)" in rust
     header, _ = emit_c(schema)
     assert "horn_probe_try_echo_result_t;" in header

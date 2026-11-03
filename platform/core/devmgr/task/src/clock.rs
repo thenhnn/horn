@@ -100,7 +100,7 @@ impl Clock {
             return Err(ClockError::Invalid);
         }
         let root = io.transport.space.root;
-        let note = horn_supervisor::client::copy(&mut io.transport, root, signal);
+        let note = horn_supervisor::client::copy(&mut io.transport, root, &signal);
         self.cancel(io);
         self.signal = Some(note);
         self.deadline = Some(deadline);

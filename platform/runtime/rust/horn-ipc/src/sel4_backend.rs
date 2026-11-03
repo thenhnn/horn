@@ -9,8 +9,8 @@ use sel4::{CPtr, Cap, MessageInfo, Word, sel4_cfg, sel4_cfg_if};
 
 use crate::layout::{CapPacker, CapSpace, CapUnpacker};
 use crate::{
-    CapLayout, CapMode, CapRef, CapSink, Decoder, Encoder, MAX_MESSAGE_BYTES, Rights, RpcError,
-    Transport, Wire, WireCaps,
+    CapLayout, CapMode, CapRef, CapSink, Decoder, Encoder, MAX_MESSAGE_BYTES, ReplyDecode, Rights,
+    RpcError, Transport, Wire, WireCaps,
 };
 
 /// A client-side seL4 transport.
@@ -67,8 +67,20 @@ impl<S: CapSpace> Sel4Transport<S> {
     }
 }
 
+struct ReceivedSlot {
+    slot: sel4::AbsoluteCPtr,
+    active: bool,
+}
+impl Drop for ReceivedSlot {
+    fn drop(&mut self) {
+        if self.active {
+            self.slot.delete().expect("reply receive-slot cleanup");
+        }
+    }
+}
+
 impl<S: CapSpace> Transport for Sel4Transport<S> {
-    fn call<A: Wire, R: Wire>(
+    fn call<A: Wire, R: ReplyDecode>(
         &mut self,
         target: CapRef,
         label: u64,
@@ -93,6 +105,10 @@ impl<S: CapSpace> Transport for Sel4Transport<S> {
             wire_caps.len(),
             words,
         ));
+        let _receive = ReceivedSlot {
+            slot: self.recv_slot.clone(),
+            active: reply.extra_caps() != 0,
+        };
         let mut bytes = [0u8; MAX_MESSAGE_BYTES];
         let length = reply.length() * 8;
         if length < 4 || length > bytes.len() {
@@ -125,14 +141,11 @@ impl<S: CapSpace> Transport for Sel4Transport<S> {
             let mut unpacker =
                 CapUnpacker::new_localizing(&mut self.space, result_layout, received);
             let mut dec = Decoder::new(&bytes[4..length], &mut unpacker);
-            R::decode(&mut dec).and_then(|value| {
+            R::decode_reply(&mut dec).and_then(|value| {
                 unpacker.finish()?;
                 Ok(value)
             })
         };
-        if reply.extra_caps() == 1 {
-            self.recv_slot.delete().map_err(|_| RpcError::Transport)?;
-        }
         if result.is_ok() {
             self.commit_moves(&wire_caps);
         }

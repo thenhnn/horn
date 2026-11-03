@@ -22,8 +22,8 @@ struct DriverConfig {
 }
 include!(concat!(env!("OUT_DIR"), "/drivers.rs"));
 struct Managed {
-    job: Cap<s::SupervisedJobTag>,
-    process: Cap<s::ProcessObjectTag>,
+    job: Option<OwnedCap<s::SupervisedJobTag>>,
+    process: Option<OwnedCap<s::ProcessObjectTag>>,
     device: u64,
     device_id: u64,
     service: Cap<Endpoint>,
@@ -32,9 +32,6 @@ struct Managed {
 pub struct Drivers {
     records: Vec<Managed>,
     pending: Vec<(&'static DriverConfig, d::PciDevice)>,
-}
-fn job(cap: Cap<s::SupervisedJobTag>) -> s::SupervisorJobReceiver {
-    s::SupervisorJobReceiver::from_cap(Cap::from_ref(cap.as_ref()))
 }
 impl Drivers {
     pub fn start(service: &mut Service) -> Self {
@@ -99,16 +96,16 @@ impl Drivers {
             Err(error) => panic!("driver clock lookup: {:?}", error),
         };
         for (cfg, pci) in core::mem::take(&mut self.pending) {
-            self.spawn(service, cfg, &pci, Some(clock));
+            self.spawn(service, cfg, &pci, Some(&clock));
         }
-        service.io().space().delete(clock.as_ref()).unwrap();
+        drop(clock);
     }
     fn spawn(
         &mut self,
         service: &mut Service,
         cfg: &DriverConfig,
         pci: &d::PciDevice,
-        clock: Option<Cap<Endpoint>>,
+        clock: Option<&OwnedCap<Endpoint>>,
     ) {
         let (device, badge) = service
             .claim_driver(pci.id)
@@ -150,79 +147,86 @@ impl Drivers {
         close_image(io, image);
         #[cfg(feature = "boot-tests")]
         assert!(matches!(
-            s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+            managed
+                .interface::<s::SupervisorJobReceiver>()
                 .cleanup_done(&mut *io,),
             Err(CallError::Remote(s::SupervisorError::Busy))
         ));
-        let process = s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+        let process = managed
+            .interface::<s::SupervisorJobReceiver>()
             .process(&mut *io)
             .unwrap();
-        s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+        managed
+            .interface::<s::SupervisorJobReceiver>()
             .watch(&mut *io, &ctx.cap("events").unwrap())
             .unwrap();
-        let ready = s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+        let ready = managed
+            .interface::<s::SupervisorJobReceiver>()
             .signal(&mut *io, s::ServiceSignal::Ready)
             .unwrap();
         boot.install(
             io,
-            process,
+            &process,
             d::DEVICE_DRIVER_CAPS_DEVICE_SLOT,
-            device,
+            &device,
             None,
             Rights::ALL,
         );
         io.space.delete(device.as_ref()).unwrap();
-        let endpoint = s::ProcessControlReceiver::from_cap(Cap::from_ref(process.as_ref()))
+        let endpoint = process
+            .interface::<s::ProcessControlReceiver>()
             .kernel_object(&mut *io, s::ProcessKernelObject::Endpoint)
             .unwrap();
         boot.install(
             io,
-            process,
+            &process,
             d::DEVICE_DRIVER_CAPS_SERVICE_SLOT,
-            endpoint,
+            &endpoint,
             None,
             Rights::ALL,
         );
         let service = mint(
             io,
             root,
-            Cap::<Endpoint>::from_ref(endpoint.as_ref()),
+            &Cap::<Endpoint>::from_ref(endpoint.cap_ref()),
             cfg.badge,
             Rights(cfg.rights),
         );
-        io.space.delete(endpoint.as_ref()).unwrap();
+        drop(endpoint);
         let path = alloc::format!("{}/{}", cfg.namespace, instance);
         let mut published_path = List::default();
         assert!(path.len() <= 96);
         published_path.len = path.len() as _;
         published_path.data[..path.len()].copy_from_slice(path.as_bytes());
-        s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+        managed
+            .interface::<s::SupervisorJobReceiver>()
             .publish(&mut *io, published_path, &service)
             .unwrap();
-        let wake = s::ProcessControlReceiver::from_cap(Cap::from_ref(process.as_ref()))
+        let wake = process
+            .interface::<s::ProcessControlReceiver>()
             .kernel_object(&mut *io, s::ProcessKernelObject::Notification)
             .unwrap();
         boot.install(
             io,
-            process,
+            &process,
             d::DEVICE_DRIVER_CAPS_WAKE_SLOT,
-            wake,
+            &wake,
             None,
             Rights::READ,
         );
         boot.install(
             io,
-            process,
+            &process,
             d::DEVICE_DRIVER_CAPS_IRQ_SIGNAL_SLOT,
-            wake,
+            &wake,
             Some(IRQ),
             Rights::WRITE,
         );
         boot.install(
             io,
-            process,
+            &process,
             d::DEVICE_DRIVER_CAPS_READY_SLOT,
-            ready,
+            &ready,
             None,
             Rights::WRITE,
         );
@@ -233,9 +237,9 @@ impl Drivers {
             #[cfg(feature = "boot-tests")]
             {
                 assert_eq!(
-                    s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref())).require(
+                    managed.interface::<s::SupervisorJobReceiver>().require(
                         &mut *io,
-                        &Cap::from_ref(managed.as_ref()),
+                        &Cap::from_ref(managed.cap_ref()),
                         path.clone(),
                         d::DEVICE_DRIVER_CAPS_CLOCK_SLOT
                     ),
@@ -245,7 +249,7 @@ impl Drivers {
                 outside.len = 17;
                 outside.data[..17].copy_from_slice(b"../services/clock");
                 assert_eq!(
-                    s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref())).require(
+                    managed.interface::<s::SupervisorJobReceiver>().require(
                         &mut *io,
                         &ctx.cap("clocks").unwrap(),
                         outside,
@@ -254,7 +258,8 @@ impl Drivers {
                     Err(CallError::Remote(s::SupervisorError::Invalid))
                 );
             }
-            s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+            managed
+                .interface::<s::SupervisorJobReceiver>()
                 .require(
                     &mut *io,
                     &ctx.cap("clocks").unwrap(),
@@ -265,15 +270,15 @@ impl Drivers {
             let signal = mint(
                 io,
                 root,
-                Cap::<Notification>::from_ref(wake.as_ref()),
+                &Cap::<Notification>::from_ref(wake.cap_ref()),
                 4,
                 Rights::WRITE,
             );
             boot.install(
                 io,
-                process,
+                &process,
                 d::DEVICE_DRIVER_CAPS_ALARM_SIGNAL_SLOT,
-                signal,
+                &signal,
                 None,
                 Rights::WRITE,
             );
@@ -282,57 +287,62 @@ impl Drivers {
         let stop = mint(
             io,
             root,
-            Cap::<Notification>::from_ref(wake.as_ref()),
+            &Cap::<Notification>::from_ref(wake.cap_ref()),
             STOP,
             Rights::WRITE,
         );
-        s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+        managed
+            .interface::<s::SupervisorJobReceiver>()
             .stop_signal(&mut *io, &stop)
             .unwrap();
         io.space.delete(stop.as_ref()).unwrap();
-        s::ProcessControlReceiver::from_cap(Cap::from_ref(process.as_ref()))
-            .bind_notification(&mut *io, &Cap::from_ref(wake.as_ref()))
+        process
+            .interface::<s::ProcessControlReceiver>()
+            .bind_notification(&mut *io, &Cap::from_ref(wake.cap_ref()))
             .unwrap();
-        io.space.delete(wake.as_ref()).unwrap();
-        let stopped = s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+        drop(wake);
+        let stopped = managed
+            .interface::<s::SupervisorJobReceiver>()
             .signal(&mut *io, s::ServiceSignal::Stopped)
             .unwrap();
         boot.install(
             io,
-            process,
+            &process,
             d::DEVICE_DRIVER_CAPS_STOPPED_SLOT,
-            stopped,
+            &stopped,
             None,
             Rights::WRITE,
         );
-        io.space.delete(stopped.as_ref()).unwrap();
-        let runtime = s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+        drop(stopped);
+        let runtime = managed
+            .interface::<s::SupervisorJobReceiver>()
             .client(&mut *io)
             .unwrap();
         boot.install(
             io,
-            process,
+            &process,
             d::DEVICE_DRIVER_CAPS_SUPERVISOR_SLOT,
-            runtime,
+            &runtime,
             None,
             Rights(Rights::WRITE.0 | Rights::GRANT_REPLY.0),
         );
-        io.space.delete(runtime.as_ref()).unwrap();
-        io.space.delete(ready.as_ref()).unwrap();
+        drop(runtime);
+        drop(ready);
         {
             const LOG: u32 = d::DEVICE_DRIVER_CAPS_FIRST_FREE_SLOT;
-            let sink = s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+            let sink = managed
+                .interface::<s::SupervisorJobReceiver>()
                 .log_sink(&mut *io)
                 .unwrap();
             boot.install(
                 io,
-                process,
+                &process,
                 LOG,
-                sink,
+                &sink,
                 None,
                 Rights(Rights::WRITE.0 | Rights::GRANT_REPLY.0),
             );
-            io.space.delete(sink.as_ref()).unwrap();
+            drop(sink);
             let mut entries = alloc::vec![
                 libhorn::startup::Entry {
                     name: "horn.vm",
@@ -393,14 +403,15 @@ impl Drivers {
                     selector: d::DEVICE_DRIVER_CAPS_ALARM_SIGNAL_SLOT as u64,
                 });
             }
-            boot.context(io, process, &mut entries);
+            boot.context(io, &process, &mut entries);
         }
-        s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+        managed
+            .interface::<s::SupervisorJobReceiver>()
             .start(&mut *io)
             .unwrap();
         self.records.push(Managed {
-            job: managed,
-            process,
+            job: Some(managed),
+            process: Some(process),
             device: badge,
             device_id: pci.id,
             service,
@@ -417,7 +428,12 @@ impl Drivers {
             if faults.overflow
                 || sid < 256 && faults.requesters[sid / 64] & (1u64 << (sid % 64)) != 0
             {
-                match job(record.job).request_stop(&mut service.io().transport, s::StopMode::Force)
+                match record
+                    .job
+                    .as_ref()
+                    .unwrap()
+                    .interface::<s::SupervisorJobReceiver>()
+                    .request_stop(&mut service.io().transport, s::StopMode::Force)
                 {
                     Ok(()) | Err(CallError::Remote(s::SupervisorError::Busy)) => {}
                     error => panic!("faulted driver stop: {:?}", error),
@@ -430,16 +446,29 @@ impl Drivers {
             if record.finished {
                 continue;
             }
-            let state = job(record.job).status(&mut service.io().transport).unwrap();
+            let state = record
+                .job
+                .as_ref()
+                .unwrap()
+                .interface::<s::SupervisorJobReceiver>()
+                .status(&mut service.io().transport)
+                .unwrap();
             if state == s::ServiceStatus::AwaitingCleanup {
-                let info =
-                    s::ProcessControlReceiver::from_cap(Cap::from_ref(record.process.as_ref()))
-                        .info(&mut service.io().transport)
-                        .unwrap();
+                let info = record
+                    .process
+                    .as_ref()
+                    .unwrap()
+                    .interface::<s::ProcessControlReceiver>()
+                    .info(&mut service.io().transport)
+                    .unwrap();
                 assert_eq!(info.state, s::ProcessState::Stopping);
                 #[cfg(feature = "boot-tests")]
                 {
-                    let orderly = job(record.job)
+                    let orderly = record
+                        .job
+                        .as_ref()
+                        .unwrap()
+                        .interface::<s::SupervisorJobReceiver>()
                         .cooperative(&mut service.io().transport)
                         .unwrap();
                     horn_runtime::logging::debug!(
@@ -458,15 +487,15 @@ impl Drivers {
                     assert!(service.claim_driver(record.device_id).is_err());
                     horn_runtime::logging::debug!("DEVMGR_ASSIGNMENT_PASS retired=true");
                 }
-                job(record.job)
+                record
+                    .job
+                    .as_ref()
+                    .unwrap()
+                    .interface::<s::SupervisorJobReceiver>()
                     .cleanup_done(&mut service.io().transport)
                     .unwrap();
-                service
-                    .io()
-                    .space()
-                    .delete(record.process.as_ref())
-                    .unwrap();
-                service.io().space().delete(record.job.as_ref()).unwrap();
+                drop(record.process.take());
+                drop(record.job.take());
                 service
                     .io()
                     .space()

@@ -13,8 +13,20 @@ pub fn use_views<T: Transport>(owner: OwnedCap<Endpoint>, io: &mut T) {
     drop(owner);
 }
 
+// Capability-bearing replies arrive owning, including application-error caps.
+// No adoption, unsafe block, or raw handoff is needed in the consumer.
+pub fn receive<T: Transport>(
+    receiver: ProbeReceiver,
+    io: &mut T,
+) -> Result<OwnedCap<Endpoint>, CallError<OwnedCap<Notification>>> {
+    receiver.handoff(io)
+}
+
 // The consumed owner is dropped for both Ok and Err; no remote close in Drop.
-pub fn finish<T: Transport>(owner: OwnedCap<Endpoint>, io: &mut T) -> Result<(), CallError<Event>> {
+pub fn finish<T: Transport>(
+    owner: OwnedCap<Endpoint>,
+    io: &mut T,
+) -> Result<(), CallError<EventOwned>> {
     owner.interface::<ProbeReceiver>().check(io)
 }
 

@@ -9,8 +9,8 @@ use horn_ipc::*;
 pub struct Mapping {
     pub address: usize,
     pub length: usize,
-    pub region: Cap<VmRegionObjectTag>,
-    pub memory: Cap<VmMemoryObjectTag>,
+    pub region: OwnedCap<VmRegionObjectTag>,
+    pub memory: OwnedCap<VmMemoryObjectTag>,
     pub token: u64,
 }
 pub struct Io {
@@ -59,7 +59,7 @@ impl Io {
     }
     pub fn map_cpu(
         &mut self,
-        memory: Cap<VmMemoryObjectTag>,
+        memory: OwnedCap<VmMemoryObjectTag>,
         length: usize,
         token: u64,
     ) -> vtd::Result<Mapping> {
@@ -78,7 +78,8 @@ impl Io {
                 },
             )
             .map_err(vm_error)?;
-        let address = VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+        let address = region
+            .interface::<VmRegionReceiver>()
             .info(&mut self.transport)
             .map_err(vm_error)?
             .address as usize;
@@ -94,10 +95,11 @@ impl Io {
             memory_offset: 0,
             protection: VmProtection(3),
         });
-        VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+        region
+            .interface::<VmRegionReceiver>()
             .apply(
                 &mut self.transport,
-                Some(Cap::from_ref(memory.as_ref())),
+                Some(Cap::from_ref(memory.cap_ref())),
                 Parcel::inline(updates),
             )
             .map_err(|_| vtd::Error::Backend)?;
@@ -112,18 +114,20 @@ impl Io {
     /// Release a quiesced, no-longer-used internal MMIO mapping and its lease.
     pub fn release_mmio(
         &mut self,
-        region: Cap<VmRegionObjectTag>,
-        memory: Cap<VmMemoryObjectTag>,
+        region: OwnedCap<VmRegionObjectTag>,
+        memory: OwnedCap<VmMemoryObjectTag>,
         token: u64,
     ) {
-        VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+        region
+            .interface::<VmRegionReceiver>()
             .destroy(&mut self.transport)
             .expect("internal MMIO CPU unmap");
-        self.space().delete(region.as_ref()).unwrap();
-        VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref()))
+        drop(region);
+        memory
+            .interface::<VmMemoryReceiver>()
             .close(&mut self.transport)
             .expect("internal MMIO memory close");
-        self.space().delete(memory.as_ref()).unwrap();
+        drop(memory);
         {
             let io = &mut *self;
             io.platform.revoke_mmio(&mut io.transport, token)

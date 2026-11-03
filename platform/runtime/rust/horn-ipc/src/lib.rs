@@ -12,7 +12,19 @@ use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 mod owned;
-pub use owned::{BorrowedCap, CapView, OwnedCap};
+pub use owned::{BorrowedCap, CapView, LocalCapSpace, OwnedCap, OwnedList};
+
+/// Reply-only decoding supports non-Copy owning values without changing Wire.
+pub trait ReplyDecode: Sized {
+    const REPLY_SIZE: usize;
+    fn decode_reply(input: &mut Decoder<'_>) -> Result<Self, RpcError>;
+}
+impl<T: Wire> ReplyDecode for T {
+    const REPLY_SIZE: usize = T::SIZE;
+    fn decode_reply(input: &mut Decoder<'_>) -> Result<Self, RpcError> {
+        T::decode(input)
+    }
+}
 
 mod slots;
 pub use slots::TaskSlots;
@@ -342,6 +354,13 @@ pub trait CapSink {
 }
 
 pub trait CapSource {
+    fn pop_owned(
+        &mut self,
+        _mode: CapMode,
+        _rights: Rights,
+    ) -> Result<OwnedCap<Endpoint>, RpcError> {
+        Err(RpcError::NotLocal)
+    }
     fn pop(&mut self) -> Result<CapRef, RpcError>;
     fn pop_typed(&mut self, mode: CapMode, rights: Rights) -> Result<CapRef, RpcError> {
         let mut cap = self.pop()?;
@@ -914,7 +933,7 @@ pub use sel4_backend::{Sel4Reply, Sel4Server, Sel4Transport};
 pub use sel4_space::Sel4CapSpace;
 
 impl<T: Transport + ?Sized> Transport for &mut T {
-    fn call<A: Wire, R: Wire>(
+    fn call<A: Wire, R: ReplyDecode>(
         &mut self,
         target: CapRef,
         label: u64,
@@ -936,7 +955,7 @@ impl<T: Transport + ?Sized> Transport for &mut T {
 }
 
 pub trait Transport {
-    fn call<A: Wire, R: Wire>(
+    fn call<A: Wire, R: ReplyDecode>(
         &mut self,
         target: CapRef,
         label: u64,

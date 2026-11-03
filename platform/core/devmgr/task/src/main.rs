@@ -81,7 +81,8 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         .unwrap();
     // IPC/heap are initialized, and this transport is reserved exclusively for logging.
     unsafe {
-        horn_runtime::logging::install(log_io, Cap::from_ref(sink.as_ref())).unwrap();
+        // The static logger takes a process-lifetime raw grant.
+        horn_runtime::logging::install(log_io, Cap::from_ref(sink.into_raw().as_ref())).unwrap();
     }
     let mut transport = ctx.transport().expect("devmgr transport");
     let mut inbox = ctx.inbox("service").unwrap();

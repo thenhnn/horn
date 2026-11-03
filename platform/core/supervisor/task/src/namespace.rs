@@ -30,7 +30,7 @@ impl Namespace {
                 tree.directory(scope.path).unwrap();
             }
         }
-        let processes = copy(io, root, observer);
+        let processes = copy(io, root, &observer);
         tree.declare("/services/procd", u64::MAX, processes)
             .unwrap();
         tree.ready(u64::MAX);
@@ -66,11 +66,11 @@ impl Namespace {
         let anchor = mint(
             io,
             self.root,
-            self.service,
+            &self.service,
             DIRECTORY_BADGE + self.grants.len() as u64,
             Rights(Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0),
         );
-        let exported = copy(io, self.root, anchor);
+        let exported = copy(io, self.root, &anchor);
         self.grants.push(Some(Grant {
             scope,
             owner,
@@ -226,7 +226,7 @@ impl r::RegistryDirectory for DirectoryCaller<'_> {
             .tree
             .value(node)
             .ok_or(r::RegistryError::Invalid)?;
-        Ok(copy(&mut self.manager.io, self.manager.cspace, endpoint))
+        Ok(copy(&mut self.manager.io, self.manager.cspace, &endpoint))
     }
     fn open(&mut self, path: List<u8, 96>) -> Result<Cap<r::RegistryNodeTag>, r::RegistryError> {
         let node = self.resolve(&path)?;
@@ -252,7 +252,7 @@ impl r::RegistryDirectory for DirectoryCaller<'_> {
         if generation > current {
             return Err(r::RegistryError::Invalid);
         }
-        let retained = copy(&mut self.manager.io, self.manager.cspace, signal);
+        let retained = copy(&mut self.manager.io, self.manager.cspace, &signal);
         let grant = self.manager.namespace.grants[index].as_mut().unwrap();
         if let Some(old) = grant.signal.replace(retained) {
             self.manager.io.space.delete(old.as_ref()).unwrap();

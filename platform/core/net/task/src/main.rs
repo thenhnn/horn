@@ -20,8 +20,8 @@ type Io = Sel4Transport<Sel4CapSpace>;
 struct Time {
     page: *const DefaultTimePage,
     clock: Clock,
-    _memory: Cap<v::VmMemoryObjectTag>,
-    _region: Cap<v::VmRegionObjectTag>,
+    _memory: OwnedCap<v::VmMemoryObjectTag>,
+    _region: OwnedCap<v::VmRegionObjectTag>,
 }
 impl Time {
     fn new(io: &mut Io, ctx: &horn_runtime::Context) -> Self {
@@ -46,7 +46,8 @@ impl Time {
                 },
             )
             .unwrap();
-        let address = v::VmRegionReceiver::from_cap(Cap::from_ref(writable.as_ref()))
+        let address = writable
+            .interface::<v::VmRegionReceiver>()
             .info(&mut *io)
             .unwrap()
             .address;
@@ -62,21 +63,24 @@ impl Time {
             memory_offset: 0,
             protection: v::VmProtection(3),
         });
-        v::VmRegionReceiver::from_cap(Cap::from_ref(writable.as_ref()))
+        writable
+            .interface::<v::VmRegionReceiver>()
             .apply(
                 &mut *io,
-                Some(Cap::from_ref(memory.as_ref())),
+                Some(Cap::from_ref(memory.cap_ref())),
                 Parcel::inline(updates),
             )
             .unwrap();
         unsafe {
             (address as *mut DefaultTimePage).write(page);
         }
-        v::VmRegionReceiver::from_cap(Cap::from_ref(writable.as_ref()))
+        writable
+            .interface::<v::VmRegionReceiver>()
             .destroy(&mut *io)
             .unwrap();
-        io.space.delete(writable.as_ref()).unwrap();
-        v::VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref()))
+        drop(writable);
+        memory
+            .interface::<v::VmMemoryReceiver>()
             .add_seals(&mut *io, v::VmSeals(15))
             .unwrap();
         let region = ctx
@@ -93,7 +97,8 @@ impl Time {
                 },
             )
             .unwrap();
-        let address = v::VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+        let address = region
+            .interface::<v::VmRegionReceiver>()
             .info(&mut *io)
             .unwrap()
             .address;
@@ -109,10 +114,11 @@ impl Time {
             memory_offset: 0,
             protection: v::VmProtection::READ,
         });
-        v::VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+        region
+            .interface::<v::VmRegionReceiver>()
             .apply(
                 &mut *io,
-                Some(Cap::from_ref(memory.as_ref())),
+                Some(Cap::from_ref(memory.cap_ref())),
                 Parcel::inline(updates),
             )
             .unwrap();
@@ -135,9 +141,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     let ethernet_signal = ctx.cap::<Notification>("ethernet_signal").unwrap();
     let timer_signal = ctx.cap("timer_signal").unwrap();
     let time = Time::new(&mut io, &ctx);
-    let alarm_cap = time.clock.alarm(&mut io).unwrap();
-    // Fresh RPC result: transfer its exclusive local slot ownership to RAII.
-    let alarm = unsafe { io.space.own(alarm_cap) }.unwrap();
+    let alarm = time.clock.alarm(&mut io).unwrap();
     let mut armed = None;
     let info = EthernetInterfaceReceiver::from_cap(ethernet)
         .info(&mut io)

@@ -9,7 +9,7 @@ pub struct Time {
     clock: Cap<ClockInterfaceTag>,
     signal: Cap<Notification>,
     wake: sel4::cap::Notification,
-    alarm: Cap<AlarmObjectTag>,
+    alarm: OwnedCap<AlarmObjectTag>,
     pending_irq: bool,
     last: u64,
 }
@@ -46,13 +46,15 @@ impl Time {
         Ok(now)
     }
     pub fn cancel(&mut self, session: &mut DeviceSession) -> Result<()> {
-        AlarmInterfaceReceiver::from_cap(Cap::from_ref(self.alarm.as_ref()))
+        self.alarm
+            .interface::<AlarmInterfaceReceiver>()
             .cancel(session.transport())
             .map_err(|_| Error::Backend)
     }
     /// Arm without waiting; the bound wake notification also wakes endpoint recv.
     pub fn arm(&mut self, session: &mut DeviceSession, deadline: u64) -> Result<()> {
-        AlarmInterfaceReceiver::from_cap(Cap::from_ref(self.alarm.as_ref()))
+        self.alarm
+            .interface::<AlarmInterfaceReceiver>()
             .arm(session.transport(), deadline, &self.signal)
             .map_err(|_| Error::Backend)
     }

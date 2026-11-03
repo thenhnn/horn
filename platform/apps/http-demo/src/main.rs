@@ -15,7 +15,7 @@ enum Phase {
     Done,
 }
 struct Connection {
-    tcp: Cap<TcpConnectionObjectTag>,
+    tcp: OwnedCap<TcpConnectionObjectTag>,
     header: [u8; 1024],
     phase: Phase,
 }
@@ -31,7 +31,8 @@ impl Connection {
                     Phase::Response(_) => TcpEvents::WRITABLE.0,
                     Phase::Done => return,
                 };
-                TcpConnectionReceiver::from_cap(Cap::from_ref(self.tcp.as_ref()))
+                self.tcp
+                    .interface::<TcpConnectionReceiver>()
                     .watch(io, &signal, TcpEvents(events | TcpEvents::CLOSED.0))
                     .unwrap();
                 return;
@@ -39,9 +40,7 @@ impl Connection {
             budget -= 1;
             let interest = match self.phase {
                 Phase::Headers(used) => {
-                    match TcpConnectionReceiver::from_cap(Cap::from_ref(self.tcp.as_ref()))
-                        .read(&mut *io)
-                    {
+                    match self.tcp.interface::<TcpConnectionReceiver>().read(&mut *io) {
                         Ok(data) => {
                             let n = data.len as usize;
                             if n == 0 || n > self.header.len() - used {
@@ -71,7 +70,9 @@ impl Connection {
                     let mut data = List::default();
                     data.len = n as _;
                     data.data[..n].copy_from_slice(&RESPONSE[offset..offset + n]);
-                    match TcpConnectionReceiver::from_cap(Cap::from_ref(self.tcp.as_ref()))
+                    match self
+                        .tcp
+                        .interface::<TcpConnectionReceiver>()
                         .write(&mut *io, data)
                     {
                         Ok(written) => {
@@ -94,17 +95,21 @@ impl Connection {
                 }
                 Phase::Done => return,
             };
-            TcpConnectionReceiver::from_cap(Cap::from_ref(self.tcp.as_ref()))
+            self.tcp
+                .interface::<TcpConnectionReceiver>()
                 .watch(io, &signal, TcpEvents(interest | TcpEvents::CLOSED.0))
                 .unwrap();
             return;
         }
     }
     fn close(self, io: &mut Io) {
-        TcpConnectionReceiver::from_cap(Cap::from_ref(self.tcp.as_ref()))
-            .finish(&mut *io)
-            .unwrap();
-        io.space.delete(self.tcp.as_ref()).unwrap();
+        let result = self
+            .tcp
+            .interface::<TcpConnectionReceiver>()
+            .finish(&mut *io);
+        drop(self);
+        // Local cleanup precedes a possible abort when reporting RPC failure.
+        result.unwrap();
     }
 }
 fn main(mut ctx: horn_runtime::Context) -> ! {
@@ -123,7 +128,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
             connections
                 .try_reserve(1)
                 .expect("HTTP connection metadata quota");
-            match TcpServerReceiver::from_cap(Cap::from_ref(listener.as_ref())).accept(&mut io) {
+            match listener.interface::<TcpServerReceiver>().accept(&mut io) {
                 Ok(tcp) => connections.push(Connection {
                     tcp,
                     header: [0; 1024],
@@ -143,7 +148,8 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
             }
         }
         if connections.len() < MAX_CONNECTIONS {
-            TcpServerReceiver::from_cap(Cap::from_ref(listener.as_ref()))
+            listener
+                .interface::<TcpServerReceiver>()
                 .watch(&mut io, &signal, TcpEvents::ACCEPT)
                 .unwrap();
         }

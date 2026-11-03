@@ -90,43 +90,32 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
                 .control()
                 .map_bar_window(state.session.transport(), bar, 0, 4096, &space)
                 .unwrap();
-            DeviceMmioReceiver::from_cap(Cap::from_ref(unopened.as_ref()))
+            unopened
+                .interface::<DeviceMmioReceiver>()
                 .close(state.session.transport())
                 .unwrap();
-            state
-                .session
-                .transport()
-                .space
-                .delete(unopened.as_ref())
-                .unwrap();
+            drop(unopened);
             let lease = state
                 .session
                 .control()
                 .map_bar_window(state.session.transport(), bar, 0, 4096, &space)
                 .unwrap();
-            let memory = DeviceMmioReceiver::from_cap(Cap::from_ref(lease.as_ref()))
+            let memory = lease
+                .interface::<DeviceMmioReceiver>()
                 .memory(state.session.transport())
                 .unwrap();
             assert!(matches!(
-                DeviceMmioReceiver::from_cap(Cap::from_ref(lease.as_ref()))
-                    .memory(state.session.transport(),),
+                lease
+                    .interface::<DeviceMmioReceiver>()
+                    .memory(state.session.transport()),
                 Err(CallError::Remote(DeviceError::NotFound))
             ));
-            DeviceMmioReceiver::from_cap(Cap::from_ref(lease.as_ref()))
+            lease
+                .interface::<DeviceMmioReceiver>()
                 .close(state.session.transport())
                 .unwrap();
-            state
-                .session
-                .transport()
-                .space
-                .delete(memory.as_ref())
-                .unwrap();
-            state
-                .session
-                .transport()
-                .space
-                .delete(lease.as_ref())
-                .unwrap();
+            drop(memory);
+            drop(lease);
             let mut windows = alloc::vec::Vec::new();
             for _ in 0..8 {
                 windows.push(state.session.mmio_window(bar, 0, 4096));

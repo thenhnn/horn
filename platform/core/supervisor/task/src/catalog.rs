@@ -76,23 +76,23 @@ impl Manager {
             for binding in object.slots {
                 self.boot.install(
                     &mut self.io,
-                    process,
+                    &process,
                     binding.slot,
-                    capability,
+                    &capability,
                     binding.badge,
                     Rights(binding.rights),
                 );
             }
             if object.bind {
                 ProcessControlReceiver::from_cap(Cap::from_ref(process.as_ref()))
-                    .bind_notification(&mut self.io, &Cap::from_ref(capability.as_ref()))
+                    .bind_notification(&mut self.io, &Cap::from_ref(capability.cap_ref()))
                     .unwrap();
             }
             for export in object.exports {
                 let endpoint = mint(
                     &mut self.io,
                     self.cspace,
-                    Cap::<Endpoint>::from_ref(capability.as_ref()),
+                    &Cap::<Endpoint>::from_ref(capability.cap_ref()),
                     export.badge,
                     Rights(export.rights),
                 );
@@ -105,7 +105,7 @@ impl Manager {
                     self.namespace.hide(node);
                 }
             }
-            self.io.space.delete(capability.as_ref()).unwrap();
+            drop(capability);
         }
     }
     fn requirements(&self, definition: &ServiceDefinition) -> Option<Vec<usize>> {
@@ -174,25 +174,31 @@ impl Manager {
                 manager: self,
                 badge: FACTORY_BADGE,
             }
-            .prepare(image, launch, definition.bootstrap.clone())
+            .prepare(
+                Cap::from_ref(image.cap_ref()),
+                launch,
+                definition.bootstrap.clone(),
+            )
             .unwrap();
             horn_supervisor::client::close_image(&mut self.io, image);
             let i = self.jobs.len() - 1;
             self.jobs[i].internal = true;
-            let process = self.jobs[i].process;
+            // Temporary raw startup descriptor; the job retains its owner.
+            let process =
+                Cap::<ProcessObjectTag>::from_ref(self.jobs[i].process.as_ref().unwrap().cap_ref());
             self.objects(process, definition, (i + 1) as u64);
             let ready = mint(
                 &mut self.io,
                 self.cspace,
-                self.ctx.cap::<Notification>("supervisor.events").unwrap(),
+                &self.ctx.cap::<Notification>("supervisor.events").unwrap(),
                 ready_bit(i),
                 Rights::WRITE,
             );
             self.boot.install(
                 &mut self.io,
-                process,
+                &process,
                 definition.ready,
-                ready,
+                &ready,
                 None,
                 Rights::WRITE,
             );
@@ -205,7 +211,7 @@ impl Manager {
                     .context
                     .iter()
                     .any(|b| b.name == "horn.log" && b.slot == required.slot);
-                let endpoint = if logging {
+                let sink = if logging {
                     assert!(
                         self.namespace.is_hidden(node),
                         "logging factory must be supervisor-only"
@@ -213,26 +219,28 @@ impl Manager {
                     let mut name = List::default();
                     name.len = definition.name.len() as _;
                     name.data[..definition.name.len()].copy_from_slice(definition.name.as_bytes());
-                    let sink = horn_log::protocol::LogFactoryReceiver::from_cap(Cap::from_ref(
-                        endpoint.as_ref(),
-                    ))
-                    .create_sink(&mut self.io, name)
-                    .unwrap();
-                    Cap::<Endpoint>::from_ref(sink.as_ref())
+                    Some(
+                        horn_log::protocol::LogFactoryReceiver::from_cap(Cap::from_ref(
+                            endpoint.as_ref(),
+                        ))
+                        .create_sink(&mut self.io, name)
+                        .unwrap(),
+                    )
                 } else {
-                    endpoint
+                    None
                 };
+                let endpoint = sink
+                    .as_ref()
+                    .map_or(endpoint, |sink| Cap::<Endpoint>::from_ref(sink.cap_ref()));
                 self.boot.install(
                     &mut self.io,
-                    process,
+                    &process,
                     required.slot,
-                    endpoint,
+                    &endpoint,
                     None,
                     Rights(Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0),
                 );
-                if logging {
-                    self.io.space.delete(endpoint.as_ref()).unwrap();
-                }
+                drop(sink);
             }
             for grant in definition.namespaces {
                 let node = self
@@ -246,9 +254,9 @@ impl Manager {
                     .unwrap();
                 self.boot.install(
                     &mut self.io,
-                    process,
+                    &process,
                     grant.slot,
-                    directory,
+                    &directory,
                     None,
                     Rights(Rights::WRITE.0 | Rights::GRANT.0 | Rights::GRANT_REPLY.0),
                 );
@@ -262,10 +270,16 @@ impl Manager {
                     selector: binding.slot as u64,
                 })
                 .collect();
-            self.boot.context(&mut self.io, process, &mut entries);
+            self.boot.context(&mut self.io, &process, &mut entries);
             self.jobs[i].lifecycle.start().unwrap();
             self.jobs[i].deadline = now().wrapping_add(self.ticks * crate::ready_timeout_us());
-            self.process(i).start(&mut self.io).unwrap();
+            self.jobs[i]
+                .process
+                .as_ref()
+                .unwrap()
+                .interface::<ProcessControlReceiver>()
+                .start(&mut self.io)
+                .unwrap();
             self.io.space.delete(owner.as_ref()).unwrap();
             horn_runtime::logging::info!("starting {}", definition.name.bold());
         }

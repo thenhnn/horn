@@ -33,16 +33,15 @@ impl DeviceAccess {
         self as u32 & 2 != 0
     }
 }
-#[derive(Clone, Copy)]
 struct CpuMapping {
     address: usize,
     length: usize,
-    region: Cap<VmRegionObjectTag>,
-    memory: Cap<VmMemoryObjectTag>,
+    region: OwnedCap<VmRegionObjectTag>,
+    memory: OwnedCap<VmMemoryObjectTag>,
 }
 struct Buffer {
     cpu: CpuMapping,
-    mapping: Cap<DeviceMappingObjectTag>,
+    mapping: OwnedCap<DeviceMappingObjectTag>,
     iova: u64,
     source: Option<(usize, usize, DeviceAccess)>,
 }
@@ -56,7 +55,7 @@ struct Bar {
 #[must_use = "explicitly close the MMIO window or retain it until assignment teardown"]
 pub struct MmioWindow {
     cpu: CpuMapping,
-    lease: Cap<DeviceMmioObjectTag>,
+    lease: OwnedCap<DeviceMmioObjectTag>,
 }
 impl MmioWindow {
     pub fn pointer(&self) -> NonNull<u8> {
@@ -76,7 +75,8 @@ pub struct DeviceSession {
     device: Cap<DeviceObjectTag>,
     bars: Vec<Bar>,
     buffers: Vec<Buffer>,
-    irq: Option<Cap<Notification>>,
+    irq: Option<sel4::cap::Notification>,
+    _irq_owner: Option<OwnedCap<Notification>>,
 }
 impl DeviceSession {
     pub fn new(
@@ -93,6 +93,7 @@ impl DeviceSession {
             bars: Vec::new(),
             buffers: Vec::new(),
             irq: None,
+            _irq_owner: None,
         }
     }
     /// Caller-owned application IPC transport for additional scoped protocols.
@@ -103,7 +104,7 @@ impl DeviceSession {
     pub fn control(&self) -> DeviceControlReceiver {
         DeviceControlReceiver::from_cap(Cap::from_ref(self.device.as_ref()))
     }
-    fn map_cpu(&mut self, memory: Cap<VmMemoryObjectTag>, length: usize) -> CpuMapping {
+    fn map_cpu(&mut self, memory: OwnedCap<VmMemoryObjectTag>, length: usize) -> CpuMapping {
         let region = VmAddressSpaceReceiver::from_cap(Cap::from_ref(self.space.as_ref()))
             .reserve(
                 &mut self.transport,
@@ -116,7 +117,8 @@ impl DeviceSession {
                 },
             )
             .expect("CPU region");
-        let address = VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+        let address = region
+            .interface::<VmRegionReceiver>()
             .info(&mut self.transport)
             .expect("CPU region info")
             .address
@@ -134,10 +136,11 @@ impl DeviceSession {
             memory_offset: 0,
             protection: VmProtection(3),
         });
-        VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+        region
+            .interface::<VmRegionReceiver>()
             .apply(
                 &mut self.transport,
-                Some(Cap::from_ref(memory.as_ref())),
+                Some(Cap::from_ref(memory.cap_ref())),
                 Parcel::inline(updates),
             )
             .expect("CPU map");
@@ -203,7 +206,8 @@ impl DeviceSession {
             .control()
             .map_bar_window(self.transport(), index, offset, length as _, &space)
             .expect("scoped MMIO window");
-        let memory = DeviceMmioReceiver::from_cap(Cap::from_ref(grant.as_ref()))
+        let memory = grant
+            .interface::<DeviceMmioReceiver>()
             .memory(&mut self.transport)
             .expect("MMIO memory grant");
         let cpu = self.map_cpu(memory, length);
@@ -213,23 +217,20 @@ impl DeviceSession {
     /// local cap slots. Failure aborts; do not reuse raw pointers or the session.
     /// This does NOT reset hardware or establish DMA quiescence.
     pub fn close_window(&mut self, window: MmioWindow) {
-        DeviceMmioReceiver::from_cap(Cap::from_ref(window.lease.as_ref()))
+        window
+            .lease
+            .interface::<DeviceMmioReceiver>()
             .close(&mut self.transport)
             .expect("MMIO window revoke acknowledgement");
-        VmRegionReceiver::from_cap(Cap::from_ref(window.cpu.region.as_ref()))
+        window
+            .cpu
+            .region
+            .interface::<VmRegionReceiver>()
             .destroy(&mut self.transport)
             .expect("MMIO virtual reservation release");
-        self.transport
-            .space
-            .delete(window.cpu.region.as_ref())
-            .unwrap();
-        // Root already closed/revoked the memory and lease authorities. Only
-        // empty/local descendant slots remain: do not RPC through revoked caps.
-        self.transport
-            .space
-            .delete(window.cpu.memory.as_ref())
-            .unwrap();
-        self.transport.space.delete(window.lease.as_ref()).unwrap();
+        // Root already revoked the memory and lease. Drop only retires local
+        // slots; never RPC through the revoked descendants.
+        drop(window);
     }
     /// Resolve only within CPU-mapped BAR grants. The numeric bus address is
     /// a selector, not authority to map arbitrary physical memory.
@@ -249,16 +250,19 @@ impl DeviceSession {
     /// Retain the notification grant in this session; caller can wait, not signal.
     pub fn interrupt(&mut self) -> sel4::cap::Notification {
         if self.irq.is_none() {
+            let notification = self
+                .control()
+                .interrupt(self.transport())
+                .expect("remapped IRQ");
             self.irq = Some(
-                self.control()
-                    .interrupt(self.transport())
-                    .expect("remapped IRQ"),
+                self.transport
+                    .space
+                    .cap(notification.cap_ref())
+                    .expect("IRQ notification"),
             );
+            self._irq_owner = Some(notification);
         }
-        self.transport
-            .space
-            .cap(self.irq.unwrap().as_ref())
-            .expect("IRQ notification")
+        self.irq.unwrap()
     }
     /// Use a caller-owned notification; signal and receive rights may be split.
     pub fn interrupt_on(
@@ -270,7 +274,13 @@ impl DeviceSession {
         self.control()
             .interrupt_to(self.transport(), signal)
             .expect("remapped IRQ binding");
-        self.irq = Some(receive);
+        // This receive grant belongs to the immutable startup context.
+        self.irq = Some(
+            self.transport
+                .space
+                .cap(receive.as_ref())
+                .expect("initial IRQ notification"),
+        );
         self.interrupt()
     }
     /// # Safety
@@ -332,7 +342,7 @@ impl DeviceSession {
             self.control()
                 .map(
                     self.transport(),
-                    &Cap::from_ref(cpu.memory.as_ref()),
+                    &Cap::from_ref(cpu.memory.cap_ref()),
                     0,
                     length as _,
                     access as u32,
@@ -350,28 +360,28 @@ impl DeviceSession {
                 let mut offset = 0;
                 while offset < length {
                     let chunk = (length - offset).min(MAX_PAGES * PAGE);
-                    let populated =
-                        DeviceMappingReceiver::from_cap(Cap::from_ref(dma.mapping.as_ref()))
-                            .append(
-                                &mut self.transport,
-                                &Cap::from_ref(cpu.memory.as_ref()),
-                                offset as _,
-                                chunk as _,
-                            )?;
+                    let populated = dma.mapping.interface::<DeviceMappingReceiver>().append(
+                        &mut self.transport,
+                        &Cap::from_ref(cpu.memory.cap_ref()),
+                        offset as _,
+                        chunk as _,
+                    )?;
                     assert_eq!(populated, (offset + chunk) as u64);
                     offset += chunk;
                     if trace && offset % (MAX_PAGES * PAGE * 128) == 0 {
                         sel4::debug_println!("HORN_DMA_ALLOC appended={}", offset);
                     }
                 }
-                DeviceMappingReceiver::from_cap(Cap::from_ref(dma.mapping.as_ref()))
+                dma.mapping
+                    .interface::<DeviceMappingReceiver>()
                     .finish(&mut self.transport)
             })();
             if result.is_err() {
-                DeviceMappingReceiver::from_cap(Cap::from_ref(dma.mapping.as_ref()))
+                dma.mapping
+                    .interface::<DeviceMappingReceiver>()
                     .close(&mut self.transport)
                     .expect("partial DMA rollback/drain");
-                self.transport.space.delete(dma.mapping.as_ref()).unwrap();
+                drop(dma);
                 panic!("DMA population: {:?}", result);
             }
             dma
@@ -442,13 +452,12 @@ impl DeviceSession {
     fn release(&mut self, index: usize, copy_back: bool) {
         let buffer = &self.buffers[index];
         // Leave the record and all CPU backing retained on uncertain close.
-        DeviceMappingReceiver::from_cap(Cap::from_ref(buffer.mapping.as_ref()))
+        buffer
+            .mapping
+            .interface::<DeviceMappingReceiver>()
             .close(&mut self.transport)
             .expect("DMA invalidate/drain");
-        self.transport
-            .space
-            .delete(buffer.mapping.as_ref())
-            .unwrap();
+        // Local owners stay in the record through unmap and authority close.
         if copy_back {
             let (source, length, access) = buffer.source.expect("shared buffer");
             if access.writes() {
@@ -461,15 +470,17 @@ impl DeviceSession {
                 }
             }
         }
-        let cpu = buffer.cpu;
-        VmRegionReceiver::from_cap(Cap::from_ref(cpu.region.as_ref()))
+        let cpu = &buffer.cpu;
+        cpu.region
+            .interface::<VmRegionReceiver>()
             .destroy(&mut self.transport)
             .expect("CPU unmap");
-        self.transport.space.delete(cpu.region.as_ref()).unwrap();
-        VmMemoryReceiver::from_cap(Cap::from_ref(cpu.memory.as_ref()))
+
+        cpu.memory
+            .interface::<VmMemoryReceiver>()
             .close(&mut self.transport)
             .expect("RAM authority close");
-        self.transport.space.delete(cpu.memory.as_ref()).unwrap();
+
         self.buffers.swap_remove(index);
     }
 }

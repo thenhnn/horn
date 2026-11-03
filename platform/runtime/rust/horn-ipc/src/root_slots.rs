@@ -97,6 +97,9 @@ impl LocalSlots {
     pub fn take(&mut self, slot: usize) -> bool {
         self.owned.remove(&slot)
     }
+    pub fn restore(&mut self, slot: usize) {
+        assert!(self.owned.insert(slot), "duplicate raw slot ownership");
+    }
     /// The detached owner has successfully deleted its capability.
     pub fn release_taken(&self, slot: usize) {
         self.pool.release(slot);

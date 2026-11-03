@@ -17,7 +17,7 @@ fn reserve(
     transport: &mut Sel4Transport<Sel4CapSpace>,
     space: Cap<VmAddressSpaceTag>,
     size: u64,
-) -> Cap<VmRegionObjectTag> {
+) -> OwnedCap<VmRegionObjectTag> {
     VmAddressSpaceReceiver::from_cap(space)
         .reserve(
             transport,
@@ -31,11 +31,12 @@ fn reserve(
         )
         .unwrap()
 }
-fn destroy(transport: &mut Sel4Transport<Sel4CapSpace>, region: Cap<VmRegionObjectTag>) {
-    VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+fn destroy(transport: &mut Sel4Transport<Sel4CapSpace>, region: OwnedCap<VmRegionObjectTag>) {
+    region
+        .interface::<VmRegionReceiver>()
         .destroy(&mut *transport)
         .unwrap();
-    transport.space.delete(region.as_ref()).unwrap();
+    drop(region);
 }
 
 pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Sel4CapSpace>) {
@@ -54,14 +55,15 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
     let lease = VmFactoryReceiver::from_cap(factory)
         .delegate(&mut transport, 13)
         .unwrap();
-    let grant = VmUntypedReceiver::from_cap(Cap::from_ref(lease.as_ref()))
+    let grant = lease
+        .interface::<VmUntypedReceiver>()
         .capability(&mut transport)
         .unwrap();
     assert_eq!(grant.size_bits, 13);
     let untyped = grant.capability;
     let kernel_untyped = transport
         .space
-        .cap::<::sel4::cap_type::Untyped>(untyped.as_ref())
+        .cap::<::sel4::cap_type::Untyped>(untyped.cap_ref())
         .unwrap();
     let slot = transport.space.reserve_slot().unwrap();
     kernel_untyped
@@ -79,7 +81,8 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
             .charged_bytes,
         initial_charge + 8192
     );
-    VmUntypedReceiver::from_cap(Cap::from_ref(lease.as_ref()))
+    lease
+        .interface::<VmUntypedReceiver>()
         .close(&mut transport)
         .unwrap();
     let derived = transport
@@ -87,8 +90,8 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         .register(::sel4::cap::Tcb::from_bits(slot.path().bits()))
         .unwrap();
     transport.space.delete(derived).unwrap();
-    transport.space.delete(untyped.as_ref()).unwrap();
-    transport.space.delete(lease.as_ref()).unwrap();
+    drop(untyped);
+    drop(lease);
     assert_eq!(
         VmFactoryReceiver::from_cap(factory)
             .info(&mut transport,)
@@ -136,10 +139,12 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         .unwrap();
     let first = reserve(&mut transport, address_space, 8192);
     let alias = reserve(&mut transport, address_space, 8192);
-    let first_info = VmRegionReceiver::from_cap(Cap::from_ref(first.as_ref()))
+    let first_info = first
+        .interface::<VmRegionReceiver>()
         .info(&mut transport)
         .unwrap();
-    let alias_info = VmRegionReceiver::from_cap(Cap::from_ref(alias.as_ref()))
+    let alias_info = alias
+        .interface::<VmRegionReceiver>()
         .info(&mut transport)
         .unwrap();
     let mapping = VmMap {
@@ -149,11 +154,12 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         protection: rw,
     };
     let update = VmUpdate::Map(mapping);
-    for region in [first, alias] {
-        VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+    for region in [&first, &alias] {
+        region
+            .interface::<VmRegionReceiver>()
             .apply(
                 &mut transport,
-                Some(memory),
+                Some(Cap::from_ref(memory.cap_ref())),
                 batch(&[VmUpdate::Prepare(range), update]),
             )
             .unwrap();
@@ -167,12 +173,14 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
     }
     let write_and_lock = VmSeals(VmSeals::WRITE.0 | VmSeals::SEAL.0);
     assert_eq!(
-        VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref()))
+        memory
+            .interface::<VmMemoryReceiver>()
             .add_seals(&mut transport, write_and_lock),
         Err(CallError::Remote(VmError::Busy))
     );
     assert_eq!(
-        VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref()))
+        memory
+            .interface::<VmMemoryReceiver>()
             .info(&mut transport,)
             .unwrap()
             .seals,
@@ -182,7 +190,7 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
     let copied_slot = transport.space.reserve_slot().unwrap();
     let endpoint = transport
         .space
-        .cap::<::sel4::cap_type::Endpoint>(memory.as_ref())
+        .cap::<::sel4::cap_type::Endpoint>(memory.cap_ref())
         .unwrap();
     copied_slot
         .copy(
@@ -203,18 +211,16 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
     // A non-service capability must not be interpreted as a memory identity.
     let fake = ctx.cap::<VmMemoryObjectTag>("wake").unwrap();
     assert_eq!(
-        VmRegionReceiver::from_cap(Cap::from_ref(alias.as_ref())).apply(
-            &mut transport,
-            Some(fake),
-            batch(&[])
-        ),
+        alias
+            .interface::<VmRegionReceiver>()
+            .apply(&mut transport, Some(fake), batch(&[])),
         Err(CallError::Remote(VmBatchError {
             completed: 0,
             error: VmError::Denied
         }))
     );
     assert_eq!(
-        VmRegionReceiver::from_cap(Cap::from_ref(first.as_ref())).apply(
+        first.interface::<VmRegionReceiver>().apply(
             &mut transport,
             None,
             batch(&[
@@ -239,9 +245,9 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         ..mapping
     };
     assert_eq!(
-        VmRegionReceiver::from_cap(Cap::from_ref(first.as_ref())).apply(
+        first.interface::<VmRegionReceiver>().apply(
             &mut transport,
-            Some(memory),
+            Some(Cap::from_ref(memory.cap_ref())),
             batch(&[VmUpdate::Prepare(range), update])
         ),
         Err(CallError::Remote(VmBatchError {
@@ -249,15 +255,16 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
             error: VmError::Denied
         }))
     );
-    VmRegionReceiver::from_cap(Cap::from_ref(first.as_ref()))
+    first
+        .interface::<VmRegionReceiver>()
         .apply(
             &mut transport,
-            Some(memory),
+            Some(Cap::from_ref(memory.cap_ref())),
             batch(&[VmUpdate::Map(readonly)]),
         )
         .unwrap();
     assert_eq!(
-        VmRegionReceiver::from_cap(Cap::from_ref(first.as_ref())).apply(
+        first.interface::<VmRegionReceiver>().apply(
             &mut transport,
             None,
             batch(&[VmUpdate::Protect(VmProtect {
@@ -280,7 +287,8 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
     );
     // Old mappings keep MAYWRITE across protect(READ), just like memfd.
     for protection in [VmProtection::READ, rw, VmProtection::READ] {
-        VmRegionReceiver::from_cap(Cap::from_ref(alias.as_ref()))
+        alias
+            .interface::<VmRegionReceiver>()
             .apply(
                 &mut transport,
                 None,
@@ -293,12 +301,14 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
             .unwrap();
     }
     assert_eq!(
-        VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref()))
+        memory
+            .interface::<VmMemoryReceiver>()
             .add_seals(&mut transport, write_and_lock),
         Err(CallError::Remote(VmError::Busy))
     );
     assert_eq!(
-        VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref()))
+        memory
+            .interface::<VmMemoryReceiver>()
             .info(&mut transport,)
             .unwrap()
             .seals,
@@ -311,7 +321,7 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         );
     }
     assert_eq!(
-        VmRegionReceiver::from_cap(Cap::from_ref(alias.as_ref())).apply(
+        alias.interface::<VmRegionReceiver>().apply(
             &mut transport,
             None,
             batch(&[VmUpdate::Protect(VmProtect {
@@ -326,7 +336,8 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         }))
     );
     destroy(&mut transport, alias);
-    VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref()))
+    memory
+        .interface::<VmMemoryReceiver>()
         .add_seals(
             &mut transport,
             VmSeals(write_and_lock.0 | VmSeals::GROW.0 | VmSeals::SHRINK.0),
@@ -346,7 +357,7 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         Err(CallError::Remote(VmError::Invalid))
     );
     assert_eq!(
-        VmRegionReceiver::from_cap(Cap::from_ref(first.as_ref())).apply(
+        first.interface::<VmRegionReceiver>().apply(
             &mut transport,
             None,
             batch(&[VmUpdate::Protect(VmProtect {
@@ -360,12 +371,14 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
             error: VmError::Denied
         }))
     );
-    VmMemoryReceiver::from_cap(Cap::from_ref(memory.as_ref()))
+    memory
+        .interface::<VmMemoryReceiver>()
         .close(&mut transport)
         .unwrap();
-    transport.space.delete(memory.as_ref()).unwrap();
+    drop(memory);
     transport.space.delete(copied).unwrap();
-    let address = VmRegionReceiver::from_cap(Cap::from_ref(first.as_ref()))
+    let address = first
+        .interface::<VmRegionReceiver>()
         .info(&mut transport)
         .unwrap()
         .address;
@@ -387,10 +400,11 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         .allocate(&mut transport, 4096, VmBacking::Resident, rw)
         .unwrap();
     let region = reserve(&mut transport, address_space, 4096);
-    VmRegionReceiver::from_cap(Cap::from_ref(region.as_ref()))
+    region
+        .interface::<VmRegionReceiver>()
         .apply(
             &mut transport,
-            Some(revoked),
+            Some(Cap::from_ref(revoked.cap_ref())),
             batch(&[
                 VmUpdate::Prepare(VmRange {
                     offset: 0,
@@ -405,10 +419,11 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
             ]),
         )
         .unwrap();
-    VmMemoryReceiver::from_cap(Cap::from_ref(revoked.as_ref()))
+    revoked
+        .interface::<VmMemoryReceiver>()
         .revoke(&mut transport)
         .unwrap();
-    transport.space.delete(revoked.as_ref()).unwrap();
+    drop(revoked);
     destroy(&mut transport, region);
     assert_eq!(
         VmFactoryReceiver::from_cap(factory)

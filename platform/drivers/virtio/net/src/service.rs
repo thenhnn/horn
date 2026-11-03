@@ -123,7 +123,7 @@ impl EthernetInterface for Service {
         }
         let next = virtio::with(|s| {
             let root = s.transport().space.root;
-            horn_supervisor::client::copy(s.transport(), root, signal)
+            horn_supervisor::client::copy(s.transport(), root, &signal)
         });
         if let Some(old) = self.note.replace(next) {
             virtio::with(|s| s.transport().space.delete(old.as_ref()).unwrap());

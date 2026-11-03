@@ -57,7 +57,7 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
         Some(vm::VmSeals::WRITE),
     ] {
         if let Some(seal) = seal {
-            vm::VmMemoryReceiver::from_cap(Cap::from_ref(bad.as_ref()))
+            bad.interface::<vm::VmMemoryReceiver>()
                 .add_seals(&mut t, seal)
                 .unwrap();
         }
@@ -69,16 +69,16 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
         assert_eq!(
             ProcessFactoryReceiver::from_cap(factory).launch(
                 &mut t,
-                &Cap::from_ref(bad.as_ref()),
+                &bad.borrow().cast(),
                 request(8 << 20)
             ),
             Err(CallError::Remote(expected))
         );
     }
-    vm::VmMemoryReceiver::from_cap(Cap::from_ref(bad.as_ref()))
+    bad.interface::<vm::VmMemoryReceiver>()
         .close(&mut t)
         .unwrap();
-    t.space.delete(bad.as_ref()).unwrap();
+    drop(bad);
     assert_eq!(
         ProcessFactoryReceiver::from_cap(factory).launch(&mut t, elf, request(4096)),
         Err(CallError::Remote(ProcessError::QuotaExceeded))
@@ -95,7 +95,8 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
         let child = ProcessFactoryReceiver::from_cap(factory)
             .launch(&mut t, elf, request(8 << 20))
             .unwrap();
-        let info = ProcessControlReceiver::from_cap(Cap::from_ref(child.as_ref()))
+        let info = child
+            .interface::<ProcessControlReceiver>()
             .info(&mut t)
             .unwrap();
         assert_eq!(info.state, ProcessState::Created);
@@ -129,27 +130,31 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
         .open(&mut t, page.entries.data[0].id)
         .unwrap();
     assert_eq!(
-        ProcessControlReceiver::from_cap(Cap::from_ref(extra.as_ref()))
+        extra
+            .interface::<ProcessControlReceiver>()
             .info(&mut t,)
             .unwrap()
             .id,
         page.entries.data[0].id
     );
-    t.space.delete(extra.as_ref()).unwrap();
-    for child in &children[..4] {
-        ProcessControlReceiver::from_cap(Cap::from_ref(child.as_ref()))
+    drop(extra);
+    for child in children.drain(..4) {
+        child
+            .interface::<ProcessControlReceiver>()
             .terminate(&mut t)
             .unwrap();
-        let info = ProcessControlReceiver::from_cap(Cap::from_ref(child.as_ref()))
+        let info = child
+            .interface::<ProcessControlReceiver>()
             .info(&mut t)
             .unwrap();
         assert_eq!(info.state, ProcessState::Exited);
         assert_eq!(info.exit, Some(ProcessExit::Killed));
         assert_eq!(info.ram.charged_bytes, 0);
-        ProcessControlReceiver::from_cap(Cap::from_ref(child.as_ref()))
+        child
+            .interface::<ProcessControlReceiver>()
             .close(&mut t)
             .unwrap();
-        t.space.delete(child.as_ref()).unwrap();
+        drop(child);
     }
     // Keep a child live to verify parent-exit subtree cleanup, not cooperation.
     let _orphan = ProcessFactoryReceiver::from_cap(factory)
@@ -159,26 +164,31 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
     vm::VmMemoryReceiver::from_cap(Cap::from_ref(elf.as_ref()))
         .close(&mut t)
         .unwrap();
-    let child = children[4];
-    let charge = ProcessControlReceiver::from_cap(Cap::from_ref(child.as_ref()))
+    let child = children.pop().unwrap();
+    let charge = child
+        .interface::<ProcessControlReceiver>()
         .info(&mut t)
         .unwrap()
         .ram
         .charged_bytes;
     assert_eq!(
-        ProcessControlReceiver::from_cap(Cap::from_ref(child.as_ref()))
+        child
+            .interface::<ProcessControlReceiver>()
             .set_limit(&mut t, charge - 1),
         Err(CallError::Remote(ProcessError::QuotaExceeded))
     );
     assert_eq!(
-        ProcessControlReceiver::from_cap(Cap::from_ref(child.as_ref())).set_limit(&mut t, 16 << 20),
+        child
+            .interface::<ProcessControlReceiver>()
+            .set_limit(&mut t, 16 << 20),
         Err(CallError::Remote(ProcessError::Denied))
     );
-    ProcessControlReceiver::from_cap(Cap::from_ref(child.as_ref()))
+    child
+        .interface::<ProcessControlReceiver>()
         .set_limit(&mut t, 8 << 20)
         .unwrap();
     assert_eq!(
-        ProcessControlReceiver::from_cap(Cap::from_ref(child.as_ref())).start(&mut t,),
+        child.interface::<ProcessControlReceiver>().start(&mut t,),
         Err(CallError::Remote(ProcessError::State)),
     );
     let boot = horn_supervisor::client::Bootstrap {
@@ -209,13 +219,15 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
             selector: 4,
         },
     ];
-    boot.context(&mut t, Cap::from_ref(child.as_ref()), &mut entries);
-    ProcessControlReceiver::from_cap(Cap::from_ref(child.as_ref()))
+    boot.context(&mut t, &child.borrow().cast(), &mut entries);
+    child
+        .interface::<ProcessControlReceiver>()
         .start(&mut t)
         .unwrap();
     let mut exited = false;
     for _ in 0..10000 {
-        let info = ProcessControlReceiver::from_cap(Cap::from_ref(child.as_ref()))
+        let info = child
+            .interface::<ProcessControlReceiver>()
             .info(&mut t)
             .unwrap();
         if info.state == ProcessState::Exited {
@@ -227,13 +239,14 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
     }
     assert!(exited);
     assert_eq!(
-        ProcessControlReceiver::from_cap(Cap::from_ref(child.as_ref())).start(&mut t,),
+        child.interface::<ProcessControlReceiver>().start(&mut t,),
         Err(CallError::Remote(ProcessError::State))
     );
-    ProcessControlReceiver::from_cap(Cap::from_ref(child.as_ref()))
+    child
+        .interface::<ProcessControlReceiver>()
         .close(&mut t)
         .unwrap();
-    t.space.delete(child.as_ref()).unwrap();
+    drop(child);
     assert_eq!(
         ProcessObserverReceiver::from_cap(observer)
             .list(&mut t, 0)

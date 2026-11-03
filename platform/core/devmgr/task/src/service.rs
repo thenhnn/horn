@@ -39,7 +39,7 @@ struct Irq {
     token: u64,
     route: Interrupt,
     notification: CapRef,
-    backing: Option<(Cap<VmUntypedObjectTag>, Cap<Untyped>)>,
+    backing: Option<(OwnedCap<VmUntypedObjectTag>, OwnedCap<Untyped>)>,
 }
 struct Device {
     badge: u64,
@@ -62,7 +62,7 @@ struct Mmio {
     token: u64,
     badge: u64,
     authority: CapRef,
-    memory: Option<Cap<VmMemoryObjectTag>>,
+    memory: Option<OwnedCap<VmMemoryObjectTag>>,
 }
 struct Dma {
     badge: u64,
@@ -350,9 +350,7 @@ impl Service {
         }
         .expect("MMIO revoke acknowledgement");
         let mmio = self.devices[device].mmios.swap_remove(index);
-        if let Some(memory) = mmio.memory {
-            self.io().space().delete(memory.as_ref()).unwrap();
-        }
+        drop(mmio.memory);
         self.retire(mmio.authority);
     }
     fn mmio_index(&self, badge: u64) -> Result<(usize, usize), DeviceError> {
@@ -868,7 +866,8 @@ impl DeviceControl for Caller<'_> {
             .take()
             .unwrap();
         self.service.io().space().delete(lease.as_ref()).unwrap();
-        Ok(memory)
+        // Outgoing Move reply transfers ownership to the raw server encoder.
+        Ok(memory.into_raw())
     }
     fn map_bar_window(
         &mut self,
@@ -1051,19 +1050,18 @@ impl DeviceControl for Caller<'_> {
         let sid = self.service.devices[d].sid;
         let domain = self.service.devices[d].domain;
         let io = self.service.io();
-        let lease = io
-            .ctx
-            .interface::<VmFactoryReceiver>("horn.vm")
-            .unwrap()
+        let factory = io.ctx.interface::<VmFactoryReceiver>("horn.vm").unwrap();
+        let lease = factory
             .delegate(&mut io.transport, 12)
             .expect("IRQ Untyped");
-        let grant = VmUntypedReceiver::from_cap(Cap::from_ref(lease.as_ref()))
+        let grant = lease
+            .interface::<VmUntypedReceiver>()
             .capability(&mut io.transport)
             .expect("IRQ Untyped cap");
         let untyped = grant.capability;
         let kernel = io
             .space()
-            .cap::<sel4::cap_type::Untyped>(untyped.as_ref())
+            .cap::<sel4::cap_type::Untyped>(untyped.cap_ref())
             .unwrap();
         let slot = io.space().reserve_slot().expect("notification slot");
         let root = io.transport.space.root;
@@ -1239,11 +1237,12 @@ impl DeviceControl for Caller<'_> {
             .expect("kernel IRQ revoke");
             self.service.retire(irq.notification);
             if let Some((lease, untyped)) = irq.backing {
-                VmUntypedReceiver::from_cap(Cap::from_ref(lease.as_ref()))
+                lease
+                    .interface::<VmUntypedReceiver>()
                     .close(&mut self.service.io().transport)
                     .expect("notification backing revoke");
-                self.service.io().space().delete(untyped.as_ref()).unwrap();
-                self.service.io().space().delete(lease.as_ref()).unwrap();
+                drop(untyped);
+                drop(lease);
             }
         }
         // A driver-specific reset is not part of devmgr. Deny the requester and
@@ -1288,6 +1287,8 @@ impl DeviceMmio for Caller<'_> {
         self.service.devices[device].mmios[index]
             .memory
             .take()
+            // Outgoing Move reply hands the slot to the raw server transport.
+            .map(OwnedCap::into_raw)
             .ok_or(DeviceError::NotFound)
     }
     fn close(&mut self) -> Result<(), DeviceError> {

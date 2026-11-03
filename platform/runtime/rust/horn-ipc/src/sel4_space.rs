@@ -17,6 +17,9 @@ struct LocalOwner {
     slots: Locked<LocalSlots>,
 }
 impl LocalCapSpace for LocalOwner {
+    fn return_raw(&self, cap: CapRef) {
+        self.slots.with(|slots| slots.restore(cap.slot as usize));
+    }
     fn delete_owned(&self, cap: CapRef) -> Result<(), RpcError> {
         let root = sel4::cap::CNode::from_bits(cap.cnode as Word);
         root.absolute_cptr_from_bits_with_depth(cap.slot as Word, cap.depth as usize)
@@ -200,6 +203,9 @@ fn cap_rights(rights: Rights) -> CapRights {
 }
 
 impl CapSpace for Sel4CapSpace {
+    unsafe fn own_localized(&mut self, cap: CapRef) -> Result<OwnedCap<crate::Endpoint>, RpcError> {
+        unsafe { self.own(crate::Cap::from_ref(cap)) }
+    }
     fn alloc_cnode(&mut self, parent: Option<SlotRef>, size_bits: u8) -> Result<CapRef, RpcError> {
         let (dst, dst_offset, cnode, slot, depth) = match parent {
             None => {

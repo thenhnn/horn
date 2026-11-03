@@ -140,7 +140,7 @@ mod tests {
 
     struct Unsupported;
     impl Transport for Unsupported {
-        fn call<A: Wire, R: Wire>(
+        fn call<A: Wire, R: ReplyDecode>(
             &mut self,
             _: CapRef,
             _: u64,
@@ -153,7 +153,7 @@ mod tests {
             };
             let mut bytes = [0; VmfactoryCreateAddressSpaceReply::SIZE];
             reply.encode(&mut Encoder::new(&mut bytes));
-            R::decode(&mut Decoder::new(&bytes, &mut WireCaps::default()))
+            R::decode_reply(&mut Decoder::new(&bytes, &mut WireCaps::default()))
         }
         fn send<A: Wire>(
             &mut self,

@@ -11,6 +11,7 @@ struct MockSpace {
     slots: HashMap<(u64, u32), CapRef>,
     cnodes: HashMap<u64, u8>,
     localized: Vec<CapMode>,
+    deleted: Vec<CapRef>,
 }
 
 impl MockSpace {
@@ -50,6 +51,7 @@ impl CapSpace for MockSpace {
             .ok_or(RpcError::MissingCap)
     }
     fn delete(&mut self, cap: CapRef) -> Result<(), RpcError> {
+        self.deleted.push(cap);
         self.slots.retain(|_, value| value.slot != cap.slot);
         Ok(())
     }
@@ -192,6 +194,50 @@ fn packs_direct_caps_without_a_cnode() {
     assert_eq!(unpacker.pop().unwrap().slot, 1);
     assert_eq!(unpacker.pop().unwrap().slot, 2);
     assert!(unpacker.pop().is_err());
+}
+
+#[test]
+fn failed_owning_import_deletes_the_fresh_localization() {
+    let mut space = MockSpace::default();
+    let cap = MockSpace::cap(42);
+    space.slots.insert((0, 42), cap);
+    let mut caps = horn_ipc::WireCaps::default();
+    caps.push(cap).unwrap();
+    let mut unpacker = CapUnpacker::new_localizing(&mut space, &DIRECT_LAYOUT, caps);
+    // This mock deliberately does not support ownership adoption.
+    assert!(matches!(
+        unpacker.pop_owned(CapMode::COPY, Rights::ALL),
+        Err(RpcError::NotLocal)
+    ));
+    assert_eq!(space.localized, [CapMode::COPY]);
+    assert_eq!(space.deleted, [cap]);
+    assert!(space.slots.is_empty());
+}
+
+#[test]
+fn owning_import_rejects_borrow_and_nonlocalizing_decode_before_consumption() {
+    let mut space = MockSpace::default();
+    let cap = MockSpace::cap(42);
+    let mut caps = horn_ipc::WireCaps::default();
+    caps.push(cap).unwrap();
+    let mut unpacker = CapUnpacker::new_localizing(&mut space, &DIRECT_LAYOUT, caps);
+    assert!(matches!(
+        unpacker.pop_owned(CapMode::BORROW, Rights::ALL),
+        Err(RpcError::NotLocal)
+    ));
+    assert_eq!(unpacker.pop_typed(CapMode::COPY, Rights::ALL), Ok(cap));
+    assert_eq!(space.localized.len(), 1);
+    assert!(space.deleted.is_empty());
+
+    let mut caps = horn_ipc::WireCaps::default();
+    caps.push(cap).unwrap();
+    let mut unpacker = CapUnpacker::new(&mut space, &DIRECT_LAYOUT, caps);
+    assert!(matches!(
+        unpacker.pop_owned(CapMode::COPY, Rights::ALL),
+        Err(RpcError::NotLocal)
+    ));
+    assert_eq!(unpacker.pop_typed(CapMode::COPY, Rights::ALL), Ok(cap));
+    assert_eq!(space.localized.len(), 1);
 }
 
 #[test]

@@ -6,8 +6,8 @@ use horn_supervisor::{
 };
 static ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/probe.elf"));
 pub struct Observer {
-    job: Cap<s::SupervisedJobTag>,
-    process: Cap<s::ProcessObjectTag>,
+    job: Option<OwnedCap<s::SupervisedJobTag>>,
+    process: Option<OwnedCap<s::ProcessObjectTag>>,
     pub finished: bool,
 }
 impl Observer {
@@ -34,33 +34,36 @@ impl Observer {
             .prepare(&mut *io, &image, request, slots)
             .unwrap();
         close_image(io, image);
-        let process = s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+        let process = managed
+            .interface::<s::SupervisorJobReceiver>()
             .process(&mut *io)
             .unwrap();
-        s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+        managed
+            .interface::<s::SupervisorJobReceiver>()
             .watch(&mut *io, &ctx.cap("events").unwrap())
             .unwrap();
-        let ready = s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+        let ready = managed
+            .interface::<s::SupervisorJobReceiver>()
             .signal(&mut *io, s::ServiceSignal::Ready)
             .unwrap();
         let observer = mint(
             io,
             root,
-            ctx.cap::<Endpoint>("service").unwrap(),
+            &ctx.cap::<Endpoint>("service").unwrap(),
             horn_devmgr::OBSERVER_BADGE,
             Rights(Rights::WRITE.0 | Rights::GRANT_REPLY.0),
         );
         boot.install(
             io,
-            process,
+            &process,
             6,
-            observer,
+            &observer,
             None,
             Rights(Rights::WRITE.0 | Rights::GRANT_REPLY.0),
         );
         io.space.delete(observer.as_ref()).unwrap();
-        boot.install(io, process, 5, ready, None, Rights::WRITE);
-        io.space.delete(ready.as_ref()).unwrap();
+        boot.install(io, &process, 5, &ready, None, Rights::WRITE);
+        drop(ready);
         let mut entries = [
             libhorn::startup::Entry {
                 name: "horn.vm",
@@ -87,13 +90,14 @@ impl Observer {
                 selector: 6,
             },
         ];
-        boot.context(io, process, &mut entries);
-        s::SupervisorJobReceiver::from_cap(Cap::from_ref(managed.as_ref()))
+        boot.context(io, &process, &mut entries);
+        managed
+            .interface::<s::SupervisorJobReceiver>()
             .start(&mut *io)
             .unwrap();
         Self {
-            job: managed,
-            process,
+            job: Some(managed),
+            process: Some(process),
             finished: false,
         }
     }
@@ -101,23 +105,34 @@ impl Observer {
         if self.finished {
             return;
         }
-        if s::SupervisorJobReceiver::from_cap(Cap::from_ref(self.job.as_ref()))
+        if self
+            .job
+            .as_ref()
+            .unwrap()
+            .interface::<s::SupervisorJobReceiver>()
             .status(&mut *io)
             .unwrap()
             != s::ServiceStatus::AwaitingCleanup
         {
             return;
         }
-        let info = s::ProcessControlReceiver::from_cap(Cap::from_ref(self.process.as_ref()))
+        let info = self
+            .process
+            .as_ref()
+            .unwrap()
+            .interface::<s::ProcessControlReceiver>()
             .info(&mut *io)
             .unwrap();
         assert_eq!(info.state, s::ProcessState::Stopping);
         assert!(matches!(info.exit, Some(s::ProcessExit::Code(0))));
-        s::SupervisorJobReceiver::from_cap(Cap::from_ref(self.job.as_ref()))
+        self.job
+            .as_ref()
+            .unwrap()
+            .interface::<s::SupervisorJobReceiver>()
             .cleanup_done(&mut *io)
             .unwrap();
-        io.space.delete(self.process.as_ref()).unwrap();
-        io.space.delete(self.job.as_ref()).unwrap();
+        drop(self.process.take());
+        drop(self.job.take());
         self.finished = true;
     }
 }
