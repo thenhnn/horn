@@ -73,6 +73,38 @@ def test_rust_and_c_glue_reference_runtime():
     assert "void horn_encoder_u64(" not in source
 
 
+def test_receiver_views_forward_borrow_move_and_oneway_without_new_wire(tmp_path):
+    schema = load_source(
+        tmp_path,
+        "receiver_views",
+        """
+from horn_idl import Cap, Copy, Borrow, Move, U64, Result, iface, method, sel4
+@iface("test.receiver")
+class Sender:
+    @method
+    def call(self, transport: U64, target: U64,
+             moved: Cap[sel4.Endpoint, Move],
+             borrowed: Cap[sel4.Notification, Borrow],
+             copied: Cap[sel4.Notification, Copy]) -> Result[U64, U64]: ...
+    @method(oneway=True)
+    def notify(self, transport: U64) -> None: ...
+""",
+    )
+    rust = emit_rust(schema)
+    view = rust[rust.index("pub struct SenderReceiver") :]
+    assert "impl horn_ipc::RpcInterface for SenderReceiver" in view
+    assert "type Tag = SenderTag;" in view
+    assert "moved: Cap<Endpoint>" in view
+    assert "borrowed: &Cap<Notification>" in view
+    assert "copied: &Cap<Notification>" in view
+    assert "Result<u64, CallError<u64>>" in view
+    assert ".call(transport, target, moved, borrowed, copied)" in view
+    assert ".notify(transport)" in view
+    assert "SenderClient::new(__horn_transport, self.target)" in view
+    assert "CapPacker" not in view
+    assert "impl Drop for SenderReceiver" not in view
+
+
 def test_c_parameters_do_not_collide_with_client_or_vtable_locals(tmp_path):
     schema = load_source(
         tmp_path,

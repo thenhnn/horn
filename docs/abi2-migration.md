@@ -44,8 +44,10 @@ experiments are not expanded.
 ## Validation
 
 Normal + devmgr-probe, IDL + SMP, hosted Linux, NVIDIA read-only and NVIDIA GSP
-pc-dev deployments build. The final ABI2-only revision still needs user boot
-validation. NVIDIA builds are **not hardware validation**.
+pc-dev deployments build. The user confirmed ordinary ABI2-only system boot:
+logd, devmgr, virtio-console/net, shell, timerd, netd DHCP and HTTP all reached
+readiness. Hosted Linux, IDL/SMP and NVIDIA conversions still have build coverage,
+not runtime confirmation. NVIDIA builds are **not hardware validation**.
 
 Unit tests are compile-only, never executed here. The user runs QEMU and
 separately authorizes each NVIDIA hardware launch. Managed handles, dynamically

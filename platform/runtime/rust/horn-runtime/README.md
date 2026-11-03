@@ -31,6 +31,19 @@ proof of the kernel object's type. `copy`/`mint` allocate through the explicitly
 provided transport; `revoke` preserves an anchor while revoking descendants.
 Import ownership and deletion still use the IPC cap-space API.
 
+`interface::<I>(name)` returns a generated non-owning RPC interface view:
+
+```rust
+let clock = ctx.interface::<horn_clock::Clock>("clock")?;
+let now = clock.now(&mut io)?;
+let events = ctx.cap::<horn_ipc::Notification>("events")?;
+```
+
+This is a typed view, not object creation, a remote type query, or an authority
+restriction. Views do not retain a transport and never perform cleanup in Drop;
+calls borrow `&mut io` and use the existing generated client/wire machinery.
+See `docs/idl.md` for generated receiver names and explicit capability bridges.
+
 Context hands out one application transport and one inbox, with private slot
 ranges disjoint from heap callbacks. `inbox("service")` uses `horn.reply`;
 `receive()` returns a guard which deletes leftover received capabilities on

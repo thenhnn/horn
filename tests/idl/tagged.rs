@@ -88,6 +88,8 @@ mod tests {
         bytes: std::vec::Vec<u8>,
         caps: Caps,
         error: Option<RpcError>,
+        seen: Option<(CapRef, u64)>,
+        request_caps: Caps,
     }
 
     impl ReplyTransport {
@@ -100,6 +102,8 @@ mod tests {
                 bytes,
                 caps,
                 error: None,
+                seen: None,
+                request_caps: Caps::default(),
             }
         }
     }
@@ -107,12 +111,15 @@ mod tests {
     impl Transport for ReplyTransport {
         fn call<A: Wire, R: Wire>(
             &mut self,
-            _: CapRef,
-            _: u64,
-            _: &A,
+            target: CapRef,
+            label: u64,
+            args: &A,
             _: &'static CapLayout,
             _: &'static CapLayout,
         ) -> Result<R, RpcError> {
+            self.seen = Some((target, label));
+            self.request_caps.0.clear();
+            args.caps(&mut self.request_caps)?;
             if let Some(error) = self.error {
                 return Err(error);
             }
@@ -129,6 +136,50 @@ mod tests {
         ) -> Result<(), RpcError> {
             unreachable!()
         }
+    }
+
+    #[test]
+    fn receivers_use_the_existing_client_wire_and_error_paths() {
+        let target = cap::<ProbeTag>(CapMode::COPY, Rights::WRITE);
+        let receiver = ProbeReceiver::from_cap(target);
+        assert_eq!(receiver.as_cap(), target);
+        let copied_view = receiver;
+        let mut io = ReplyTransport::new(ProbeCheckReply { value: Ok(()) });
+        assert_eq!(receiver.check(&mut io), Ok(()));
+        assert_eq!(io.seen, Some((target.as_ref(), PROBE_CHECK_LABEL)));
+
+        io = ReplyTransport::new(ProbeEchoReply {
+            value: Event::Empty,
+        });
+        assert_eq!(
+            copied_view.echo(&mut io, Event::Link(cap(CapMode::COPY, Rights::ALL))),
+            Ok(Event::Empty)
+        );
+        assert_eq!(io.seen, Some((target.as_ref(), PROBE_ECHO_LABEL)));
+        assert_eq!(io.request_caps.0.front().unwrap().mode, CapMode::MOVE);
+
+        for value in [Ok(Event::Number(9)), Err(Event::Number(7))] {
+            let mut receiver_io = ReplyTransport::new(ProbeTryEchoReply { value });
+            let mut client =
+                ProbeClient::new(ReplyTransport::new(ProbeTryEchoReply { value }), target);
+            assert_eq!(
+                receiver.try_echo(&mut receiver_io, Event::Empty),
+                client.try_echo(Event::Empty)
+            );
+            assert_eq!(receiver_io.seen, client.transport.seen);
+        }
+        let mut io = ReplyTransport::new(ProbeCheckReply { value: Ok(()) });
+        io.error = Some(RpcError::Transport);
+        assert_eq!(
+            receiver.check(&mut io),
+            Err(CallError::Rpc(RpcError::Transport))
+        );
+        io.error = None;
+        io.bytes[0] = 255;
+        assert_eq!(
+            receiver.check(&mut io),
+            Err(CallError::Rpc(RpcError::InvalidValue))
+        );
     }
 
     #[test]

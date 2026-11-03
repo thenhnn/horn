@@ -8,6 +8,8 @@ pub mod protocol {
 #[cfg(target_arch = "x86_64")]
 pub mod x86_64;
 
+pub use protocol::{AlarmInterfaceReceiver as Alarm, ClockInterfaceReceiver as Clock};
+
 pub trait TimeManager {
     // shared page struct between timerd and consumer for efficient time retrieval
     // (might store calibration data for TSC, for example)

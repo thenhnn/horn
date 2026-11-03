@@ -81,6 +81,15 @@ pub trait CapType {
     const KERNEL: &'static str;
 }
 
+/// A typed, non-owning RPC interface view over an existing capability.
+/// Constructing/copying a view does not copy a kernel capability, validate the
+/// server's interface, or close anything. Each call borrows its transport.
+pub trait RpcInterface: Sized {
+    type Tag: CapType;
+    fn from_cap(cap: Cap<Self::Tag>) -> Self;
+    fn as_cap(&self) -> Cap<Self::Tag>;
+}
+
 macro_rules! kernel_cap {
     ($name:ident, $kernel:literal) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]

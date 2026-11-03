@@ -52,6 +52,33 @@ class CounterService:
     pass
 ```
 
+## Rust interface views
+
+Each interface emits a server trait, its existing `FooClient<T>`, and a
+non-owning `FooReceiver` implementing `horn_ipc::RpcInterface`. The receiver
+keeps only a typed capability; each method takes an explicit `&mut transport`.
+Clock provides short public aliases `horn_clock::{Clock, Alarm}`:
+
+```rust
+let mut io = ctx.transport()?;
+let clock = ctx.interface::<horn_clock::Clock>("clock")?;
+let now = clock.now(&mut io)?;
+let events = ctx.cap::<horn_ipc::Notification>("events")?;
+```
+
+`interface(name)` views an existing immutable startup binding. It does not
+create an object, query the server's type, reduce authority, copy a kernel cap,
+or reserve a transport. The deployment supplies the interface contract.
+Several views can coexist; only the call borrows `io`. Receivers forward to
+the existing generated clients: labels, encoding, Copy/Move/Borrow, errors,
+one-way sends and synchronous blocking behavior are unchanged.
+Neither constructing, copying nor dropping a receiver closes a remote object.
+
+For an explicitly obtained capability, `RpcInterface::from_cap` and
+`as_cap` bridge the receiver and `Cap<InterfaceTag>`; retain the capability's
+original ownership/cleanup discipline. Existing transport-bound clients and
+`ctx.cap::<InterfaceTag>` remain available. C wire bindings are unchanged.
+
 ## Payload enums
 
 Integer enums are unchanged. Add decorated, zero-argument variants for a

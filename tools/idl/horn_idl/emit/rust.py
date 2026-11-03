@@ -37,6 +37,31 @@ from ..types import (
 )
 
 
+def client_parameters(method: Method) -> list[str]:
+    return [
+        f"{snake(param.name)}: "
+        + (
+            "&"
+            if isinstance(param.type, CapType)
+            and param.type.mode in (CapMode.COPY, CapMode.BORROW)
+            else ""
+        )
+        + rust_type(param.type)
+        for param in method.params
+    ]
+
+
+def client_result(method: Method) -> tuple[str, str]:
+    if isinstance(method.result, ResultType):
+        return rust_type(
+            method.result.ok
+        ), f"CallError<{rust_type(method.result.error)}>"
+    result = (
+        "()" if method.oneway or method.result is None else rust_type(method.result)
+    )
+    return result, "RpcError"
+
+
 def rust_str(value: str) -> str:
     return json.dumps(value)
 
@@ -623,6 +648,7 @@ class RustEmitter:
             self.add(f"    fn {snake(method.name)}(&mut self, {params}) -> {result};")
         self.add("}")
         self.emit_client(interface)
+        self.emit_receiver(interface)
 
     def emit_method_types(self, interface: Interface, method: Method) -> None:
         args_name = method_args_name(interface, method)
@@ -803,24 +829,8 @@ class RustEmitter:
         self.add("        Self { transport, target }")
         self.add("    }")
         for method in interface.all_methods():
-            params = []
-            for param in method.params:
-                if isinstance(param.type, CapType) and param.type.mode in (
-                    CapMode.COPY,
-                    CapMode.BORROW,
-                ):
-                    params.append(f"{snake(param.name)}: &{rust_type(param.type)}")
-                else:
-                    params.append(f"{snake(param.name)}: {rust_type(param.type)}")
-            signature = ", ".join(params)
-            if method.oneway or method.result is None:
-                result = "()"
-            else:
-                result = rust_type(method.result)
-            error_type = "RpcError"
-            if isinstance(method.result, ResultType):
-                result = rust_type(method.result.ok)
-                error_type = f"CallError<{rust_type(method.result.error)}>"
+            signature = ", ".join(client_parameters(method))
+            result, error_type = client_result(method)
             self.add(
                 f"    pub fn {snake(method.name)}(&mut self, {signature}) -> Result<{result}, {error_type}> {{"
             )
@@ -857,6 +867,41 @@ class RustEmitter:
                         if isinstance(method.result, ResultType)
                         else "        Ok(reply.value)"
                     )
+            self.add("    }")
+        self.add("}")
+
+    def emit_receiver(self, interface: Interface) -> None:
+        name = f"{interface.python_name}Receiver"
+        marker = f"{interface.python_name}Tag"
+        self.add(
+            "", "/// Non-owning interface view; calls borrow an explicit transport."
+        )
+        self.add("#[derive(Debug, Clone, Copy, PartialEq, Eq)]")
+        self.add(f"pub struct {name} {{ target: Cap<{marker}> }}")
+        self.add(f"impl horn_ipc::RpcInterface for {name} {{")
+        self.add(f"    type Tag = {marker};")
+        self.add(
+            f"    fn from_cap(target: Cap<{marker}>) -> Self {{ Self {{ target }} }}"
+        )
+        self.add(f"    fn as_cap(&self) -> Cap<{marker}> {{ self.target }}")
+        self.add("}")
+        self.add(f"impl {name} {{")
+        for method in interface.all_methods():
+            used = {snake(p.name) for p in method.params}
+            transport = "__horn_transport"
+            while transport in used:
+                transport += "_"
+            params = [f"{transport}: &mut T", *client_parameters(method)]
+            result, error_type = client_result(method)
+            self.add(
+                f"    pub fn {snake(method.name)}<T: Transport>(&self, {', '.join(params)})"
+                f" -> Result<{result}, {error_type}> {{"
+            )
+            arguments = ", ".join(snake(p.name) for p in method.params)
+            self.add(
+                f"        {interface.python_name}Client::new({transport}, self.target)"
+                f".{snake(method.name)}({arguments})"
+            )
             self.add("    }")
         self.add("}")
 

@@ -5,7 +5,7 @@ extern crate alloc;
 mod ethernet;
 mod tcp;
 use alloc::vec;
-use horn_clock::{DefaultTimeManager, DefaultTimePage, TimeManager, protocol as c};
+use horn_clock::{Alarm, Clock, DefaultTimeManager, DefaultTimePage, TimeManager};
 use horn_ipc::*;
 use horn_net::protocol::*;
 use horn_vm::protocol as v;
@@ -19,18 +19,14 @@ horn_runtime::task!(main);
 type Io = Sel4Transport<Sel4CapSpace>;
 struct Time {
     page: *const DefaultTimePage,
-    clock: Cap<c::ClockInterfaceTag>,
+    clock: Clock,
     _memory: Cap<v::VmMemoryObjectTag>,
     _region: Cap<v::VmRegionObjectTag>,
 }
 impl Time {
     fn new(io: &mut Io, ctx: &horn_runtime::Context) -> Self {
-        let clock = ctx.cap("clock").unwrap();
-        let page = DefaultTimePage::from(
-            c::ClockInterfaceClient::new(&mut *io, clock)
-                .calibration()
-                .unwrap(),
-        );
+        let clock = ctx.interface::<Clock>("clock").unwrap();
+        let page = DefaultTimePage::from(clock.calibration(io).unwrap());
         let memory = v::VmFactoryClient::new(&mut *io, ctx.cap("horn.vm").unwrap())
             .allocate(4096, v::VmBacking::Resident, v::VmProtection(3))
             .unwrap();
@@ -116,7 +112,7 @@ impl Time {
     }
     fn now(&self, io: &mut Io) -> u64 {
         DefaultTimeManager::now(unsafe { &*self.page })
-            .unwrap_or_else(|| c::ClockInterfaceClient::new(io, self.clock).now().unwrap())
+            .unwrap_or_else(|| self.clock.now(io).unwrap())
     }
 }
 fn main(mut ctx: horn_runtime::Context) -> ! {
@@ -126,9 +122,8 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     let ethernet_signal = ctx.cap::<Notification>("ethernet_signal").unwrap();
     let timer_signal = ctx.cap("timer_signal").unwrap();
     let time = Time::new(&mut io, &ctx);
-    let alarm = c::ClockInterfaceClient::new(&mut io, ctx.cap("clock").unwrap())
-        .alarm()
-        .unwrap();
+    let alarm_cap = time.clock.alarm(&mut io).unwrap();
+    let alarm = Alarm::from_cap(Cap::from_ref(alarm_cap.as_ref()));
     let mut armed = None;
     let info = EthernetInterfaceClient::new(&mut io, ethernet)
         .info()
@@ -215,12 +210,10 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
             }
         });
         if deadline != armed {
-            let mut timer =
-                c::AlarmInterfaceClient::new(&mut service.io, Cap::from_ref(alarm.as_ref()));
             if let Some(d) = deadline {
-                timer.arm(d, &timer_signal).unwrap();
+                alarm.arm(&mut service.io, d, &timer_signal).unwrap();
             } else {
-                timer.cancel().unwrap();
+                alarm.cancel(&mut service.io).unwrap();
             }
             armed = deadline;
         }

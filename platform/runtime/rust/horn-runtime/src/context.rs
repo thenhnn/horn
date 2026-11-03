@@ -46,6 +46,12 @@ impl Context {
         let slot = self.record.lookup(name).ok_or(Error::Invalid)?;
         Ok(bootstrap_cap(self.root, slot as u32))
     }
+    /// View a named initial capability as an IDL interface, without IPC or
+    /// ownership transfer. The deployment contract supplies the interface type;
+    /// this lookup is not a runtime server-type check.
+    pub fn interface<I: RpcInterface>(&self, name: &str) -> Result<I, Error> {
+        Ok(I::from_cap(self.cap::<I::Tag>(name)?))
+    }
     pub fn cspace_bits(&self) -> u8 {
         self.record.header().cspace_bits as u8
     }
@@ -233,6 +239,68 @@ impl Received<'_> {
         .decode_received_dynamic(info, self.badge, self.inbox.reply, layout, decode)
     }
 }
+#[cfg(test)]
+mod interface_tests {
+    extern crate std;
+    use super::*;
+    use libhorn::startup::{Entry, RuntimeConfig, encode};
+
+    struct View(Cap<Endpoint>);
+    impl RpcInterface for View {
+        type Tag = Endpoint;
+        fn from_cap(cap: Cap<Endpoint>) -> Self {
+            Self(cap)
+        }
+        fn as_cap(&self) -> Cap<Endpoint> {
+            self.0
+        }
+    }
+
+    #[test]
+    fn named_interface_is_an_initial_view_without_reserving_transport() {
+        let entries = [
+            Entry {
+                name: "clock",
+                selector: 3,
+            },
+            Entry {
+                name: "events",
+                selector: 4,
+            },
+        ];
+        let mut bytes = std::vec![0; 512];
+        let size = encode(
+            RuntimeConfig {
+                ipc_buffer: 0x1000,
+                cspace_root: 0,
+                cspace_bits: 8,
+                free_start: 8,
+                free_end: 256,
+            },
+            &entries,
+            &mut bytes,
+        )
+        .unwrap();
+        bytes.truncate(size);
+        let bytes = std::boxed::Box::leak(bytes.into_boxed_slice());
+        // No kernel operations: selectors are only metadata in this fixture.
+        let ctx = unsafe { Context::from_record(bytes) }.unwrap();
+        let application = ctx.application.clone();
+        let heap = ctx.heap.clone();
+        let clock = ctx.interface::<View>("clock").unwrap();
+        assert_eq!(clock.as_cap(), ctx.cap::<Endpoint>("clock").unwrap());
+        assert_eq!(clock.as_cap().as_ref().slot, 3);
+        assert_eq!(ctx.cap::<Notification>("events").unwrap().as_ref().slot, 4);
+        assert!(matches!(
+            ctx.interface::<View>("missing"),
+            Err(Error::Invalid)
+        ));
+        assert_eq!(ctx.application, application);
+        assert_eq!(ctx.heap, heap);
+        assert!(ctx.inbox_available);
+    }
+}
+
 impl Drop for Received<'_> {
     fn drop(&mut self) {
         self.inbox
