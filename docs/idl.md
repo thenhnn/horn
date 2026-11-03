@@ -81,6 +81,11 @@ original ownership/cleanup discipline. `ctx.cap::<InterfaceTag>` remains
 available; there are no generated transport-bound `Client` types. C wire
 bindings are unchanged.
 
+`OwnedCap::interface` also produces a receiver tied to the local owner's
+lifetime. Its capability view is borrowed; copying that receiver does not erase
+the lifetime or retain a transport. See `docs/capability-ownership.md` for the
+first local-RAII implementation, raw adoption boundary and cleanup policy.
+
 ## Payload enums
 
 Integer enums are unchanged. Add decorated, zero-argument variants for a

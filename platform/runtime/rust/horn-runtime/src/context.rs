@@ -248,6 +248,10 @@ mod interface_tests {
     struct View(Cap<Endpoint>);
     impl RpcInterface for View {
         type Tag = Endpoint;
+        type Borrowed<'a> = BorrowedCap<'a, Endpoint>;
+        fn from_borrowed<'a>(cap: BorrowedCap<'a, Endpoint>) -> Self::Borrowed<'a> {
+            cap
+        }
         fn from_cap(cap: Cap<Endpoint>) -> Self {
             Self(cap)
         }

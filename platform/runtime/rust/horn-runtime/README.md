@@ -29,7 +29,9 @@ Driver names use the `devmgr.` prefix.
 `cap(name)` returns an initial capability view, not a managed owning handle or
 proof of the kernel object's type. `copy`/`mint` allocate through the explicitly
 provided transport; `revoke` preserves an anchor while revoking descendants.
-Import ownership and deletion still use the IPC cap-space API.
+Raw imports/deletion use the IPC cap-space API. Explicitly owned local imports
+can use `OwnedCap` RAII; initial grants are not adoptable owning handles. See
+`docs/capability-ownership.md`.
 
 `interface::<I>(name)` returns a generated non-owning RPC interface view:
 

@@ -11,6 +11,9 @@ use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+mod owned;
+pub use owned::{BorrowedCap, CapView, OwnedCap};
+
 mod slots;
 pub use slots::TaskSlots;
 
@@ -86,6 +89,8 @@ pub trait CapType {
 /// server's interface, or close anything. Each call borrows its transport.
 pub trait RpcInterface: Sized {
     type Tag: CapType;
+    type Borrowed<'a>;
+    fn from_borrowed<'a>(cap: BorrowedCap<'a, Self::Tag>) -> Self::Borrowed<'a>;
     fn from_cap(cap: Cap<Self::Tag>) -> Self;
     fn as_cap(&self) -> Cap<Self::Tag>;
 }

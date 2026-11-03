@@ -18,6 +18,11 @@ deletion and only if IPC allocated it. Kernel object slots remain governed by
 the existing kernel allocator's leases/revocation. Fixed receive/discovery slots
 never enter the pool.
 
+An `OwnedCap` detaches an allocation from the transport ledger without freeing
+capacity. Its retained local CSpace context returns that capacity only after
+successful kernel deletion in Drop; duplicate adoption is rejected. See
+`docs/capability-ownership.md`.
+
 The pool uses an Arc and a short metadata lock so transport Send requirements
 remain sound; no unsafe Send implementation is added to the logger. Pool metadata
 allocation must not reenter the same pool (the root uses its existing fixed heap).

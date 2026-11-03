@@ -100,8 +100,8 @@ class Sender:
     assert "borrowed: &Cap<Notification>" in view
     assert "copied: &Cap<Notification>" in view
     assert "Result<u64, CallError<u64>>" in view
-    assert "__horn_transport.call(self.target.as_ref(), SENDER_CALL_LABEL" in view
-    assert "__horn_transport.send(self.target.as_ref(), SENDER_NOTIFY_LABEL" in view
+    assert "__horn_transport.call(self.target.cap_ref(), SENDER_CALL_LABEL" in view
+    assert "__horn_transport.send(self.target.cap_ref(), SENDER_NOTIFY_LABEL" in view
     for name, mode in (("moved", "MOVE"), ("borrowed", "BORROW"), ("copied", "COPY")):
         assert (
             f"{name}: Cap::from_ref({name}.as_ref().with_mode(CapMode::{mode}))" in view

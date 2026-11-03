@@ -818,15 +818,19 @@ class RustEmitter:
             "", "/// Non-owning interface view; calls borrow an explicit transport."
         )
         self.add("#[derive(Debug, Clone, Copy, PartialEq, Eq)]")
-        self.add(f"pub struct {name} {{ target: Cap<{marker}> }}")
+        self.add(f"pub struct {name}<C = Cap<{marker}>> {{ target: C }}")
         self.add(f"impl horn_ipc::RpcInterface for {name} {{")
         self.add(f"    type Tag = {marker};")
+        self.add(f"    type Borrowed<'a> = {name}<BorrowedCap<'a, {marker}>>;")
+        self.add(
+            f"    fn from_borrowed<'a>(target: BorrowedCap<'a, {marker}>) -> Self::Borrowed<'a> {{ {name} {{ target }} }}"
+        )
         self.add(
             f"    fn from_cap(target: Cap<{marker}>) -> Self {{ Self {{ target }} }}"
         )
         self.add(f"    fn as_cap(&self) -> Cap<{marker}> {{ self.target }}")
         self.add("}")
-        self.add(f"impl {name} {{")
+        self.add(f"impl<C: CapView<{marker}>> {name}<C> {{")
         for method in interface.all_methods():
             used = {snake(p.name) for p in method.params}
             transport = "__horn_transport"
@@ -851,12 +855,12 @@ class RustEmitter:
             label = method_label_name(interface, method)
             if method.oneway:
                 self.add(
-                    f"        {transport}.send(self.target.as_ref(), {label}, &args, "
+                    f"        {transport}.send(self.target.cap_ref(), {label}, &args, "
                     f"&{upper(interface.python_name)}_{upper(method.name)}_REQ_LAYOUT)"
                 )
             else:
                 call = (
-                    f"{transport}.call(self.target.as_ref(), {label}, &args, "
+                    f"{transport}.call(self.target.cap_ref(), {label}, &args, "
                     f"&{upper(interface.python_name)}_{upper(method.name)}_REQ_LAYOUT, "
                     f"&{upper(interface.python_name)}_{upper(method.name)}_RESULT_LAYOUT)"
                 )

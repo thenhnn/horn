@@ -7,7 +7,26 @@
 //! The current implementation supports flat layouts: root CNodes and one
 //! level of child CNodes.  Deeper trees are rejected rather than guessed at.
 
-use crate::root_slots::{LocalSlots, RootSlots};
+extern crate alloc;
+use crate::owned::LocalCapSpace;
+use crate::root_slots::{LocalSlots, Locked, RootSlots};
+use crate::{CapType, OwnedCap};
+use alloc::sync::Arc;
+
+struct LocalOwner {
+    slots: Locked<LocalSlots>,
+}
+impl LocalCapSpace for LocalOwner {
+    fn delete_owned(&self, cap: CapRef) -> Result<(), RpcError> {
+        let root = sel4::cap::CNode::from_bits(cap.cnode as Word);
+        root.absolute_cptr_from_bits_with_depth(cap.slot as Word, cap.depth as usize)
+            .delete()
+            .map_err(|_| RpcError::Transport)?;
+        self.slots
+            .with(|slots| slots.release_taken(cap.slot as usize));
+        Ok(())
+    }
+}
 use sel4::cap_type::CNode;
 use sel4::{AbsoluteCPtr, CPtr, Cap, CapRights, ObjectBlueprint, Word};
 
@@ -17,7 +36,7 @@ use crate::{CapMode, CapRef, Rights, RpcError};
 pub struct Sel4CapSpace {
     pub root: sel4::cap::CNode,
     pub untyped: Option<sel4::cap::Untyped>,
-    slots: LocalSlots,
+    local: Arc<LocalOwner>,
     root_ref: CapRef,
 }
 
@@ -62,7 +81,9 @@ impl Sel4CapSpace {
         Self {
             root,
             untyped,
-            slots: LocalSlots::new(slots),
+            local: Arc::new(LocalOwner {
+                slots: Locked::new(LocalSlots::new(slots)),
+            }),
             root_ref: CapRef::new(
                 root.cptr().bits() as u64,
                 0,
@@ -83,8 +104,9 @@ impl Sel4CapSpace {
     }
 
     fn alloc_root_slot(&mut self) -> Result<Word, RpcError> {
-        self.slots
-            .allocate()
+        self.local
+            .slots
+            .with(|slots| slots.allocate())
             .map(|slot| slot as Word)
             .ok_or(RpcError::TooManyCaps)
     }
@@ -121,6 +143,29 @@ impl Sel4CapSpace {
         }
         let cnode_cap = Cap::<CNode>::from_bits(cap.cnode as Word);
         Ok(cnode_cap.absolute_cptr_from_bits_with_depth(cap.slot as Word, cap.depth as usize))
+    }
+
+    /// Adopt a live, unborrowed root-local allocation. Registered initial grants,
+    /// receive slots outside this ledger, and already-adopted slots are rejected.
+    ///
+    /// # Safety
+    /// The caller must exclusively own this live capability and abandon all raw
+    /// aliases, including any future transfer/deletion through the raw API. The
+    /// process root CNode and thread invocation context must remain valid through
+    /// Drop (startup roots are process-lifetime grants). A raw Cap is Copy and
+    /// cannot prove freshness or exclusivity (like a raw fd).
+    pub unsafe fn own<T: CapType>(&mut self, cap: crate::Cap<T>) -> Result<OwnedCap<T>, RpcError> {
+        let raw = cap.as_ref();
+        if raw.unwrapped_badge().is_some()
+            || raw.cnode != self.root_cptr()
+            || raw.depth != sel4::WORD_SIZE as u8
+            || raw.cnode_bits != 0
+            || raw.mode == CapMode::BORROW
+            || !self.local.slots.with(|slots| slots.take(raw.slot as usize))
+        {
+            return Err(RpcError::NotLocal);
+        }
+        Ok(OwnedCap::new(cap, self.local.clone()))
     }
 
     pub fn register<T: sel4::CapType>(&mut self, cap: Cap<T>) -> Result<CapRef, RpcError> {
@@ -251,7 +296,9 @@ impl CapSpace for Sel4CapSpace {
         abs.delete().map_err(|_| RpcError::Transport)?;
         let slot = cap.slot as Word;
         if cap.cnode == self.root_cptr() {
-            self.slots.release_if_owned(slot as usize);
+            self.local
+                .slots
+                .with(|slots| slots.release_if_owned(slot as usize));
         }
         Ok(())
     }

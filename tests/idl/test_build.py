@@ -104,3 +104,57 @@ horn-idl-build = {{path = "{ROOT / "tools/idl/build"}"}}
     )
     assert failed.returncode != 0
     assert b"broken dependency" in failed.stderr
+
+
+def test_owned_interface_lifetimes_compile(tmp_path):
+    """Compile positive and compile-fail fixtures; never execute a Rust binary."""
+    env = dict(
+        os.environ,
+        PYTHONPATH=str(ROOT / "tools/idl"),
+        CARGO_TARGET_DIR=str(tmp_path / "target"),
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "lib.rs").write_text((ROOT / "tests/idl/owned.rs").read_text())
+    subprocess.run(
+        [
+            "python3",
+            "-B",
+            "-m",
+            "horn_idl",
+            str(ROOT / "examples/idl/tagged.py"),
+            "--rust",
+            str(src / "protocol.rs"),
+        ],
+        env=env,
+        check=True,
+        capture_output=True,
+    )
+    failures = {
+        "reject_outlive": "E0505",
+        "reject_copy": "E0382",
+        "reject_send": "E0277",
+        "reject_borrowed_send": "E0277",
+        "reject_erase": "E0599",
+    }
+    dependency = json.dumps(str(ROOT / "platform/runtime/rust/horn-ipc"))
+    features = "\n".join(f"{name} = []" for name in failures)
+    (tmp_path / "Cargo.toml").write_text(
+        '[package]\nname = "owned-compile"\nversion = "0.1.0"\nedition = "2024"\n'
+        f"[dependencies]\nhorn-ipc = {{ path = {dependency} }}\n"
+        f"[features]\n{features}\n[workspace]\n"
+    )
+    command = [
+        "cargo",
+        "check",
+        "--offline",
+        "--manifest-path",
+        str(tmp_path / "Cargo.toml"),
+    ]
+    subprocess.run(command, env=env, check=True, capture_output=True)
+    for feature, code in failures.items():
+        result = subprocess.run(
+            command + ["--features", feature], env=env, check=False, capture_output=True
+        )
+        assert result.returncode != 0
+        assert code.encode() in result.stderr, result.stderr.decode()

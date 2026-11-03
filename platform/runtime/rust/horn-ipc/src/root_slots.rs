@@ -16,21 +16,27 @@ struct Pool {
 /// Clones share free space; each client retains a separate ownership ledger.
 /// A client must only release slots it allocated, after successful cap deletion.
 #[derive(Clone)]
-pub struct RootSlots(Arc<LockedPool>);
-struct LockedPool {
+pub struct RootSlots(Arc<Locked<Pool>>);
+pub(crate) struct Locked<T> {
     busy: AtomicBool,
-    value: UnsafeCell<Pool>,
+    value: UnsafeCell<T>,
 }
-// Pool access is serialized by Guard; no kernel operations run under this lock.
-unsafe impl Sync for LockedPool {}
-struct Guard<'a>(&'a LockedPool);
-impl Drop for Guard<'_> {
+// Access is serialized by Guard; no kernel operations run under this lock.
+unsafe impl<T: Send> Sync for Locked<T> {}
+struct Guard<'a, T>(&'a Locked<T>);
+impl<T> Drop for Guard<'_, T> {
     fn drop(&mut self) {
         self.0.busy.store(false, Ordering::Release);
     }
 }
-impl LockedPool {
-    fn with<T>(&self, f: impl FnOnce(&mut Pool) -> T) -> T {
+impl<T> Locked<T> {
+    pub(crate) fn new(value: T) -> Self {
+        Self {
+            busy: AtomicBool::new(false),
+            value: UnsafeCell::new(value),
+        }
+    }
+    pub(crate) fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         while self
             .busy
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -45,13 +51,10 @@ impl LockedPool {
 impl RootSlots {
     pub fn new(range: Range<usize>) -> Self {
         assert!(range.start <= range.end);
-        Self(Arc::new(LockedPool {
-            busy: AtomicBool::new(false),
-            value: UnsafeCell::new(Pool {
-                free: ByRange::new(BasicAllocator::with_granule_size(range.len(), 1)),
-                range,
-            }),
-        }))
+        Self(Arc::new(Locked::new(Pool {
+            free: ByRange::new(BasicAllocator::with_granule_size(range.len(), 1)),
+            range,
+        })))
     }
     pub fn range(&self) -> Range<usize> {
         self.0.with(|pool| pool.range.clone())
@@ -90,6 +93,14 @@ impl LocalSlots {
         assert!(self.owned.insert(slot));
         Some(slot)
     }
+    /// Transfer ledger ownership to a local RAII handle, without freeing capacity.
+    pub fn take(&mut self, slot: usize) -> bool {
+        self.owned.remove(&slot)
+    }
+    /// The detached owner has successfully deleted its capability.
+    pub fn release_taken(&self, slot: usize) {
+        self.pool.release(slot);
+    }
     pub fn release_if_owned(&mut self, slot: usize) {
         if self.owned.remove(&slot) {
             self.pool.release(slot);
@@ -100,6 +111,19 @@ impl LocalSlots {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn detached_owner_retains_capacity_and_cannot_be_adopted_twice() {
+        let pool = RootSlots::new(100..101);
+        let mut ipc = LocalSlots::new(pool.clone());
+        let slot = ipc.allocate().unwrap();
+        assert!(ipc.take(slot));
+        assert!(!ipc.take(slot));
+        ipc.release_if_owned(slot); // transport no longer owns the slot
+        assert!(pool.allocate().is_none());
+        ipc.release_taken(slot); // only after successful kernel deletion
+        assert_eq!(pool.allocate(), Some(slot));
+    }
+
     #[test]
     fn kernel_and_ipc_share_capacity_without_freeing_each_others_slots() {
         let pool = RootSlots::new(100..104);

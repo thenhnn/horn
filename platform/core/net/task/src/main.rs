@@ -136,7 +136,8 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     let timer_signal = ctx.cap("timer_signal").unwrap();
     let time = Time::new(&mut io, &ctx);
     let alarm_cap = time.clock.alarm(&mut io).unwrap();
-    let alarm = Alarm::from_cap(Cap::from_ref(alarm_cap.as_ref()));
+    // Fresh RPC result: transfer its exclusive local slot ownership to RAII.
+    let alarm = unsafe { io.space.own(alarm_cap) }.unwrap();
     let mut armed = None;
     let info = EthernetInterfaceReceiver::from_cap(ethernet)
         .info(&mut io)
@@ -224,9 +225,12 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         });
         if deadline != armed {
             if let Some(d) = deadline {
-                alarm.arm(&mut service.io, d, &timer_signal).unwrap();
+                alarm
+                    .interface::<Alarm>()
+                    .arm(&mut service.io, d, &timer_signal)
+                    .unwrap();
             } else {
-                alarm.cancel(&mut service.io).unwrap();
+                alarm.interface::<Alarm>().cancel(&mut service.io).unwrap();
             }
             armed = deadline;
         }
