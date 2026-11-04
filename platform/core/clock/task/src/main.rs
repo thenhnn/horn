@@ -10,7 +10,10 @@ use horn_clock::{
     x86_64::{TscClockPage, TscTimeManager, cycles, invariant_tsc},
 };
 use horn_ipc::*;
-use horn_supervisor::protocol::ProcessLifecycleClient;
+use horn_supervisor::protocol as v;
+use v::{
+    VmAddressSpaceClient as _, VmFactoryClient as _, VmMemoryClient as _, VmRegionClient as _,
+};
 horn_runtime::task!(main);
 
 type Io = Sel4Transport<Sel4CapSpace>;
@@ -19,6 +22,76 @@ fn hardware_now(io: &mut Io, ctx: &horn_runtime::Context) -> u64 {
         .unwrap()
         .source_now(io)
         .unwrap()
+}
+
+struct SharedPage {
+    _memory: OwnedCap<v::VmMemoryObjectTag>,
+    handle: OwnedCap<v::VmMemoryObjectTag>,
+    _region: OwnedCap<v::VmRegionObjectTag>,
+}
+impl SharedPage {
+    fn new(ctx: &horn_runtime::Context, io: &mut Io, page: TscClockPage) -> Option<Self> {
+        let factory = ctx.object::<v::VmServiceTag>("horn.vm").ok()?;
+        let space = ctx
+            .object::<v::VmAddressSpaceObjectTag>("horn.address-space")
+            .ok()?;
+        let memory = factory
+            .allocate(&mut *io, 4096, v::VmBacking::Resident, v::VmProtection(3))
+            .ok()?;
+        let region = match space.reserve(
+            &mut *io,
+            v::VmRegionRequest {
+                address: 0,
+                length: 4096,
+                alignment: 4096,
+                placement: v::VmPlacement::Anywhere,
+                ceiling: v::VmProtection(3),
+            },
+        ) {
+            Ok(region) => region,
+            Err(_) => {
+                memory.close(&mut *io).expect("clock backing rollback");
+                return None;
+            }
+        };
+        let result = (|| {
+            let address = region.info(&mut *io).ok()?.address;
+            let mut updates = List::default();
+            updates.len = 2;
+            updates.data[0] = v::VmUpdate::Prepare(v::VmRange {
+                offset: 0,
+                length: 4096,
+            });
+            updates.data[1] = v::VmUpdate::Map(v::VmMap {
+                offset: 0,
+                length: 4096,
+                memory_offset: 0,
+                protection: v::VmProtection(3),
+            });
+            region
+                .apply(
+                    &mut *io,
+                    Some(Cap::from_ref(memory.cap_ref())),
+                    Parcel::inline(updates),
+                )
+                .ok()?;
+            // Initialized before READY; there are no writers after publication.
+            unsafe {
+                (address as *mut TscClockPage).write(page);
+            }
+            memory.delegate(&mut *io, v::VmMemoryRights::READ).ok()
+        })();
+        if result.is_none() {
+            region.destroy(&mut *io).expect("clock mapping rollback");
+            memory.close(&mut *io).expect("clock backing rollback");
+            return None;
+        }
+        Some(Self {
+            _memory: memory,
+            handle: result.unwrap(),
+            _region: region,
+        })
+    }
 }
 
 struct Alarm {
@@ -31,6 +104,7 @@ struct Service {
     ctx: horn_runtime::Context,
     io: Io,
     page: TscClockPage,
+    shared: Option<SharedPage>,
     alarms: Vec<Alarm>,
     programmed: Option<u64>,
 }
@@ -93,18 +167,21 @@ impl ClockInterfaceServer for Caller<'_> {
         }
         Ok(self.service.now())
     }
-    fn calibration(&mut self) -> Result<ClockCalibration, ClockError> {
+    fn shared_page(&mut self) -> Result<Cap<VmMemoryObjectTag>, ClockError> {
         if self.badge != 16 {
             return Err(ClockError::Denied);
         }
-        let c = self.service.page;
-        Ok(ClockCalibration {
-            flags: c.flags,
-            base_cycles: c.base_cycles,
-            base_us: c.base_us,
-            span_cycles: c.span_cycles,
-            span_us: c.span_us,
-        })
+        let shared = self
+            .service
+            .shared
+            .as_ref()
+            .ok_or(ClockError::Unavailable)?;
+        // Copy one non-closeable READ handle; requests don't allocate new VM records.
+        let handle: Cap<VmMemoryObjectTag> = Cap::from_ref(shared.handle.cap_ref());
+        self.service
+            .ctx
+            .copy(&mut self.service.io, handle)
+            .map_err(|_| ClockError::Exhausted)
     }
     fn alarm(&mut self) -> Result<Cap<AlarmObjectTag>, ClockError> {
         if self.badge != 16 {
@@ -156,11 +233,6 @@ impl AlarmInterfaceServer for Caller<'_> {
 }
 fn main(mut ctx: horn_runtime::Context) -> ! {
     let mut io = ctx.transport().unwrap();
-    let placement = ctx
-        .object::<horn_supervisor::protocol::ProcessSelfTag>("horn.lifecycle")
-        .unwrap()
-        .placement(&mut io)
-        .unwrap();
     let start = hardware_now(&mut io, &ctx);
     let t0 = cycles();
     ctx.interface::<ClockSource>("source")
@@ -171,29 +243,35 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     let t1 = cycles();
     let end = hardware_now(&mut io, &ctx);
     assert!(end > start && t1 > t0);
-    let page = TscClockPage {
+    // Platform contract: invariant TSC is synchronized across CPUs.
+    // No offset probing, watchdog, or live-migration support is provided.
+    let fast_tsc = invariant_tsc();
+    let page = TscClockPage::from(ClockCalibration {
         abi: 1,
-        // Invariant TSC alone does not establish cross-CPU synchronization.
-        // Every client uses the hardware/RPC domain until that is validated.
-        flags: (placement.cpu_count == 1 && invariant_tsc()) as u64,
+        fast_tsc,
         base_cycles: t1,
         base_us: end,
         span_cycles: t1 - t0,
         span_us: end - start,
-    };
+    });
     horn_runtime::logging::debug!(
         "{}",
-        if page.flags != 0 {
+        if fast_tsc {
             "local TSC enabled (fast path)"
         } else {
             "hardware clock (via IPC)"
         }
     );
+    let shared = SharedPage::new(&ctx, &mut io, page);
+    if shared.is_none() {
+        horn_runtime::logging::warn!("shared clock page unavailable; RPC remains available");
+    }
     let mut inbox = ctx.inbox("service").unwrap();
     let mut service = Service {
         ctx,
         io,
         page,
+        shared,
         alarms: Vec::new(),
         programmed: None,
     };

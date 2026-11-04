@@ -9,6 +9,11 @@
 use core::ops::Range;
 use horn_ipc::*;
 
+#[cfg(target_arch = "x86_64")]
+pub mod clock;
+#[cfg(target_arch = "x86_64")]
+pub use clock::Clock;
+
 mod context;
 pub use context::{Context, Inbox, Received};
 

@@ -1,8 +1,16 @@
-"""Monotonic time, immutable calibration page and independently granted alarms."""
+"""Monotonic time, a shared static calibration page and independently granted alarms."""
 
 from __future__ import annotations
 
 from horn_idl import *
+from horn_vm import (  # noqa: F401
+    VmError,
+    VmMemory,
+    VmMemoryInfo,
+    VmMemoryObject,
+    VmProtection,
+    VmMemoryRights,
+)
 
 
 @enum(base=U32)
@@ -28,20 +36,22 @@ class ClockSource:
 
 @record
 class ClockCalibration:
-    flags: U64
+    abi: U64
+    fast_tsc: BOOL
     base_cycles: U64
     base_us: U64
     span_cycles: U64
     span_us: U64
 
 
-@iface("net.nhnn.horn.clock", version=(1, 0))
+@iface("net.nhnn.horn.clock", version=(2, 0))
 class ClockInterface:
     @method
     def now(self) -> Result[U64, ClockError]: ...
-    # Immutable calibration; clients materialize a sealed read-only local page.
+    # One timerd-owned backing, initialized before READY and not updated afterwards.
+    # Clients receive copies of one READ handle, without CLOSE/control authority.
     @method
-    def calibration(self) -> Result[ClockCalibration, ClockError]: ...
+    def shared_page(self) -> Result[Cap[VmMemoryObject, Move], ClockError]: ...
     @method
     def alarm(self) -> Result[Cap[AlarmObject, Move], ClockError]: ...
 

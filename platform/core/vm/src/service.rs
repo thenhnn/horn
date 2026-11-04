@@ -81,7 +81,8 @@ const HANDLE_DEPTH: usize = 32;
 const HANDLE_CONTROL: u32 = VmMemoryRights::DELEGATE.0
     | VmMemoryRights::MAKE_IMMUTABLE.0
     | VmMemoryRights::REVOKE.0
-    | VmMemoryRights::DMA.0;
+    | VmMemoryRights::DMA.0
+    | VmMemoryRights::CLOSE.0;
 struct DerivedHandle {
     memory: usize,
     badge: ::sel4::Word,
@@ -1640,6 +1641,7 @@ impl VmMemoryServer for Caller<'_> {
             .delegate_handle(self.badge, VmMemoryRights(ceiling.0))
     }
     fn close(&mut self) -> Result<(), VmError> {
+        self.service.require(self.badge, VmMemoryRights::CLOSE)?;
         self.service.close_handle(self.badge)
     }
     fn revoke(&mut self) -> Result<(), VmError> {

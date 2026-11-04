@@ -93,7 +93,10 @@ impl Probe {
             .delegate(
                 &mut *io,
                 VmMemoryRights(
-                    VmMemoryRights::READ.0 | VmMemoryRights::DELEGATE.0 | VmMemoryRights::REVOKE.0,
+                    VmMemoryRights::READ.0
+                        | VmMemoryRights::DELEGATE.0
+                        | VmMemoryRights::REVOKE.0
+                        | VmMemoryRights::CLOSE.0,
                 ),
             )
             .unwrap();
@@ -102,11 +105,18 @@ impl Probe {
             Err(CallError::Remote(VmError::Denied))
         );
         assert_eq!(
-            branch.delegate(&mut *io, VmMemoryRights(129)),
+            branch.delegate(&mut *io, VmMemoryRights(257)),
             Err(CallError::Remote(VmError::Denied))
         );
-        let leaf = branch.duplicate(&mut *io, VmProtection::READ).unwrap();
-        let sibling = memory.delegate(&mut *io, VmMemoryRights(3)).unwrap();
+        let leaf = branch
+            .delegate(
+                &mut *io,
+                VmMemoryRights(VmMemoryRights::READ.0 | VmMemoryRights::CLOSE.0),
+            )
+            .unwrap();
+        let sibling = memory
+            .delegate(&mut *io, VmMemoryRights(3 | VmMemoryRights::CLOSE.0))
+            .unwrap();
         let control = factory
             .allocate(&mut *io, 4096, VmBacking::Resident, VmProtection(3))
             .unwrap();
@@ -201,7 +211,14 @@ pub fn receive(ctx: &horn_runtime::Context, io: &mut Io) {
     let control = ctx.object::<VmMemoryObjectTag>("sharing.control").unwrap();
     let sibling = ctx.object::<VmMemoryObjectTag>("sharing.sibling").unwrap();
     let factory = ctx.object::<VmServiceTag>("horn.vm").unwrap();
-    assert_eq!(leaf.rights(&mut *io).unwrap(), VmMemoryRights::READ);
+    assert_eq!(
+        leaf.rights(&mut *io).unwrap(),
+        VmMemoryRights(VmMemoryRights::READ.0 | VmMemoryRights::CLOSE.0)
+    );
+    assert_eq!(
+        control.close(&mut *io),
+        Err(CallError::Remote(VmError::Denied))
+    );
     assert_eq!(
         leaf.delegate(&mut *io, VmMemoryRights::READ),
         Err(CallError::Remote(VmError::Denied))

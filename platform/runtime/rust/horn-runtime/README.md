@@ -61,6 +61,30 @@ same-process SMP support is implied.
 `notify_ready()` signals the supervisor; the supervisor alone logs readiness.
 `wait(name)` waits on a named notification. Badges coalesce: recheck conditions.
 
+## Shared monotonic clock
+
+On x86-64, `ctx.clock(&mut io, "clock")?` obtains the named clock authority and
+returns a `horn_runtime::Clock`. Alternatively, `Clock::new(&ctx, &mut io, cap)`
+accepts an explicitly supplied clock capability. No transport or Context is retained.
+
+`clock.now(&mut io)` returns `Result<u64, CallError<ClockError>>`: local shared-page
+time when usable, otherwise the clock's RPC. Construction validates and maps the
+timerd-owned page read-only/NX. It does not allocate a client-local copy. Acquisition,
+validation or ordinary mapping failures fall back to RPC; uncertain native cleanup
+is not silently ignored. `clock.is_mapped()` reports mapping setup, not TSC eligibility.
+
+`clock.unmap(&mut io)` explicitly destroys this process's region and drops local
+cap copies; subsequent `now` calls remain usable through RPC. Failed unmap retains
+resources for retry. Drop alone only deletes local caps, not the server-side region.
+The shared memory handle has no CLOSE right and is never remotely closed by clients.
+`clock.capability()` exposes the supplied clock cap for alarm calls.
+
+The ABI uses IDL wire fields, including a real BOOL for fast-TSC eligibility.
+The provider never changes the published page, so there is no sequence counter.
+Invariant-TSC enables UP/SMP fast reads under a platform synchronization assumption;
+otherwise RPC is used. Revocation faults are NOT recovered by this fallback.
+See `platform/core/clock/README.md`.
+
 ## Heap and logging
 
 The bounded 256KiB control heap supports initialization and allocator callbacks,
@@ -84,5 +108,6 @@ Native root tasks retain their seL4 entry/runtime. Calling their own VM server
 to grow a synchronous global heap would deadlock. Hosted Linux uses the shared
 `libhorn` C startup API instead of this Rust task runtime.
 
-Validation compiles unit-test sources without executing them. The user runs
-QEMU and separately authorizes NVIDIA hardware launches.
+Clock wire-format unit tests execute on the host. Ordinary QEMU HTTP tests
+exercise shared clock mapping on UP/SMP, TCG fallback and KVM fast time where
+available. Physical-device/NVIDIA execution requires separate authorization.

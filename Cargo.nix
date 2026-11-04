@@ -1616,6 +1616,10 @@ rec {
         libName = "horn_runtime";
         dependencies = [
           {
+            name = "horn-clock";
+            packageId = "horn-clock";
+          }
+          {
             name = "horn-ipc";
             packageId = "horn-ipc";
             features = [ "sel4" ];

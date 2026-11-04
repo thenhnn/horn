@@ -57,6 +57,7 @@ class VmMemoryRights:
     MAKE_IMMUTABLE = 16
     REVOKE = 32
     DMA = 64
+    CLOSE = 128
 
 
 @flags(base=U32)

@@ -70,7 +70,7 @@ mutable registry hidden in reference-counted state. Backing retains its allocati
 pool/account, and regions retain their destination VSpace and cap allocator.
 
 `delegate(rights)` requires DELEGATE and creates a child with an explicit subset
-of READ, WRITE, EXECUTE, DELEGATE, MAKE_IMMUTABLE, REVOKE and DMA. Initial handles
+of READ, WRITE, EXECUTE, DELEGATE, MAKE_IMMUTABLE, REVOKE, DMA and CLOSE. Initial handles
 have the allocated mapping ceiling and all control rights. `duplicate(ceiling)`
 creates a child with mapping rights only. A copied endpoint aliases the same
 handle; it does not create a delegation or identify the caller. Mapping pages
@@ -103,7 +103,9 @@ unaffected siblings, global immutable checks and recipient-exit cleanup.
 ## Lifetimes and accounting
 
 Mappings retain backing after logical close. Kernel-cap copies alias the same
-handle; close revokes those copies, not mappings or dependent children. Revoke
+handle; CLOSE authorizes closing that server-side handle and revoking every cap
+copy, not mappings or dependent children. A shared READ-only handle can omit CLOSE,
+so recipients cannot invalidate it for others. They retain their own region authority. Revoke
 requires REVOKE and removes the selected handle's subtree and its mappings across
 VSpaces. Allocating-process teardown revokes every backing rooted in its account. Failed revoke retains cleanup authority and prevents
 new mappings from poisoned backing. Region destruction removes native aliases

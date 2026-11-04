@@ -2,8 +2,8 @@
 
 Status: shared registry, attenuated handles and cross-VSpace mapping/revoke are
 implemented. The native memory interface is v3 with `immutable` publication;
-there is no legacy seals API. timerd/netd shared calibration remains a future
-consumer. This is not a GPU VRAM or SMP clock fast-path implementation.
+there is no legacy seals API. Timerd/netd share a static calibration page through
+the common runtime clock API. This is not a GPU VRAM or SMP clock fast-path implementation.
 
 ## Authority and ownership
 
@@ -14,7 +14,7 @@ FramePool checks both allocator and account identity.
 
 **Handle** is a capability-authenticated authority with mapping and control rights.
 `delegate(rights)` requires DELEGATE and accepts only a subset of the parent's
-READ, WRITE, EXECUTE, DELEGATE, MAKE_IMMUTABLE, REVOKE and DMA rights. A copied cap
+READ, WRITE, EXECUTE, DELEGATE, MAKE_IMMUTABLE, REVOKE, DMA and CLOSE rights. A copied cap
 aliases the same handle. A derived handle has a distinct badge and explicit close
 lifetime. `duplicate(ceiling)` derives mapping-only authority, not control rights.
 All handles include READ; dynamic executable mappings remain unsupported.
@@ -76,8 +76,9 @@ be revoked, and later access can fault.
 
 ## Close, revoke and process cleanup
 
-Close revokes every kernel-cap copy of that handle. It does not revoke children
-or mappings. Dropping OwnedCap only deletes a local slot; it does not close a
+CLOSE authorizes closing a handle, which revokes every kernel-cap copy of it.
+Close does not revoke children or mappings. A shared READ-only handle can omit
+CLOSE so clients cannot invalidate other copies. Dropping OwnedCap only deletes a local slot; it does not close a
 remote object. Retained descendant ancestry is independent of closed ancestors.
 
 REVOKE permits revoking the invoked handle's subtree, not unrelated delegations.
@@ -125,11 +126,17 @@ Still needed: failure-injected cleanup and creator-exit cross-VSpace stress,
 application revocation fault recovery, full metadata prepayment, and device/DMA
 revoke coordination. These tests do not claim GPU or physical-device validation.
 
-## timerd/netd next consumer
+## timerd/netd consumer
 
-Timerd can allocate and initialize a versioned calibration page and delegate READ
-without global immutability. Netd maps it read-only in its own region instead of
-copying it. Keep RPC fallback on setup failure and the existing invariant-TSC /
-single-CPU policy. Updates require atomics and a consistent snapshot protocol.
-Revoke/process death can invalidate the mapping; publication is not an availability
-promise. Neither timerd/netd integration nor GPU sharing is part of this change.
+Timerd now initializes one versioned calibration page before READY and keeps RW
+owner authority without global immutability. It retains one READ-only handle,
+without CLOSE or other control rights, and sends ordinary cap copies to clients.
+Horn-runtime maps that backing in the client's region and provides now() with RPC
+fallback. Netd uses the runtime API, not a local calibration copy.
+
+The page uses IDL wire layout and a BOOL fast-TSC field. Contents remain static;
+no sequence counter is needed. Invariant-TSC enables UP/SMP fast reads under an
+explicit platform synchronization assumption, without runtime offset validation.
+Without that CPUID flag, clients use RPC. Updates would need a new synchronization
+contract. Revoke/process death can still invalidate mappings. GPU sharing remains
+separate work.

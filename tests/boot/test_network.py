@@ -1,5 +1,6 @@
 """One end-to-end event-loop/pool smoke, not a profile/failure matrix."""
 
+import os
 import socket
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
@@ -45,14 +46,28 @@ def exercise_http(port):
 
 
 @pytest.mark.parametrize("cpus", [1, 2], ids=["up", "smp"])
-def test_http_event_loop_and_growing_pool(system, cpus):
+@pytest.mark.parametrize(
+    "accel",
+    [
+        "tcg",
+        pytest.param(
+            "kvm",
+            marks=pytest.mark.skipif(
+                not os.access("/dev/kvm", os.R_OK | os.W_OK), reason="KVM unavailable"
+            ),
+        ),
+    ],
+)
+def test_http_event_loop_and_growing_pool(system, cpus, accel):
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
     vm = system(
         modules=("platform/system/console.nix",),
         cpus=cpus,
-        extra_args=(
+        accel=accel,
+        extra_args=(("-cpu", "host,migratable=off") if accel == "kvm" else ())
+        + (
             "-device",
             "intel-iommu,intremap=on,caching-mode=on,device-iotlb=off,aw-bits=48",
             "-netdev",
@@ -72,5 +87,7 @@ def test_http_event_loop_and_growing_pool(system, cpus):
     exercise_http(port)
     log = vm.serial.path.read_text()
     assert "panicked" not in log and "DMA fault from device" not in log, log
-    if cpus > 1:
-        assert "hardware clock (via IPC)" in log, log
+    assert "shared clock page mapped (read-only)" in log, log
+    assert (
+        "hardware clock (via IPC)" in log or "local TSC enabled (fast path)" in log
+    ), log

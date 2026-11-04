@@ -51,6 +51,16 @@ impl Context {
     pub fn object<T: RpcObject>(&self, name: &str) -> Result<Cap<T>, Error> {
         self.cap::<T>(name)
     }
+    /// Map a named clock's shared page when available; otherwise use RPC.
+    /// No transport or ambient context is retained by the resulting clock.
+    #[cfg(target_arch = "x86_64")]
+    pub fn clock(
+        &self,
+        io: &mut Sel4Transport<Sel4CapSpace>,
+        name: &str,
+    ) -> Result<crate::Clock, Error> {
+        Ok(crate::Clock::new(self, io, self.object(name)?))
+    }
     /// View a named initial capability as an IDL interface, without IPC or
     /// ownership transfer. The deployment contract supplies the interface type;
     /// this lookup is not a runtime server-type check.

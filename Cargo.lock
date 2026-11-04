@@ -409,6 +409,7 @@ dependencies = [
 name = "horn-runtime"
 version = "0.1.0"
 dependencies = [
+ "horn-clock",
  "horn-ipc",
  "horn-log",
  "horn-mimalloc",
