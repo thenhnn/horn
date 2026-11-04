@@ -96,13 +96,51 @@ impl Manager {
         self.launch_window = Some(window);
         Ok(())
     }
-    pub fn attach_vm(&mut self, id: ProcessId, vm: VmService) -> Result<(), Error> {
-        let p = self.process_mut(id)?;
-        if p.vm.is_some() || p.state != State::Created {
+    pub fn attach_vm(&mut self, id: ProcessId, mut vm: VmService) -> Result<(), Error> {
+        if self.process(id)?.state != State::Created
+            || self.vms.iter().any(|(owner, _)| *owner == id)
+        {
             return Err(Error::InvalidState);
         }
-        p.vm = Some(vm);
+        self.vms
+            .try_reserve(1)
+            .map_err(|_| Error::Resource(horn_vm::Error::MetadataExhausted))?;
+        self.vm_registry
+            .register(&mut vm)
+            .map_err(|_| Error::Resource(horn_vm::Error::MetadataExhausted))?;
+        self.vms.push((id, Some(vm)));
         Ok(())
+    }
+    pub(crate) fn vm_mut(&mut self, id: ProcessId) -> Option<&mut VmService> {
+        self.vms
+            .iter_mut()
+            .find(|(owner, _)| *owner == id)?
+            .1
+            .as_mut()
+    }
+    pub(crate) fn take_vm(&mut self, id: ProcessId) -> Option<VmService> {
+        self.vms
+            .iter_mut()
+            .find(|(owner, _)| *owner == id)?
+            .1
+            .take()
+    }
+    pub(crate) fn restore_vm(&mut self, id: ProcessId, vm: VmService) {
+        let slot = &mut self
+            .vms
+            .iter_mut()
+            .find(|(owner, _)| *owner == id)
+            .expect("VM owner vanished")
+            .1;
+        assert!(slot.is_none());
+        *slot = Some(vm);
+    }
+    pub(crate) fn memory_owner(&self, cap: CapRef) -> Option<ProcessId> {
+        self.vms.iter().find_map(|(id, vm)| {
+            vm.as_ref()
+                .filter(|vm| vm.owns_registered_memory(cap, &self.vm_registry))
+                .map(|_| *id)
+        })
     }
     fn mint(&mut self, endpoint: sel4::cap::Endpoint) -> Result<(usize, sel4::Word), Error> {
         let badge = NEXT_SELF_BADGE
@@ -251,11 +289,11 @@ impl Manager {
         request: horn_vm::protocol::VmHostRequest,
         badge: sel4::Word,
     ) -> Option<horn_vm::protocol::VmHostResponse> {
-        self.processes
+        self.vms
             .iter_mut()
-            .filter_map(|p| p.vm.as_mut())
-            .find(|vm| vm.handles(badge))
-            .map(|vm| vm.dispatch(request, badge))
+            .filter_map(|(_, vm)| vm.as_mut())
+            .find(|vm| vm.routes(badge, &self.vm_registry))
+            .map(|vm| vm.with_registry(&mut self.vm_registry, |vm| vm.dispatch(request, badge)))
     }
     pub fn finish_reply(&mut self, server: &mut Sel4Server<Sel4CapSpace>) -> Result<(), RpcError> {
         if let Some(slot) = self.outgoing.take() {
@@ -263,7 +301,7 @@ impl Manager {
                 .release_slot(slot)
                 .map_err(|_| RpcError::Transport)?;
         }
-        for vm in self.processes.iter_mut().filter_map(|p| p.vm.as_mut()) {
+        for vm in self.vms.iter_mut().filter_map(|(_, vm)| vm.as_mut()) {
             vm.finish_exports()?;
         }
         server.recv_slot.delete().map_err(|_| RpcError::Transport)
@@ -362,16 +400,12 @@ impl Manager {
             .launch_window
             .clone()
             .ok_or(ProcessError::Quarantined)?;
-        let source = self
-            .processes
-            .iter()
-            .find(|p| p.vm.as_ref().is_some_and(|vm| vm.owns_memory(cap)))
-            .map(|p| p.id)
-            .ok_or(ProcessError::Denied)?;
-        let mut vm = self.process_mut(source).map_err(error)?.vm.take().unwrap();
+        let source = self.memory_owner(cap).ok_or(ProcessError::Denied)?;
+        let mut vm = self.take_vm(source).ok_or(ProcessError::Denied)?;
         let mut created = None;
-        let read = unsafe {
-            vm.with_sealed_bytes(cap, self.caller_vspace, window, |bytes| {
+        let mut registry = core::mem::take(&mut self.vm_registry);
+        let read = vm.with_registry(&mut registry, |vm| unsafe {
+            vm.with_immutable_bytes(cap, self.caller_vspace, window, |bytes| {
                 created = Some(self.create_in(
                     bytes,
                     Config {
@@ -385,8 +419,9 @@ impl Manager {
                     Some(owner),
                 ));
             })
-        };
-        self.process_mut(source).map_err(error)?.vm = Some(vm);
+        });
+        self.vm_registry = registry;
+        self.restore_vm(source, vm);
         if let Err(e) = read {
             if e == VmError::Quarantined {
                 self.launch_window = None;

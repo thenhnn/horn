@@ -10,7 +10,7 @@ ASID authority. Untyped is available explicitly through quota-backed leases.
 
 - `VmFactory`: account information, backing, Untyped leases, address spaces, pagers, subaccounts.
 - `VmUntyped`: get the kernel capability plus its size bits; close revokes all descendants.
-- `VmMemory` v2: backing information including seals, add seals, duplicate, close, revoke.
+- `VmMemory` v3: backing information, immutable publication, rights, delegation, close and subtree revoke.
 - `VmAddressSpace`: region reservation and destruction.
 - `VmRegion`: information, prepared mapping batches, pager binding, destruction.
 - `VmPager`: notification-driven fault draining and resolution batches.
@@ -19,12 +19,12 @@ ASID authority. Untyped is available explicitly through quota-backed leases.
 state authorize operations; interface casts do not grant authority. Badge values
 never wrap or get reused. An account cannot be selected using a client integer.
 
-The implementation advertises RESIDENT, PROTECTION, UNTYPED and SEALS. It supports Anywhere
+The implementation advertises RESIDENT, PROTECTION, UNTYPED, IMMUTABLE and DUPLICATE_MEMORY. It supports Anywhere
 reservations inside one loader-provisioned window, prepared maps, aliases,
 read/write protection changes, acknowledged unmaps, close/revoke and region
 teardown. The loader installs translation tables before adopting the VSpace.
 
-Demand-zero, fixed placement, new spaces, duplicate handles, subaccounts and
+Demand-zero, fixed placement, new spaces, subaccounts and
 pagers return typed Unsupported on authorized requests. Adopted-space destruction
 returns Busy: the service does not own thread shutdown/ASID reclamation. Invalid
 pager capabilities are denied, not accepted as dummy pager objects.
@@ -62,52 +62,50 @@ transactions or pipelined calls. Empty batches with valid authority succeed.
 Parcels are inline; the 16-entry limit fits the 960-byte payload and needs at most
 one borrowed capability.
 
-## Backing seals
+## Shared backing and immutable publication
 
-`VmMemory.add_seals(VmSeals)` irreversibly adds backing-wide restrictions;
-`info().seals` reads the shared set. Kernel-cap copies observe the same state.
-New allocations start with no seals. Unknown bits return Invalid. Additions are
-atomic: an error installs none of the requested bits.
+Root Manager owns the shared registry of backing, delegated handles and regions.
+It explicitly loans the tables to one serialized operation; there is no shared
+mutable registry hidden in reference-counted state. Backing retains its allocating
+pool/account, and regions retain their destination VSpace and cap allocator.
 
-- WRITE returns Busy while any mapping retains write authority, including an
-  initially read-only mapping under RW ceilings or one downgraded with Protect.
-  Unmap/Destroy removes that authority only after acknowledged native cleanup.
-  Once installed, WRITE prevents writable maps and protection upgrades.
-- FUTURE_WRITE blocks new writable maps without changing old mappings' rights.
-  Old mappings may still upgrade through Protect; new read-only mappings cannot.
-  **FUTURE_WRITE alone does not make bytes immutable.**
-- SEAL forbids further additions (including an empty request), not writes.
-- GROW and SHRINK record size restrictions. Backing is already fixed-size and
-  there is no resize API; any future resizing must honor these restrictions.
+`delegate(rights)` requires DELEGATE and creates a child with an explicit subset
+of READ, WRITE, EXECUTE, DELEGATE, MAKE_IMMUTABLE, REVOKE and DMA. Initial handles
+have the allocated mapping ceiling and all control rights. `duplicate(ceiling)`
+creates a child with mapping rights only. A copied endpoint aliases the same
+handle; it does not create a delegation or identify the caller. Mapping pages
+retain immutable lineage after handle close. Children and mappings are bounded
+per allocating service; delegation depth is limited to 32.
 
-Flag values match the corresponding Linux memfd seals. There is no file/FD
-layer, private COW mapping or write/pwrite API here. A Linux adapter must enforce
-FD permissions and prevent all non-mapping writes after WRITE or FUTURE_WRITE;
-these seals are not a complete memfd implementation. A default non-sealable
-memfd can be represented by adding SEAL at creation.
+`info().immutable` is backing-wide and initially false. `make_immutable()` requires
+MAKE_IMMUTABLE and irreversibly sets it; repeated successful calls are idempotent.
+It returns Busy while ANY address space retains a mapping with MAYWRITE or a DMA
+writer exists. Protect(READ) does not clear MAYWRITE: unmap that mapping first.
+Writable handles do not prevent publication, but cannot create writes afterwards.
+No mapping is silently downgraded. MMIO/device-backed memory is not publishable.
 
-An immutable ELF source needs WRITE, not merely FUTURE_WRITE or moving a cap.
-Sealing does not consume ownership: close/revoke still work, and readers must
-retain backing for their entire read. Procd's scoped launch API borrows sealed
-pages through a temporary read-only NX root view, removes that view after loading,
-and charges the independent loaded image to the new process's own account. Source ownership
-and quota do not transfer to the launched process.
+After publication all new CPU writes, write upgrades and writable DMA pins are
+denied, including through older handles. Read-only mappings and DMA remain valid.
+There is no unfreeze, general seal vocabulary, or legacy seals compatibility API.
+The memory interface is v3; consumers must rebuild.
 
-The single VM server serializes sealing with mapping changes, even for remote
-CPU clients. It never forcibly removes mappings during seal. No raw managed
-frame caps are exported, and every managed alias is tracked here. This invariant
-must also cover future address spaces and non-mapping writers; arbitrary private
-Untyped frames and DMA are not sealable through this API. Poisoned backing cannot
-be sealed. QEMU boot probes check aliases, MAYWRITE preservation, future-write
-denial and reclamation. Placement is automatic; a separate two-worker probe
-exercises remote-CPU private heaps and explicitly root-mapped shared backing.
-This is not yet a same-process multi-thread or concurrent-writer stress test.
+RO attenuation is not immutability: another holder may still write mutable backing.
+Immutability guarantees contents, not availability: subtree revoke can still remove
+mappings. Procd reads immutable ELF/startup sources through a temporary NX view.
+The synchronous root operation retains backing and excludes interleaved revoke
+until its reader callback and native unmaps finish; it is not a general
+fault-recoverable user-space read API.
+
+QEMU probes use separate processes to check shared bytes, denied mapping and
+protection upgrades, close versus mapping lifetime, selective subtree revoke,
+unaffected siblings, global immutable checks and recipient-exit cleanup.
 
 ## Lifetimes and accounting
 
 Mappings retain backing after logical close. Kernel-cap copies alias the same
-handle; close revokes those copies, not mappings. Revoke removes mappings before
-closing the owner handle. Failed revoke retains cleanup authority and prevents
+handle; close revokes those copies, not mappings or dependent children. Revoke
+requires REVOKE and removes the selected handle's subtree and its mappings across
+VSpaces. Allocating-process teardown revokes every backing rooted in its account. Failed revoke retains cleanup authority and prevents
 new mappings from poisoned backing. Region destruction removes native aliases
 before returning backing or virtual ranges to their allocators.
 
@@ -119,8 +117,8 @@ Retype inside a delegated lease is not charged again. Child account charges also
 consume their parent budget; limits do not reserve RAM. This account hierarchy
 is not the process tree: procd creates peer process accounts under the system
 allocator, so launching children does not spend the launcher's quota. Virtual
-reservations do not charge backing. Future DMA buffers must count as physical
-RAM; MMIO/BAR ranges must not. No DMA allocation/pinning API exists yet.
+reservations do not charge backing. Resident DMA buffers count as physical RAM;
+MMIO/BAR ranges do not. DMA pins retain existing backing without a second RAM charge.
 
 RAM is acquired lazily from the non-device BootInfo Untypeds. Release revokes
 all descendants before returning the unit to the common allocator; free buddy
@@ -139,6 +137,21 @@ cleanup, malformed-request recovery, untrusted CNode recovery, SMP scheduling
 and failure-injected kernel cleanup remain unfinished. seL4 does not notify the
 service when the last endpoint-cap alias disappears. This service must not be used as a
 claim of complete process lifecycle, DMA isolation or Linux VM integration.
+
+## DMA ownership
+
+Registry-owned pins identify backing independently of process records. Only the
+trusted device broker can request a pin, and the memory handle must include DMA
+and the requested device access rights. Physical pages are not exported to drivers.
+DMA writers block immutable publication; immutable backing permits device reads
+but denies device writes. Any DMA pin currently makes subtree revoke Busy.
+
+DeviceMapping remains separate: devmgr owns the device domain, IOVA reservation,
+IOMMU mapping, per-device quota and drain policy. Close invalidates and drains
+before unpin. Whole-domain detach uses the same post-drain release path. CPU
+unmap and memory close follow hardware cleanup. No Drop performs DMA teardown.
+Unknown cleanup outcomes retain pins/charge or fail-stop; VM cannot automatically
+stop a device and does not send synchronous revoke callbacks to devmgr.
 
 ## Deferred fault contract
 

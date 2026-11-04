@@ -39,7 +39,7 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
         ProcessFactory::from_ref(factory.as_ref()).open(&mut t, 1),
         Err(CallError::Remote(ProcessError::Denied))
     );
-    // An object cap is not enough: FUTURE_WRITE is not an immutable source.
+    // An object cap alone is not an immutable source.
     let bad = vm::VmFactory::from_ref(memory.as_ref())
         .allocate(
             &mut t,
@@ -48,15 +48,11 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
             vm::VmProtection::READ,
         )
         .unwrap();
-    for seal in [
-        None,
-        Some(vm::VmSeals::FUTURE_WRITE),
-        Some(vm::VmSeals::WRITE),
-    ] {
-        if let Some(seal) = seal {
-            bad.add_seals(&mut t, seal).unwrap();
+    for immutable in [false, true] {
+        if immutable {
+            bad.make_immutable(&mut t).unwrap();
         }
-        let expected = if seal == Some(vm::VmSeals::WRITE) {
+        let expected = if immutable {
             ProcessError::InvalidElf
         } else {
             ProcessError::Denied
@@ -161,6 +157,7 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
             .as_ref()
             .slot,
     };
+    let sharing = crate::sharing_probe::Probe::install(ctx, &mut t, boot, &child.borrow().cast());
     let mut entries = [
         libhorn::startup::Entry {
             name: "horn.vm",
@@ -178,9 +175,22 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
             name: "horn.reply",
             selector: 4,
         },
+        libhorn::startup::Entry {
+            name: "sharing.leaf",
+            selector: 20,
+        },
+        libhorn::startup::Entry {
+            name: "sharing.control",
+            selector: 21,
+        },
+        libhorn::startup::Entry {
+            name: "sharing.sibling",
+            selector: 22,
+        },
     ];
     boot.context(&mut t, &child.borrow().cast(), &mut entries);
     child.start(&mut t).unwrap();
+    sharing.revoke_branch(&mut t);
     let mut exited = false;
     for _ in 0..10000 {
         let info = child.info(&mut t).unwrap();
@@ -192,6 +202,7 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
         }
     }
     assert!(exited);
+    sharing.cleanup(&mut t);
     assert_eq!(
         child.start(&mut t,),
         Err(CallError::Remote(ProcessError::State))
@@ -207,6 +218,6 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
         1
     );
     sel4::debug_println!(
-        "LAUNCH_RPC_PASS sealed=true quota=true pagination=true control=true cleanup=true"
+        "LAUNCH_RPC_PASS immutable=true quota=true pagination=true control=true cleanup=true"
     );
 }

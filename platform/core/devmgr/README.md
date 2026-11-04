@@ -51,7 +51,10 @@ never given to drivers. BAR memory is mapped directly through managed VM memory
 objects, uncached and NX, not proxied per register access. MMIO bytes are not
 charged as resident RAM; mapping/kernel objects still have an owner account.
 DMA backing stays charged to its VM owner while pinned, without a second charge.
-WRITE/FUTURE_WRITE seals also constrain writable DMA pins.
+Immutable VM backing rejects writable DMA pins; existing DMA writers block
+immutable publication. Root's registry owns pin lifetime independently of process
+records. DeviceMapping still owns domain/IOVA authority; explicit close and domain
+detach share one post-drain release path.
 
 ## Separation from drivers
 

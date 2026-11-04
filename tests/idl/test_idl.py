@@ -618,6 +618,9 @@ def test_vm_schema_has_bounded_batches_and_scoped_faults():
         (interface.python_name, method.name): method
         for interface, method in schema.methods()
     }
+    assert interfaces["VmMemory"].version == (3, 0)
+    assert ("VmMemory", "add_seals") not in methods
+    assert methods["VmMemory", "make_immutable"].params == []
     for key in [("VmRegion", "apply"), ("VmPager", "resolve")]:
         method = methods[key]
         parcel = method.params[1].type
@@ -640,7 +643,7 @@ def test_vm_schema_has_bounded_batches_and_scoped_faults():
 def test_object_dispatch_keeps_interface_qualified_method_names():
     schema = compile_path(ROOT / "platform/core/vm/idl/horn_vm.py")
     host = next(value for value in schema.objects if value.python_name == "VmHost")
-    assert len(list(host.methods())) == 22
+    assert len(list(host.methods())) == 24
     rust = emit_rust(schema)
     for interface in ("VmFactory", "VmMemory", "VmRegion"):
         assert f"{interface}Server::info(handler)" in rust

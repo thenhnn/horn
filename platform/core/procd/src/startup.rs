@@ -70,23 +70,20 @@ impl Manager {
             .launch_window
             .clone()
             .ok_or(ProcessError::Quarantined)?;
-        let source = self
-            .processes
-            .iter()
-            .find(|p| p.vm.as_ref().is_some_and(|vm| vm.owns_memory(descriptor)))
-            .map(|p| p.id)
-            .ok_or(ProcessError::Denied)?;
-        let mut vm = self.process_mut(source).map_err(error)?.vm.take().unwrap();
+        let source = self.memory_owner(descriptor).ok_or(ProcessError::Denied)?;
+        let mut vm = self.take_vm(source).ok_or(ProcessError::Denied)?;
         let mut result = Err(Error::Denied);
-        let read = unsafe {
-            vm.with_sealed_bytes(descriptor, self.caller_vspace, window, |bytes| {
+        let mut registry = core::mem::take(&mut self.vm_registry);
+        let read = vm.with_registry(&mut registry, |vm| unsafe {
+            vm.with_immutable_bytes(descriptor, self.caller_vspace, window, |bytes| {
                 result = bytes
                     .get(..length)
                     .ok_or(Error::Denied)
                     .and_then(|bytes| self.install_context(id, bytes));
             })
-        };
-        self.process_mut(source).map_err(error)?.vm = Some(vm);
+        });
+        self.vm_registry = registry;
+        self.restore_vm(source, vm);
         if let Err(e) = read {
             self.process_mut(id).map_err(error)?.startup = None;
             if e == VmError::Quarantined {

@@ -8,7 +8,7 @@ a same-process thread runtime and musl are not part of this implementation.
 ## Capability API
 
 - `ProcessFactory.launch(elf, request)` borrows a VM memory capability containing
-  the actual ELF, with WRITE seal required. It returns a control capability for
+  the actual ELF, with backing-wide immutability required. It returns a control capability for
   a **suspended** process. There is no executable-name registry or file service.
 - `ProcessFactory.open(id)` recovers control over a child in that factory's scope.
   The authenticated factory grants authority; the numeric ID only selects within
@@ -50,10 +50,11 @@ independently validated isolation boundary.
 
 ## ELF ownership and RAM
 
-Launch maps sealed source pages read-only and NX into a root-reserved reader
+Launch maps immutable source pages read-only and NX into a root-reserved reader
 window for parsing and loading; it does not copy the whole file into root's heap.
-Only WRITE excludes all managed writers: FUTURE_WRITE alone is rejected. Reader
-aliases are removed before returning, including ordinary failure paths. Failed
+Backing-wide immutability excludes all managed writers. The serialized root
+reader holds the source through its callback and removes aliases before returning,
+including ordinary failure paths. Failed
 native cleanup quarantines the source/window and disables further launches,
 without optimistic address or backing reuse.
 
@@ -127,7 +128,7 @@ The pinned `object` crate parses static, little-endian x86-64 executable ELF.
 reserved bytes are rejected, without fallback. The tag grants no trust
 or permissions.
 
-Created processes must receive a sealed names/selectors descriptor via
+Created processes must receive an immutable names/selectors descriptor via
 `startup_context` before start. Procd supplies actual runtime fields and creates
 accounted resident RO/NX backing outside the VM window. Initial slot installs
 freeze once record allocation begins; a partial failure retains backing until
@@ -152,7 +153,7 @@ parent exit also retires its descendants and revokes scoped grants. Exited
 control records remain inspectable until close or owner teardown. Failed cleanup
 never counts as completed exit or reusable RAM.
 
-Boot tests exercise sealed input, reject unsealed/future-write-only and malformed
+Boot tests exercise immutable input, reject mutable and malformed
 ELF, quota rollback, five suspended launches without charging the launcher,
 record limits/pagination, role separation, scoped open, RAM limits,
 terminate/close, source-close independence,

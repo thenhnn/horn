@@ -1,5 +1,5 @@
 //! DMA pins are physical backing references, not reservations or extra charges.
-use crate::protocol::{VmError, VmProtection, VmSeals};
+use crate::protocol::{VmError, VmProtection};
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub(crate) struct Pins {
@@ -11,15 +11,13 @@ impl Pins {
         self,
         access: VmProtection,
         ceiling: VmProtection,
-        seals: VmSeals,
+        immutable: bool,
     ) -> Result<Self, VmError> {
         let rw = VmProtection::READ.0 | VmProtection::WRITE.0;
         if access.0 == 0 || access.0 & !rw != 0 {
             return Err(VmError::Invalid);
         }
-        if access.0 & !ceiling.0 != 0
-            || access.0 & VmProtection::WRITE.0 != 0 && seals.blocks_new_writes()
-        {
+        if access.0 & !ceiling.0 != 0 || access.0 & VmProtection::WRITE.0 != 0 && immutable {
             return Err(VmError::Denied);
         }
         Ok(Self {
@@ -56,42 +54,32 @@ impl Pin {
 mod tests {
     use super::*;
     #[test]
-    fn pins_obey_ceiling_and_seals_without_a_second_ram_charge() {
-        let rw = VmProtection(VmProtection::READ.0 | VmProtection::WRITE.0);
+    fn pins_obey_rights_and_immutability() {
+        let rw = VmProtection(3);
         let empty = Pins::default();
         assert_eq!(
-            empty.adding(VmProtection(0), rw, VmSeals(0)),
+            empty.adding(VmProtection(0), rw, false),
             Err(VmError::Invalid)
         );
         assert_eq!(
-            empty.adding(VmProtection::EXECUTE, rw, VmSeals(0)),
+            empty.adding(VmProtection::EXECUTE, rw, false),
             Err(VmError::Invalid)
         );
         assert_eq!(
-            empty.adding(rw, VmProtection::READ, VmSeals(0)),
+            empty.adding(rw, VmProtection::READ, false),
             Err(VmError::Denied)
         );
-        for seals in [VmSeals::WRITE, VmSeals::FUTURE_WRITE] {
-            assert_eq!(empty.adding(rw, rw, seals), Err(VmError::Denied));
-            assert_eq!(
-                empty.adding(VmProtection::READ, rw, seals).unwrap().writers,
-                0
-            );
-        }
-        let mut pins = empty.adding(rw, rw, VmSeals(0)).unwrap();
+        assert_eq!(empty.adding(rw, rw, true), Err(VmError::Denied));
         assert_eq!(
-            VmSeals(0).adding(VmSeals::WRITE, pins.writers != 0),
-            Err(VmError::Busy)
+            empty.adding(VmProtection::WRITE, rw, true),
+            Err(VmError::Denied)
         );
-        pins = pins
-            .adding(VmProtection::READ, rw, VmSeals::FUTURE_WRITE)
-            .unwrap();
+        let mut pins = empty.adding(rw, rw, false).unwrap();
+        assert_eq!(pins.writers, 1);
+        pins = pins.adding(VmProtection::READ, rw, true).unwrap();
         pins.remove(true);
         assert_eq!(pins.count, 1);
-        assert_eq!(
-            VmSeals(0).adding(VmSeals::WRITE, pins.writers != 0),
-            Ok(VmSeals::WRITE)
-        );
+        assert_eq!(pins.writers, 0);
         pins.remove(false);
         assert_eq!(pins, empty);
         assert_eq!(
@@ -99,7 +87,7 @@ mod tests {
                 count: usize::MAX,
                 writers: 0
             }
-            .adding(VmProtection::READ, rw, VmSeals(0)),
+            .adding(VmProtection::READ, rw, false),
             Err(VmError::Exhausted)
         );
     }

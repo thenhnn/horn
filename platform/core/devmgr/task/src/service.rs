@@ -435,12 +435,18 @@ impl Service {
                 .unmap_many(domain, &ranges)
                 .expect("DMA invalidate/drain");
         }
+        self.release_drained_map(map);
+    }
+    fn unpin(&mut self, token: u64) {
+        let io = &mut *self.io();
+        io.platform
+            .unpin(&mut io.transport, token)
+            .expect("DMA unpin after drain or unpublished rollback");
+    }
+    /// Only after successful unmap+drain or whole-domain detach+drain.
+    fn release_drained_map(&mut self, map: Dma) {
         for pin in map.pins {
-            {
-                let io = &mut *self.io();
-                io.platform.unpin(&mut io.transport, pin.token)
-            }
-            .expect("DMA unpin after drain");
+            self.unpin(pin.token);
         }
         self.devices[map.device].dma_bytes -= map.length;
         self.retire(map.authority);
@@ -607,11 +613,7 @@ impl Service {
             if self.unit().poisoned() {
                 panic!("DMA map poisoned: {:?}", e);
             }
-            {
-                let io = &mut *self.io();
-                io.platform.unpin(&mut io.transport, pin.token)
-            }
-            .expect("unpublished pin release");
+            self.unpin(pin.token);
             self.maps[index] = Some(map);
             return Err(failure(e));
         }
@@ -1257,15 +1259,7 @@ impl DeviceControlServer for Caller<'_> {
                 .is_some_and(|m| m.device == d)
             {
                 let map = self.service.maps[index].take().unwrap();
-                for pin in map.pins {
-                    {
-                        let io = &mut *self.service.io();
-                        io.platform.unpin(&mut io.transport, pin.token)
-                    }
-                    .expect("detached DMA unpin");
-                }
-                self.service.devices[d].dma_bytes -= map.length;
-                self.service.retire(map.authority);
+                self.service.release_drained_map(map);
             }
         }
         if let Some(msix) = self.service.devices[d].msix.take() {

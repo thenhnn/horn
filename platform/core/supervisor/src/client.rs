@@ -11,7 +11,7 @@ pub struct Bootstrap {
     pub space: u32,
 }
 impl Bootstrap {
-    /// Seal and install the named startup descriptor after all initial grants.
+    /// Publish an immutable named startup descriptor after all initial grants.
     pub fn context(
         self,
         io: &mut Io,
@@ -104,7 +104,7 @@ impl Bootstrap {
         }
         region.destroy(&mut *io).unwrap();
         drop(region);
-        memory.add_seals(&mut *io, VmSeals::WRITE).unwrap();
+        memory.make_immutable(&mut *io).unwrap();
         memory
     }
 }

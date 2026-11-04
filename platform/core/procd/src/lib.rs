@@ -81,7 +81,6 @@ pub struct Config<'a> {
 struct Process {
     id: ProcessId,
     parent: Option<ProcessId>,
-    vm: Option<horn_vm::service::Service>,
     control: Option<(usize, sel4::Word)>,
     launch: Option<service::Grant>,
     name: String,
@@ -118,17 +117,8 @@ pub struct Info<'a> {
     pub ram: Usage,
 }
 
-/// Trusted IOMMU broker token; dropping it does not release device-accessible RAM.
-#[must_use]
-pub struct DmaPin {
-    process: ProcessId,
-    pin: horn_vm::dma::Pin,
-}
-impl DmaPin {
-    pub fn pages(&self) -> &[u64] {
-        self.pin.pages()
-    }
-}
+/// Root-owned pin identity is independent of the allocating process record.
+pub use horn_vm::dma::Pin as DmaPin;
 
 #[must_use]
 pub struct MmioLease {
@@ -145,6 +135,9 @@ pub struct Manager {
     schedulers: Vec<sel4::cap::SchedControl>,
     host_cpu: usize,
     processes: Vec<Process>,
+    // Root-owned VM instances; backing is still private to each instance.
+    vms: Vec<(ProcessId, Option<horn_vm::service::Service>)>,
+    vm_registry: horn_vm::service::Registry,
     pending_exit: Option<ProcessId>,
     next_id: u64,
     launch_window: Option<Range<usize>>,
@@ -178,6 +171,8 @@ impl Manager {
             schedulers,
             host_cpu,
             processes: Vec::new(),
+            vms: Vec::new(),
+            vm_registry: horn_vm::service::Registry::default(),
             pending_exit: None,
             next_id: 1,
             launch_window: None,
@@ -298,7 +293,6 @@ impl Manager {
         self.processes.push(Process {
             id,
             parent,
-            vm: None,
             control: None,
             launch: None,
             name: config.name.to_string(),
@@ -399,20 +393,18 @@ impl Manager {
         length: u64,
         access: horn_vm::protocol::VmProtection,
     ) -> Result<DmaPin, horn_vm::protocol::VmError> {
-        for process in &mut self.processes {
-            if !matches!(process.state, State::Created | State::Active) {
-                continue;
-            }
-            if let Some(vm) = &mut process.vm {
-                if vm.owns_memory(memory) {
-                    return Ok(DmaPin {
-                        process: process.id,
-                        pin: vm.pin_dma(memory, offset, length, access)?,
-                    });
-                }
-            }
+        let owner = self
+            .memory_owner(memory)
+            .ok_or(horn_vm::protocol::VmError::Denied)?;
+        if !matches!(
+            self.process(owner)
+                .map_err(|_| horn_vm::protocol::VmError::Stale)?
+                .state,
+            State::Created | State::Active
+        ) {
+            return Err(horn_vm::protocol::VmError::Denied);
         }
-        Err(horn_vm::protocol::VmError::Denied)
+        self.vm_registry.pin_dma(memory, offset, length, access)
     }
     /// Trusted device broker only. `space` must be kernel-unwrapped on the VM
     /// endpoint. Ordinary clients never select a destination by numeric ID.
@@ -430,21 +422,27 @@ impl Manager {
         ),
         horn_vm::protocol::VmError,
     > {
-        for process in &mut self.processes {
-            if !matches!(process.state, State::Created | State::Active) {
+        for (id, vm) in &mut self.vms {
+            if !self
+                .processes
+                .iter()
+                .any(|p| p.id == *id && matches!(p.state, State::Created | State::Active))
+            {
                 continue;
             }
-            if let Some(vm) = &mut process.vm {
+            if let Some(vm) = vm {
                 if vm.owns_address_space(space) {
                     let backing = bank.memory(address, length).map_err(|e| match e {
                         horn_vm::Error::InvalidSize => horn_vm::protocol::VmError::Invalid,
                         horn_vm::Error::Backend => horn_vm::protocol::VmError::Quarantined,
                         _ => horn_vm::protocol::VmError::Exhausted,
                     })?;
-                    let (lease, cap) = vm.import_mmio(backing, ceiling)?;
+                    let (lease, cap) = vm.with_registry(&mut self.vm_registry, |vm| {
+                        vm.import_mmio(backing, ceiling)
+                    })?;
                     return Ok((
                         MmioLease {
-                            process: process.id,
+                            process: *id,
                             lease,
                         },
                         cap,
@@ -455,27 +453,19 @@ impl Manager {
         Err(horn_vm::protocol::VmError::Denied)
     }
     pub fn revoke_mmio(&mut self, token: MmioLease) -> Result<(), horn_vm::protocol::VmError> {
-        let process = self
-            .process_mut(token.process)
-            .map_err(|_| horn_vm::protocol::VmError::Stale)?;
-        process
-            .vm
-            .as_mut()
-            .ok_or(horn_vm::protocol::VmError::Stale)?
-            .revoke_mmio(token.lease)
+        let vm = self
+            .vms
+            .iter_mut()
+            .find(|(id, _)| *id == token.process)
+            .and_then(|(_, vm)| vm.as_mut())
+            .ok_or(horn_vm::protocol::VmError::Stale)?;
+        vm.with_registry(&mut self.vm_registry, |vm| vm.revoke_mmio(token.lease))
     }
     /// # Safety
     /// All translations must be removed and DMA drained before releasing this
     /// token. A stopping/quarantined process intentionally retains its VM.
     pub unsafe fn unpin_dma(&mut self, token: DmaPin) -> Result<(), horn_vm::protocol::VmError> {
-        let process = self
-            .process_mut(token.process)
-            .map_err(|_| horn_vm::protocol::VmError::Stale)?;
-        let vm = process
-            .vm
-            .as_mut()
-            .ok_or(horn_vm::protocol::VmError::Stale)?;
-        unsafe { vm.unpin_dma(token.pin) }
+        unsafe { self.vm_registry.unpin_dma(token) }
     }
     pub fn provision_self(
         &mut self,
@@ -585,14 +575,22 @@ impl Manager {
             }
             self.retire(child)?;
         }
-        let p = self.process_mut(id)?;
-        if let Some(vm) = &mut p.vm {
-            if vm.shutdown().is_err() {
-                p.state = State::Quarantined;
+        if let Some(vm) = self
+            .vms
+            .iter_mut()
+            .find(|(owner, _)| *owner == id)
+            .and_then(|(_, vm)| vm.as_mut())
+        {
+            if vm
+                .with_registry(&mut self.vm_registry, |vm| vm.shutdown())
+                .is_err()
+            {
+                self.process_mut(id)?.state = State::Quarantined;
                 return Err(Error::Cleanup);
             }
         }
-        p.vm = None;
+        self.vms.retain(|(owner, _)| *owner != id);
+        let p = self.process_mut(id)?;
         if let Some(execution) = &mut p.execution {
             if execution.cleanup().is_err() {
                 p.state = State::Quarantined;

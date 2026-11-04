@@ -1,198 +1,135 @@
-# Shared VM backing and immutable publication (proposal)
+# Shared VM backing and immutable publication
 
-Status: design for discussion, not implemented. First consumer: timerd's
-immutable calibration page, shared read-only with netd. This is not an SMP clock
-fast-path proposal or a GPU VRAM implementation.
+Status: shared registry, attenuated handles and cross-VSpace mapping/revoke are
+implemented. The native memory interface is v3 with `immutable` publication;
+there is no legacy seals API. timerd/netd shared calibration remains a future
+consumer. This is not a GPU VRAM or SMP clock fast-path implementation.
 
-## Today
+## Authority and ownership
 
-Each process has a `horn_vm::service::Service`: it holds one VSpace and its
-own memory and region tables. A `VmMemory` badge resolves in that service's
-memory table. A region applies a borrowed same-endpoint capability, so a
-foreign service's badge is not a transferable backing reference today. Frame
-caps are copied per mapping, but the native map targets the service's VSpace.
-`duplicate` exists in IDL but returns Unsupported. `netd` allocates and seals a
-local copy of the clock calibration, not shared physical memory.
+**Backing** owns pages, fixed size, allocating FramePool/account, immutable policy
+and references from handles, mappings and DMA pins. Resident RAM is charged once.
+The destination process's pool must never resolve or release foreign frames:
+FramePool checks both allocator and account identity.
 
-Seals today live on the per-service memory record. WRITE is rejected while any
-page has `may_write` or a DMA writer exists; a read-only page with a writable
-ceiling retains `may_write` even after Protect(READ). FUTURE_WRITE prevents new
-writable mappings but preserves old mapping authority. SEAL freezes the seal
-set; GROW/SHRINK are currently inert because memory is fixed-size. Existing
-launch of ELF sources relies on WRITE as a strong immutable-content guarantee.
+**Handle** is a capability-authenticated authority with mapping and control rights.
+`delegate(rights)` requires DELEGATE and accepts only a subset of the parent's
+READ, WRITE, EXECUTE, DELEGATE, MAKE_IMMUTABLE, REVOKE and DMA rights. A copied cap
+aliases the same handle. A derived handle has a distinct badge and explicit close
+lifetime. `duplicate(ceiling)` derives mapping-only authority, not control rights.
+All handles include READ; dynamic executable mappings remain unsupported.
 
-## Goals and non-goals
+Delegation depends on the parent handle, not caller or recipient identity. A
+process holding someone else's copied cap can create descendants if DELEGATE is
+present; those descendants can survive that process. Their allocation/metadata
+limit remains rooted in the backing's allocating service, not a guessed sender.
+There is no last-cap notification in seL4 and no distributed cap refcount.
 
-- Pass a VM object as a capability to another process, map the same resident
-  bytes in its authorized VSpace with independently chosen range and offset,
-  and attenuate authority. The holder cannot choose an arbitrary VSpace.
-- Publish genuinely immutable data for timerd and the existing ELF consumer.
-- Make ownership, cleanup and accounting explicit across process exit and
-  failed kernel operations; never reuse uncertain backing or mapping slots.
-- Do not export managed raw frame caps to untrusted clients. Do not assume the
-  endpoint badge or an integer ID is an authority when supplied as data.
-- Defer page faults, resize, COW, executable publication, GPU VRAM/BAR, and
-  cross-device cache-coherence policy. Do not imply that READ-only CPU mappings
-  prevent DMA or device firmware from writing.
+**Mapping** belongs to an authorized region in a particular VSpace. The memory
+cap must be kernel-unwrapped on the shared VM endpoint. Payload integers never
+establish authority. Mapping/protect rights intersect the region, originating
+handle and backing policies. Each native mapping has its own root frame-cap slot.
 
-## Three different things
+Pages retain their originating handle ceiling and immutable ancestry even after
+handle close. Immutable lineage is shared using Rc; the mutable registry is not.
+Delegation depth is limited to 32. Backing, regions and derived handles have
+per-service limits; root metadata and slots are not fully charged per request.
 
-**Backing** owns physical pages, size, allocation charge, global policy and all
-writer/mapping/pin references. It outlives the process that created it whenever
-references remain. It has no client-chosen integer identifier as authority.
+## Explicit registry
 
-**Handle** is a distinct capability-authenticated authority over backing. It
-has a non-increasing access ceiling and explicit control rights. A copy of the
-same endpoint cap aliases the same handle, not a new independently closable
-handle. A derived handle is a new record and badge, with a separate close
-lifetime. Receiving a handle must not imply authority to seal, revoke globally,
-resize, pin DMA, or create a more powerful handle. In particular, a READ mapping
-ceiling alone does not restrict destructive RPC methods: operation rights must
-be enforced too.
+Root Manager owns VM service records and a single Registry of backing, derived
+handles and regions. It explicitly loans the complete tables to a service for
+one serialized operation, then restores ownership. Per-service state contains
+factory/space authority, allocation pool, virtual allocator, Untyped delegations
+and outgoing reply cleanup. Each region records its destination VSpace, address
+and cap allocator so revocation can unmap foreign aliases correctly.
 
-**Mapping** belongs to a region in a specific address space. It holds a backing
-reference independent of the issuing handle. Effective map and upgrade rights
-are bounded by the handle, region and backing policies. Each native alias has a
-distinct frame cap and tracked VSpace, range, and source offset. Deleting an RPC
-cap or closing a handle does not silently unmap an existing mapping.
+Root routes received badges by object kind and the backing/region's allocating
+service. Badges are globally monotonic and never recycled. Capability transfer
+between different server endpoints is not inferred from numeric badge equality.
+All managed CPU and DMA policy transitions share the root serialization domain.
 
-The authority boundary between independent handles, descendants and revocation
-must be represented explicitly. An endpoint-cap Copy duplicates a reference to
-one handle; `duplicate` creates a new handle. Transfer of a handle via RPC
-requires an appropriate transferable cap, not an unwrapped badge.
+## Immutability
 
-## Server structure and authentication
+`info().immutable` starts false and is global to backing. `make_immutable()`
+requires MAKE_IMMUTABLE and is irreversible and idempotent. It returns Busy while
+any mapping retains MAYWRITE or a writable DMA pin exists. Protect(READ) retains
+MAYWRITE, so callers must unmap such aliases before publication. The operation
+never silently tears down or downgrades someone else's mappings.
 
-The current per-process table cannot recognize a foreign process's memory.
-Proposed architecture: a root-owned shared backing/handle registry with a single
-serialization domain for backing policy, handles, mappings and DMA references;
-per-process VM state retains VSpace, virtual allocation and regions. Refactor
-both under one root VM authority, or an equivalent centrally routed service.
-The existing `VmRegion.apply` same-endpoint unwrapping requires memory and
-region authorities to resolve at the same seL4 endpoint. Merely putting a shared
-map behind today's independent dispatch is insufficient: dispatch must route
-badges to the right region and handle while unwrapping is authenticated by the
-kernel. Confirm actual endpoint topology and dispatch before choosing the
-refactor. Badge allocation must be globally unique within that endpoint and
-never recycled while stale caps can exist. All lookup accepts only a kernel
-unwrapped badge, with kind and state checked; no raw badge from payload.
+After publication, all handles (including older writable handles) are denied
+writable mappings, write upgrades and device-write pins. Read-only CPU and DMA
+access remain permitted. Writable handle ceilings alone do not block publication:
+the global backing policy prevents subsequent writes through them.
 
-Mapping requires both an authorized destination region and a live compatible
-memory handle. Serialize Map, Protect, Unmap, publication, revocation and DMA
-pin transitions against the shared backing. Validate ranges, ceilings and seals
-before native changes. Preserve completed-prefix semantics and quarantine on
-uncertain rollback. Never create a capability path which bypasses this accounting.
+MMIO/device-backed memory returns Unsupported; poisoned backing returns
+Quarantined. Fixed size is a property of resident backing, not a fake resize seal.
+There is no FUTURE_WRITE or general Linux memfd compatibility layer. A future
+Linux adapter must implement its own file/FD semantics on suitable primitives.
+RO attenuation alone is not immutability: other holders can write mutable backing.
 
-## Seals: assessment and recommendation
+ELF and startup-descriptor consumers now require immutable backing. Procd's
+synchronous root reader retains the source and excludes interleaved revoke until
+the temporary NX mappings and callback finish. This provides scoped availability,
+not general fault recovery. Immutable data mapped into another process can still
+be revoked, and later access can fault.
 
-The existing model has a useful **strong invariant**: WRITE means bytes cannot
-change through any mediated CPU alias or DMA writer. That invariant, rather
-than Linux flag compatibility, is the reason to retain a backing-global,
-monotonic immutable state. Its guarantee is only valid when *every* writer is
-mediated; MMIO and externally mutable device memory must reject publication.
-Read-only handles alone are not immutability: another holder could still write.
+## Close, revoke and process cleanup
 
-However the Linux-style five-flag surface is not a good foundation for Horn:
-GROW/SHRINK describe an unsupported operation, SEAL is a policy lock unrelated
-to content, and FUTURE_WRITE has subtle semantics and does not mean immutable.
-A writable ceiling surviving Protect(READ) as `may_write` is conservative and
-correct for preventing later upgrades, but it is easy to confuse with active
-writes. Shared memory multiplies this confusion. Also today every holder of a
-memory badge can request seals, close or revoke; a read-only derived handle must
-not inherit those global mutation powers.
+Close revokes every kernel-cap copy of that handle. It does not revoke children
+or mappings. Dropping OwnedCap only deletes a local slot; it does not close a
+remote object. Retained descendant ancestry is independent of closed ancestors.
 
-**Proposed native API direction:** replace the general seal vocabulary with an
-explicit one-way `publish_immutable` operation on a separately authorized control
-handle. It succeeds only if no CPU mapping has retained write-upgrade authority,
-no active or pending device writer/pin or other write path exists, and backing
-is eligible and healthy. Otherwise return Busy/Unsupported/Quarantined without
-changing state. After acknowledgement, reject *all* future writable maps,
-upgrades, writable DMA pins and other writes through every handle, including
-handles created earlier; immutable is irreversible and globally visible. Never
-implicitly tear down or downgrade someone else's mapping. Existing read-only
-mappings may remain if they have no retained write authority. Serialize the
-transition with all mapping and pin paths. Future internal writers and external
-exports must honor the same invariant or make the operation unavailable.
+REVOKE permits revoking the invoked handle's subtree, not unrelated delegations.
+The operation removes dependent mappings across all VSpaces, revokes descendants,
+then releases references. Unrelated sibling handles and mappings remain valid.
+Any DMA pin currently makes revoke Busy; VM does not know how to stop devices.
+Cleanup failures poison/quarantine rather than permit new mappings or quota reuse.
 
-Fixed size should be a property of the backing type, not a pretend seal.
-Attenuation of a handle is distinct from global publication. Reconsider an
-explicit FUTURE_WRITE-like transition only with a concrete consumer; do not
-claim it makes content immutable. If a Linux memfd adapter is later needed, it
-must implement Linux semantics, including FUTURE_WRITE and seal locking, on top
-of suitable VM primitives; it must not pretend the native API already does so.
-This recommendation changes the existing IDL and ELF consumer and should not
-be silently made as part of sharing. It requires agreement and migration. An
-alternative is to keep the current flags and strengthen their global enforcement,
-but that retains Linux-specific complexity in the core API.
+Process is the VSpace cleanup boundary, not thread. Recipient exit removes its
+regions but does not revoke foreign handle aliases merely held in its CSpace.
+Allocating-process teardown revokes every backing rooted in that account,
+including dependent mappings in other processes. Account destruction follows
+confirmed VM cleanup. Outstanding DMA/MMIO authority or uncertain cleanup retains
+the account instead. Independent transfers surviving allocating-account teardown
+are not implemented.
 
-## Lifetime, cleanup and accounting
+## DMA
 
-Proposed defaults to review:
+Registry pin identities refer directly to backing, not a process record. The
+trusted platform brokers pin tokens to devmgr; ordinary drivers receive IOVAs,
+not physical pages. DMA authority and requested access are checked on the handle.
+Pinning adds references but does not charge resident RAM again. DMA writers block
+immutable publication; immutable backing permits device reads only.
 
-- Physical pages remain charged once to the originating account; virtual
-  reservations, mapping slots and page-table resources are charged to the
-  mapping process where the accounting mechanism supports it. Metadata limits
-  must be bounded; today's root metadata is not fully charged. Expose retained
-  charges even after process exit. Account lifetime therefore cannot equal
-  process-record lifetime. No implicit reparenting or double charging.
-- A handle has explicit close. Close revokes all kernel-cap copies of that
-  handle and releases its handle reference, but existing maps retain backing.
-  Dropping a local `OwnedCap` deletes only its local slot, not remote state;
-  seL4 supplies no last-cap notification. Server records need explicit close or
-  lifecycle tracking, and passing capabilities to third parties complicates
-  attributing them to a process. Design an explicit delegation/cleanup policy;
-  don't assume an RPC sender's identity authenticates the current cap holder.
-- Process cleanup removes that process's regions only after stopping execution
-  and acknowledged unmaps. Other processes' mappings continue. An exiting
-  creator's charge and backing remain while other references exist. Forced
-  unmap of another live process needs explicit authority and defined fault
-  behavior; it is not ordinary close.
-- Separate per-handle close from global or subtree revoke. The latter must
-  explicitly define descendants and mappings, deny new operations while
-  revocation runs, complete native unmaps before returning, and cope with DMA
-  drain/invalidation first. Failures quarantine affected authority and backing;
-  never reuse slots or return quota on uncertain cleanup. Initial sharing does
-  not require exposing destructive global revoke to ordinary recipients.
-- Backing is collected only after every handle, mapping, trusted export and DMA
-  pin is gone and kernel cleanup is acknowledged. A successful IPC reply or
-  local-cap Drop alone does not establish this condition.
+DeviceMapping is deliberately separate: devmgr owns the device assignment,
+IOMMU domain, IOVA reservation, hardware mappings and per-device quota. Its common
+post-drain cleanup releases platform pin tokens and mapping quota after either
+range unmap/invalidate/drain or whole-domain detach/drain. Unpublished rollback
+may unpin only when hardware cleanup is known. Unknown outcomes retain resources
+or fail-stop. Driver cleanup then performs CPU unmap and memory close.
 
-A retention/DoS policy remains necessary: uncooperative holders can keep a
-creator's charge alive, and abrupt death plus transferable aliases makes exact
-handle reclamation nontrivial. Limits and supervisor policy must bound this;
-claims of automatic reclamation are premature.
+Automatic DMA revoke would require an explicit asynchronous stop/drain protocol;
+it is not introduced by this refactor or hidden in Drop.
 
-## timerd first use
+## Validation and remaining work
 
-1. Allocate one resident page in timerd's account, map writable, write the
-   versioned calibration structure. Unmap/retire every write-capable mapping.
-2. Publish immutable and retain a control handle. Return or transfer an
-   attenuated read-only handle via a clock RPC; specify cap transfer and reply
-   cleanup so each recipient obtains a usable independent handle. The page format
-   and size must be versioned/validated; do not rely on Rust layout by accident.
-3. netd reserves its own region, maps the shared page read-only/NX and retains
-   the mapping and required handle. On any unsupported or unsuccessful setup,
-   use `now()` RPC. Remove the local-copy allocation path once the replacement
-   is implemented. Preserve existing invariant-TSC and single-CPU policy.
-4. Immutable page does not propagate later clock-mode changes. CPU migration,
-   live migration and SMP fast time need a separately designed mutable shared
-   protocol or a different invalidation strategy. No implicit lifetime guarantee
-   arises merely from holding the pointer.
+QEMU probes exercise two real processes: shared contents, denied write mapping and
+upgrade, delegation/control attenuation, handle close with surviving mapping,
+subtree revoke after a leaf was closed, unaffected sibling mapping, global
+immutable checks and recipient-exit cleanup. Host policy tests cover DMA access,
+immutable writer rejection and pin counters. Existing boot/ELF, HTTP and devmgr
+regressions cover integration; builds alone are not runtime validation.
 
-## Validation and rollout
+Still needed: failure-injected cleanup and creator-exit cross-VSpace stress,
+application revocation fault recovery, full metadata prepayment, and device/DMA
+revoke coordination. These tests do not claim GPU or physical-device validation.
 
-Start with unit tests for policy, handle rights, immutable transition and
-reference accounting. Integration tests must use **two actual VSpaces**: verify
-same bytes and offsets, denied write/upgrade from attenuated handles, global
-immutable checks including another process's may-write alias and DMA writer,
-close versus retained mapping, exit/revoke and cleanup failures. Verify creator
-exit, recipient exit, alias copies, partial failures and quota retention. Add
-negative authentication tests for foreign endpoints, wrong kinds and forged
-badges. Check immutable publication against actual frame writes, not just
-metadata. Then integrate timerd/netd and test RPC fallback. Builds and host
-unit tests are not proof of seL4 runtime behavior; QEMU runs require user control.
+## timerd/netd next consumer
 
-Open decisions before implementation: native immutable operation versus
-retaining seals; authority/right representation and delegation cleanup;
-revocation scope; endpoint refactor and metadata accounting; whether indefinite
-creator-charge retention is acceptable or requires an explicit transfer policy.
+Timerd can allocate and initialize a versioned calibration page and delegate READ
+without global immutability. Netd maps it read-only in its own region instead of
+copying it. Keep RPC fallback on setup failure and the existing invariant-TSC /
+single-CPU policy. Updates require atomics and a consistent snapshot protocol.
+Revoke/process death can invalidate the mapping; publication is not an availability
+promise. Neither timerd/netd integration nor GPU sharing is part of this change.

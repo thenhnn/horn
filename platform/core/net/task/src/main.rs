@@ -78,7 +78,7 @@ impl Time {
         }
         writable.destroy(&mut *io).unwrap();
         drop(writable);
-        memory.add_seals(&mut *io, v::VmSeals(15)).unwrap();
+        memory.make_immutable(&mut *io).unwrap();
         let region = ctx
             .object::<v::VmAddressSpaceObjectTag>("horn.address-space")
             .unwrap()

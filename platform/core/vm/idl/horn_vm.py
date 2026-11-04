@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from horn_idl import (
+    BOOL,
     U32,
     U64,
     Borrow,
@@ -48,12 +49,14 @@ class VmProtection:
 
 
 @flags(base=U32)
-class VmSeals:
-    SEAL = 1
-    SHRINK = 2
-    GROW = 4
-    WRITE = 8
-    FUTURE_WRITE = 16
+class VmMemoryRights:
+    READ = 1
+    WRITE = 2
+    EXECUTE = 4
+    DELEGATE = 8
+    MAKE_IMMUTABLE = 16
+    REVOKE = 32
+    DMA = 64
 
 
 @flags(base=U32)
@@ -66,7 +69,7 @@ class VmFeatures:
     DERIVE_ACCOUNT = 32
     DUPLICATE_MEMORY = 64
     UNTYPED = 128
-    SEALS = 256
+    IMMUTABLE = 256
 
 
 @enum(base=U32)
@@ -96,7 +99,7 @@ class VmMemoryInfo:
     size: U64
     resident_size: U64
     ceiling: VmProtection
-    seals: VmSeals
+    immutable: BOOL
 
 
 @record
@@ -194,7 +197,7 @@ class VmFaultReply:
     def Reject(): ...
 
 
-@iface("net.nhnn.horn.vm.memory", version=(2, 0))
+@iface("net.nhnn.horn.vm.memory", version=(3, 0))
 class VmMemory:
     @method
     def info(self) -> Result[VmMemoryInfo, VmError]: ...
@@ -211,7 +214,15 @@ class VmMemory:
     def revoke(self) -> Result[None, VmError]: ...
 
     @method
-    def add_seals(self, seals: VmSeals) -> Result[None, VmError]: ...
+    def make_immutable(self) -> Result[None, VmError]: ...
+
+    @method
+    def delegate(
+        self, rights: VmMemoryRights
+    ) -> Result[Cap[VmMemoryObject, Move], VmError]: ...
+
+    @method
+    def rights(self) -> Result[VmMemoryRights, VmError]: ...
 
 
 @object(implements=(VmMemory,))

@@ -447,6 +447,7 @@ enum FrameKind {
     },
     Device(device::DevicePage),
 }
+#[derive(Clone)]
 pub struct FramePool {
     allocator: KernelAllocator,
 }

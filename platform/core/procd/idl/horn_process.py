@@ -29,7 +29,7 @@ from horn_vm import (  # noqa: F401
     VmMemoryInfo,
     VmMemoryObject,
     VmProtection,
-    VmSeals,
+    VmMemoryRights,
 )
 
 

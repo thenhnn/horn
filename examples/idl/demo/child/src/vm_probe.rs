@@ -49,11 +49,12 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         core::arch::x86_64::__cpuid(1).ebx >> 24
     });
     // A whole Untyped is charged once, independent of the objects retyped inside it.
+    let tcb_bits = ::sel4::ObjectBlueprint::Tcb.physical_size_bits() as u32;
     let lease = VmFactory::from_ref(factory.as_ref())
-        .delegate(&mut transport, 13)
+        .delegate(&mut transport, tcb_bits)
         .unwrap();
     let grant = lease.capability(&mut transport).unwrap();
-    assert_eq!(grant.size_bits, 13);
+    assert_eq!(grant.size_bits, tcb_bits);
     let untyped = grant.capability;
     let kernel_untyped = transport
         .space
@@ -73,7 +74,7 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
             .info(&mut transport,)
             .unwrap()
             .charged_bytes,
-        initial_charge + 8192
+        initial_charge + (1u64 << tcb_bits)
     );
     lease.close(&mut transport).unwrap();
     let derived = transport
@@ -155,13 +156,12 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         let alias = core::slice::from_raw_parts(alias_info.address as *const u8, 8192);
         assert!(alias.iter().all(|byte| *byte == 0xa5));
     }
-    let write_and_lock = VmSeals(VmSeals::WRITE.0 | VmSeals::SEAL.0);
     assert_eq!(
-        memory.add_seals(&mut transport, write_and_lock),
+        memory.make_immutable(&mut transport),
         Err(CallError::Remote(VmError::Busy))
     );
-    assert_eq!(memory.info(&mut transport,).unwrap().seals, VmSeals(0));
-    // A kernel-cap copy must see and change the same backing-wide seals.
+    assert!(!memory.info(&mut transport).unwrap().immutable);
+    // Copies alias one handle and observe the same backing policy.
     let copied_slot = transport.space.reserve_slot().unwrap();
     let endpoint = transport
         .space
@@ -177,13 +177,12 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         .space
         .register(::sel4::cap::Endpoint::from_bits(copied_slot.path().bits()))
         .unwrap();
-    VmMemory::from_ref(copied)
-        .add_seals(&mut transport, VmSeals::FUTURE_WRITE)
-        .unwrap();
-    unsafe {
-        core::ptr::write_volatile(alias_info.address as *mut u8, 0xa5);
-    }
-    // A non-service capability must not be interpreted as a memory identity.
+    assert!(
+        !VmMemory::from_ref(copied)
+            .info(&mut transport)
+            .unwrap()
+            .immutable
+    );
     let fake = ctx.cap::<VmMemoryObjectTag>("wake").unwrap();
     assert_eq!(
         alias.apply(&mut transport, Some(fake), batch(&[])),
@@ -192,31 +191,36 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
             error: VmError::Denied
         }))
     );
+    // Protect(READ) retains the ability to restore writes, so freeze stays Busy.
+    for region in [&first, &alias] {
+        region
+            .apply(
+                &mut transport,
+                None,
+                batch(&[VmUpdate::Protect(VmProtect {
+                    offset: 0,
+                    length: 8192,
+                    protection: VmProtection::READ,
+                })]),
+            )
+            .unwrap();
+    }
     assert_eq!(
-        first.apply(
-            &mut transport,
-            None,
-            batch(&[
-                VmUpdate::Prepare(range),
-                VmUpdate::Unmap(VmRange {
-                    offset: u64::MAX - 4095,
-                    length: 8192
-                }),
-            ])
-        ),
-        Err(CallError::Remote(VmBatchError {
-            completed: 1,
-            error: VmError::Invalid
-        }))
+        memory.make_immutable(&mut transport),
+        Err(CallError::Remote(VmError::Busy))
     );
     destroy(&mut transport, first);
-    // New mappings after FUTURE_WRITE cannot acquire write authority, even
-    // with an RW region ceiling. Failed Map leaves the completed Prepare.
+    assert_eq!(
+        VmMemory::from_ref(copied).make_immutable(&mut transport),
+        Err(CallError::Remote(VmError::Busy))
+    );
+    destroy(&mut transport, alias);
+    VmMemory::from_ref(copied)
+        .make_immutable(&mut transport)
+        .unwrap();
+    memory.make_immutable(&mut transport).unwrap(); // Idempotent, no unfreeze API.
+    assert!(memory.info(&mut transport).unwrap().immutable);
     let first = reserve(&mut transport, address_space, 8192);
-    let readonly = VmMap {
-        protection: VmProtection::READ,
-        ..mapping
-    };
     assert_eq!(
         first.apply(
             &mut transport,
@@ -232,92 +236,12 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         .apply(
             &mut transport,
             Some(Cap::from_ref(memory.cap_ref())),
-            batch(&[VmUpdate::Map(readonly)]),
+            batch(&[VmUpdate::Map(VmMap {
+                protection: VmProtection::READ,
+                ..mapping
+            })]),
         )
         .unwrap();
-    assert_eq!(
-        first.apply(
-            &mut transport,
-            None,
-            batch(&[VmUpdate::Protect(VmProtect {
-                offset: 0,
-                length: 8192,
-                protection: rw
-            })])
-        ),
-        Err(CallError::Remote(VmBatchError {
-            completed: 0,
-            error: VmError::Denied
-        }))
-    );
-    assert_eq!(
-        VmFactory::from_ref(factory.as_ref())
-            .info(&mut transport,)
-            .unwrap()
-            .charged_bytes,
-        initial_charge + 8192
-    );
-    // Old mappings keep MAYWRITE across protect(READ), just like memfd.
-    for protection in [VmProtection::READ, rw, VmProtection::READ] {
-        alias
-            .apply(
-                &mut transport,
-                None,
-                batch(&[VmUpdate::Protect(VmProtect {
-                    offset: 0,
-                    length: 8192,
-                    protection,
-                })]),
-            )
-            .unwrap();
-    }
-    assert_eq!(
-        memory.add_seals(&mut transport, write_and_lock),
-        Err(CallError::Remote(VmError::Busy))
-    );
-    assert_eq!(
-        memory.info(&mut transport,).unwrap().seals,
-        VmSeals::FUTURE_WRITE
-    );
-    unsafe {
-        assert_eq!(
-            core::ptr::read_volatile(alias_info.address as *const u8),
-            0xa5
-        );
-    }
-    assert_eq!(
-        alias.apply(
-            &mut transport,
-            None,
-            batch(&[VmUpdate::Protect(VmProtect {
-                offset: 0,
-                length: 8192,
-                protection: VmProtection(7)
-            }),])
-        ),
-        Err(CallError::Remote(VmBatchError {
-            completed: 0,
-            error: VmError::Denied
-        }))
-    );
-    destroy(&mut transport, alias);
-    memory
-        .add_seals(
-            &mut transport,
-            VmSeals(write_and_lock.0 | VmSeals::GROW.0 | VmSeals::SHRINK.0),
-        )
-        .unwrap();
-    let sealed = VmMemory::from_ref(copied).info(&mut transport).unwrap();
-    assert_eq!(sealed.seals.0, 31);
-    assert_eq!(sealed.size, 8192);
-    assert_eq!(
-        VmMemory::from_ref(copied).add_seals(&mut transport, VmSeals(0)),
-        Err(CallError::Remote(VmError::Denied))
-    );
-    assert_eq!(
-        VmMemory::from_ref(copied).add_seals(&mut transport, VmSeals(32)),
-        Err(CallError::Remote(VmError::Invalid))
-    );
     assert_eq!(
         first.apply(
             &mut transport,
@@ -343,13 +267,13 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
     destroy(&mut transport, first);
     assert_eq!(
         VmFactory::from_ref(factory.as_ref())
-            .info(&mut transport,)
+            .info(&mut transport)
             .unwrap()
             .charged_bytes,
         initial_charge
     );
     ::sel4::debug_println!(
-        "VM_SEALS_PASS aliases=true future_write=true immutable=true cleanup=true"
+        "VM_IMMUTABLE_PASS aliases=true maywrite=true immutable=true cleanup=true"
     );
     let revoked = VmFactory::from_ref(factory.as_ref())
         .allocate(&mut transport, 4096, VmBacking::Resident, rw)

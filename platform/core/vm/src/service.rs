@@ -1,5 +1,5 @@
 //! Root-hosted VM. Mapping authority stays here; private Untyped may be delegated.
-use alloc::vec::Vec;
+use alloc::{rc::Rc, vec::Vec};
 use core::{
     alloc::Layout,
     ops::Range,
@@ -77,22 +77,51 @@ fn provision(
     ))
 }
 
-struct Memory {
+const HANDLE_DEPTH: usize = 32;
+const HANDLE_CONTROL: u32 = VmMemoryRights::DELEGATE.0
+    | VmMemoryRights::MAKE_IMMUTABLE.0
+    | VmMemoryRights::REVOKE.0
+    | VmMemoryRights::DMA.0;
+struct DerivedHandle {
+    memory: usize,
+    badge: ::sel4::Word,
+    authority: usize,
+    rights: VmMemoryRights,
+    lineage: Rc<Lineage>,
+}
+
+struct Lineage {
+    ancestors: [::sel4::Word; HANDLE_DEPTH],
+    depth: usize,
+}
+
+struct MemoryHandle {
     badge: ::sel4::Word,
     authority: Option<usize>,
-    backing: MemoryObject<Frame>,
     ceiling: VmProtection,
-    seals: VmSeals,
+}
+
+struct Memory {
+    owner: ::sel4::Word,
+    allocator: KernelAllocator,
+    handle: MemoryHandle,
+    backing: MemoryObject<Frame>,
+    // Frames must always be resolved and released through their allocating account.
+    pool: FramePool,
+    immutable: bool,
     references: usize,
     dma: crate::dma::Pins,
     mmio_lease: bool,
     poisoned: bool,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct Page {
     slot: Option<usize>,
     memory: Option<usize>,
+    handle: ::sel4::Word,
+    ceiling: VmProtection,
+    lineage: Option<Rc<Lineage>>,
     // Like VM_MAYWRITE: survives protect(READ), but not Unmap then Map.
     may_write: bool,
     mapped: bool,
@@ -102,6 +131,10 @@ struct Page {
 }
 
 struct Region {
+    owner: ::sel4::Word,
+    allocator: KernelAllocator,
+    vspace: ::sel4::cap::VSpace,
+    address: usize,
     badge: ::sel4::Word,
     authority: usize,
     range: Range<usize>,
@@ -124,6 +157,177 @@ pub struct MmioLease {
     badge: u64,
 }
 
+fn resolve_handle(
+    memories: &[Option<Memory>],
+    handles: &[Option<DerivedHandle>],
+    badge: ::sel4::Word,
+) -> Result<(usize, VmMemoryRights), VmError> {
+    if let Some(index) = memories.iter().position(|m| {
+        m.as_ref()
+            .is_some_and(|m| m.handle.badge == badge && m.handle.authority.is_some())
+    }) {
+        let memory = memories[index].as_ref().unwrap();
+        return Ok((
+            index,
+            VmMemoryRights(memory.handle.ceiling.0 | HANDLE_CONTROL),
+        ));
+    }
+    handles
+        .iter()
+        .flatten()
+        .find(|h| h.badge == badge)
+        .map(|h| (h.memory, h.rights))
+        .ok_or(VmError::Stale)
+}
+
+fn collect_backing(memories: &mut [Option<Memory>], index: usize) -> Result<(), VmError> {
+    let memory = memories[index].as_ref().unwrap();
+    if memory.poisoned {
+        return Err(VmError::Quarantined);
+    }
+    if memory.references == 0 && memory.handle.authority.is_none() {
+        let mut memory = memories[index].take().unwrap();
+        memory
+            .backing
+            .release(&mut memory.pool)
+            .map_err(|_| VmError::Quarantined)?;
+    }
+    Ok(())
+}
+
+/// Root-owned tables, exclusively loaned to one serialized VM operation at a time.
+#[derive(Default)]
+pub struct Registry {
+    handles: Vec<Option<DerivedHandle>>,
+    memories: Vec<Option<Memory>>,
+    regions: Vec<Option<Region>>,
+}
+impl Registry {
+    /// Trusted IOMMU broker only. The reference must carry a kernel-unwrapped
+    /// memory badge; device access is bounded to whole resident pages (at most 16).
+    /// This adds a backing reference, not a RAM charge or a raw capability export.
+    pub fn pin_dma(
+        &mut self,
+        cap: CapRef,
+        offset: u64,
+        length: u64,
+        access: VmProtection,
+    ) -> Result<crate::dma::Pin, VmError> {
+        let badge = cap.unwrapped_badge().ok_or(VmError::Denied)? as _;
+        let (index, rights) = resolve_handle(&self.memories, &self.handles, badge)?;
+        if rights.0 & VmMemoryRights::DMA.0 == 0 {
+            return Err(VmError::Denied);
+        }
+        let ceiling = VmProtection(rights.0 & 7);
+        let memory = self.memories[index].as_ref().unwrap();
+        if memory.poisoned {
+            return Err(VmError::Quarantined);
+        }
+        if memory.backing.resident_size() == 0 {
+            return Err(VmError::Denied);
+        }
+        let range = crate::page_range(offset, length, memory.backing.size(), PAGE_SIZE as u64)
+            .map_err(error)?;
+        if range.len() > 16 {
+            return Err(VmError::Invalid);
+        }
+        let pins = memory.dma.adding(access, ceiling, memory.immutable)?;
+        let references = memory.references.checked_add(1).ok_or(VmError::Exhausted)?;
+        let mut pages = Vec::new();
+        pages
+            .try_reserve_exact(range.len())
+            .map_err(|_| VmError::Exhausted)?;
+        for frame in &memory.backing.frames()[range] {
+            pages.push(
+                memory
+                    .pool
+                    .cap(frame)
+                    .map_err(error)?
+                    .frame_get_address()
+                    .map_err(|_| VmError::Backend)? as u64,
+            );
+        }
+        let pin = crate::dma::Pin {
+            memory: index,
+            badge: memory.handle.badge as u64,
+            writer: access.0 & VmProtection::WRITE.0 != 0,
+            pages,
+        };
+        let memory = self.memories[index].as_mut().unwrap();
+        memory.dma = pins;
+        memory.references = references;
+        Ok(pin)
+    }
+    /// # Safety
+    /// Every device translation for this token must already be removed with
+    /// acknowledged IOTLB invalidation AND read/write draining. No IOVA reuse
+    /// may expose a new allocation to stale device requests.
+    pub unsafe fn unpin_dma(&mut self, pin: crate::dma::Pin) -> Result<(), VmError> {
+        let memory = self
+            .memories
+            .get_mut(pin.memory)
+            .and_then(Option::as_mut)
+            .ok_or(VmError::Stale)?;
+        if memory.handle.badge as u64 != pin.badge {
+            return Err(VmError::Stale);
+        }
+        memory.dma.remove(pin.writer);
+        memory.references -= 1;
+        collect_backing(&mut self.memories, pin.memory)
+    }
+
+    /// Attach before creating regions, delegations, or externally retained tokens.
+    /// Unmapped boot-published backing can be adopted: its only public ID is a badge.
+    pub fn register(&mut self, service: &mut Service) -> Result<(), VmError> {
+        if service.memories.iter().flatten().any(|m| m.references != 0)
+            || service.regions.iter().any(Option::is_some)
+            || service.derived.iter().any(Option::is_some)
+        {
+            return Err(VmError::Busy);
+        }
+        let count = service.max_objects;
+        self.handles
+            .try_reserve(count)
+            .map_err(|_| VmError::Exhausted)?;
+        self.memories
+            .try_reserve(count)
+            .map_err(|_| VmError::Exhausted)?;
+        self.regions
+            .try_reserve(count)
+            .map_err(|_| VmError::Exhausted)?;
+        self.memories.append(&mut service.memories);
+        self.regions
+            .resize_with(self.regions.len() + count, || None);
+        self.handles
+            .resize_with(self.handles.len() + count, || None);
+        service.derived = Vec::new();
+        service.memories = Vec::new();
+        service.regions = Vec::new();
+        Ok(())
+    }
+    pub fn owner(&self, badge: ::sel4::Word) -> Option<::sel4::Word> {
+        self.memories
+            .iter()
+            .flatten()
+            .find(|m| m.handle.badge == badge && m.handle.authority.is_some())
+            .map(|m| m.owner)
+            .or_else(|| {
+                self.handles
+                    .iter()
+                    .flatten()
+                    .find(|h| h.badge == badge)
+                    .and_then(|h| self.memories[h.memory].as_ref().map(|m| m.owner))
+            })
+            .or_else(|| {
+                self.regions
+                    .iter()
+                    .flatten()
+                    .find(|r| r.badge == badge)
+                    .map(|r| r.owner)
+            })
+    }
+}
+
 pub struct Service {
     allocator: KernelAllocator,
     pool: FramePool,
@@ -137,6 +341,8 @@ pub struct Service {
     delegations: Vec<Option<Delegation>>,
     badges: [::sel4::Word; 2],
     outgoing: Option<usize>,
+    max_objects: usize,
+    derived: Vec<Option<DerivedHandle>>,
 }
 
 impl Service {
@@ -168,6 +374,11 @@ impl Service {
         regions.resize_with(max_objects, || None);
         let mut delegations = Vec::new();
         delegations.resize_with(max_objects, || None);
+        let mut derived = Vec::new();
+        derived
+            .try_reserve_exact(max_objects)
+            .map_err(|_| VmError::Exhausted)?;
+        derived.resize_with(max_objects, || None);
         let virtual_free = ByRange::new(BasicAllocator::with_granule_size(window.len(), PAGE_SIZE));
         let badges = [new_badge()?, new_badge()?];
         let (factory, space) = provision(&mut allocator, endpoint, badges)?;
@@ -184,9 +395,43 @@ impl Service {
             delegations,
             badges,
             outgoing: None,
+            max_objects,
+            derived,
         })
     }
 
+    /// Exclusively loan the manager's tables for one serialized operation.
+    /// Panics abort root; cleanup failures remain represented in these tables.
+    pub fn with_registry<R>(
+        &mut self,
+        registry: &mut Registry,
+        operation: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        assert!(self.memories.is_empty() && self.regions.is_empty() && self.derived.is_empty());
+        core::mem::swap(&mut self.derived, &mut registry.handles);
+        core::mem::swap(&mut self.memories, &mut registry.memories);
+        core::mem::swap(&mut self.regions, &mut registry.regions);
+        let result = operation(self);
+        core::mem::swap(&mut self.derived, &mut registry.handles);
+        core::mem::swap(&mut self.memories, &mut registry.memories);
+        core::mem::swap(&mut self.regions, &mut registry.regions);
+        result
+    }
+    pub fn routes(&self, badge: ::sel4::Word, registry: &Registry) -> bool {
+        self.badges.contains(&badge)
+            || self.delegation_index(badge).is_ok()
+            || registry.owner(badge) == Some(self.badges[SPACE])
+    }
+    pub fn owns_registered_memory(&self, cap: CapRef, registry: &Registry) -> bool {
+        cap.unwrapped_badge().is_some_and(|badge| {
+            registry.owner(badge as _) == Some(self.badges[SPACE])
+                && !registry
+                    .regions
+                    .iter()
+                    .flatten()
+                    .any(|r| r.badge == badge as _)
+        })
+    }
     pub fn factory(&self) -> ::sel4::cap::Endpoint {
         ::sel4::Cap::from_bits(self.authority[FACTORY].unwrap() as _)
     }
@@ -225,6 +470,16 @@ impl Service {
             {
                 return Err(VmError::Denied);
             }
+            if self
+                .memories
+                .iter()
+                .flatten()
+                .filter(|m| m.owner == self.badges[SPACE])
+                .count()
+                >= self.max_objects
+            {
+                return Err(VmError::Exhausted);
+            }
             let index = self
                 .memories
                 .iter()
@@ -242,11 +497,16 @@ impl Service {
             }
         };
         self.memories[index] = Some(Memory {
-            badge,
-            authority: Some(authority),
+            handle: MemoryHandle {
+                badge,
+                authority: Some(authority),
+                ceiling,
+            },
+            owner: self.badges[SPACE],
+            allocator: self.allocator.clone(),
             backing,
-            ceiling,
-            seals: VmSeals(0),
+            pool: self.pool.clone(),
+            immutable: false,
             references: 1,
             dma: crate::dma::Pins::default(),
             mmio_lease: true,
@@ -269,112 +529,22 @@ impl Service {
             .get(lease.memory)
             .and_then(Option::as_ref)
             .ok_or(VmError::Stale)?;
-        if memory.badge as u64 != lease.badge || !memory.mmio_lease {
+        if memory.handle.badge as u64 != lease.badge || !memory.mmio_lease {
             return Err(VmError::Stale);
         }
-        self.revoke_aliases(lease.memory)?;
-        if self.memory(lease.memory).authority.is_some() {
-            self.close(lease.memory)?;
-        }
+        self.revoke_tree(lease.memory, lease.badge as _)?;
         let memory = self.memories[lease.memory].as_mut().unwrap();
         memory.mmio_lease = false;
         memory.references -= 1;
         self.collect(lease.memory)
     }
-    fn revoke_aliases(&mut self, index: usize) -> Result<(), VmError> {
-        if self.memory(index).dma.count != 0 {
-            return Err(VmError::Busy);
-        }
-        for region in 0..self.regions.len() {
-            if self.regions[region].is_none() {
-                continue;
-            }
-            for page in 0..self.region(region).pages.len() {
-                if self.page(region, page).memory == Some(index)
-                    && self.unmap(region, page..page + 1).is_err()
-                {
-                    self.memories[index].as_mut().unwrap().poisoned = true;
-                    return Err(self.poison(region));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Trusted IOMMU broker only. The reference must carry a kernel-unwrapped
-    /// memory badge; device access is bounded to whole resident pages (at most 16).
-    /// This adds a backing reference, not a RAM charge or a raw capability export.
-    pub fn pin_dma(
-        &mut self,
-        cap: CapRef,
-        offset: u64,
-        length: u64,
-        access: VmProtection,
-    ) -> Result<crate::dma::Pin, VmError> {
-        let index = self.memory_index(cap.unwrapped_badge().ok_or(VmError::Denied)? as _)?;
-        let memory = self.memory(index);
-        if memory.poisoned {
-            return Err(VmError::Quarantined);
-        }
-        if memory.backing.resident_size() == 0 {
-            return Err(VmError::Denied);
-        }
-        let range = crate::page_range(offset, length, memory.backing.size(), PAGE_SIZE as u64)
-            .map_err(error)?;
-        if range.len() > 16 {
-            return Err(VmError::Invalid);
-        }
-        let pins = memory.dma.adding(access, memory.ceiling, memory.seals)?;
-        let references = memory.references.checked_add(1).ok_or(VmError::Exhausted)?;
-        let mut pages = Vec::new();
-        pages
-            .try_reserve_exact(range.len())
-            .map_err(|_| VmError::Exhausted)?;
-        for frame in &memory.backing.frames()[range] {
-            pages.push(
-                self.pool
-                    .cap(frame)
-                    .map_err(error)?
-                    .frame_get_address()
-                    .map_err(|_| VmError::Backend)? as u64,
-            );
-        }
-        let pin = crate::dma::Pin {
-            memory: index,
-            badge: memory.badge as u64,
-            writer: access.0 & VmProtection::WRITE.0 != 0,
-            pages,
-        };
-        let memory = self.memories[index].as_mut().unwrap();
-        memory.dma = pins;
-        memory.references = references;
-        Ok(pin)
-    }
-    /// # Safety
-    /// Every device translation for this token must already be removed with
-    /// acknowledged IOTLB invalidation AND read/write draining. No IOVA reuse
-    /// may expose a new allocation to stale device requests.
-    pub unsafe fn unpin_dma(&mut self, pin: crate::dma::Pin) -> Result<(), VmError> {
-        let memory = self
-            .memories
-            .get_mut(pin.memory)
-            .and_then(Option::as_mut)
-            .ok_or(VmError::Stale)?;
-        if memory.badge as u64 != pin.badge {
-            return Err(VmError::Stale);
-        }
-        memory.dma.remove(pin.writer);
-        memory.references -= 1;
-        self.collect(pin.memory)
-    }
-
     /// Borrow immutable resident bytes without copying or transferring ownership.
     ///
     /// # Safety
     /// `vspace` must be the current VSpace. `window` must be reserved exclusively
     /// for this call, have translation tables, and not overlap the callback's
     /// scratch mappings. A Quarantined result forbids reusing the window.
-    pub unsafe fn with_sealed_bytes<R>(
+    pub unsafe fn with_immutable_bytes<R>(
         &mut self,
         cap: CapRef,
         vspace: ::sel4::cap::VSpace,
@@ -387,7 +557,7 @@ impl Service {
         if memory.poisoned {
             return Err(VmError::Quarantined);
         }
-        if memory.seals.0 & VmSeals::WRITE.0 == 0 {
+        if !memory.immutable {
             return Err(VmError::Denied);
         }
         let size = usize::try_from(memory.backing.size()).map_err(|_| VmError::Invalid)?;
@@ -402,7 +572,8 @@ impl Service {
         let mut mapped = 0;
         let mapping = (|| {
             for frame in memory.backing.frames() {
-                self.pool
+                memory
+                    .pool
                     .cap(frame)
                     .map_err(error)?
                     .frame_map(
@@ -417,13 +588,13 @@ impl Service {
             Ok(())
         })();
         let value = mapping.map(|()| {
-            // WRITE excludes all managed writers; &mut self pins backing until
+            // Immutability excludes all managed writers; &mut self pins backing until
             // the callback returns and prevents concurrent close/revoke here.
             read(unsafe { core::slice::from_raw_parts(window.start as *const u8, size) })
         });
         let mut failed = false;
         for frame in &memory.backing.frames()[..mapped] {
-            failed |= match self.pool.cap(frame) {
+            failed |= match memory.pool.cap(frame) {
                 Ok(cap) => cap.frame_unmap().is_err(),
                 Err(_) => true,
             };
@@ -458,7 +629,7 @@ impl Service {
         server.recv_slot.delete().map_err(|_| RpcError::Transport)
     }
 
-    /// Initialize boot-provided bytes before publishing a sealed memory cap.
+    /// Initialize boot-provided bytes before publishing immutable backing.
     /// # Safety
     /// `vspace` is the current VSpace, with one exclusively reserved unmapped
     /// scratch page and installed translation tables.
@@ -477,7 +648,7 @@ impl Service {
             .iter()
             .zip(bytes.chunks(PAGE_SIZE))
         {
-            let frame = self.pool.cap(frame).map_err(error)?;
+            let frame = self.memory(index).pool.cap(frame).map_err(error)?;
             if frame
                 .frame_map(
                     vspace,
@@ -498,7 +669,7 @@ impl Service {
                 return Err(VmError::Quarantined);
             }
         }
-        self.add_seals(index, VmSeals::WRITE)?;
+        self.make_immutable(index)?;
         Ok(cap)
     }
     /// All threads using this adopted address space must already be stopped.
@@ -509,7 +680,7 @@ impl Service {
             .memories
             .iter()
             .flatten()
-            .any(|m| m.dma.count != 0 || m.mmio_lease)
+            .any(|m| m.owner == self.badges[SPACE] && (m.dma.count != 0 || m.mmio_lease))
         {
             return Err(VmError::Busy);
         }
@@ -519,17 +690,29 @@ impl Service {
             }
         }
         for index in 0..self.regions.len() {
-            if self.regions[index].is_some() {
+            if self.regions[index]
+                .as_ref()
+                .is_some_and(|r| r.owner == self.badges[SPACE])
+            {
                 self.destroy_region(index)?;
             }
         }
         for index in 0..self.memories.len() {
             if self.memories[index]
                 .as_ref()
-                .is_some_and(|m| m.authority.is_some())
+                .is_some_and(|m| m.owner == self.badges[SPACE])
             {
-                self.close(index)?;
+                let badge = self.memory(index).handle.badge;
+                self.revoke_tree(index, badge)?;
             }
+        }
+        if self
+            .memories
+            .iter()
+            .flatten()
+            .any(|m| m.owner == self.badges[SPACE])
+        {
+            return Err(VmError::Quarantined);
         }
         for authority in &mut self.authority {
             if let Some(slot) = *authority {
@@ -601,14 +784,159 @@ impl Service {
     }
 
     fn memory_index(&self, badge: ::sel4::Word) -> Result<usize, VmError> {
-        self.memories
+        resolve_handle(&self.memories, &self.derived, badge).map(|(index, _)| index)
+    }
+    fn handle_rights(&self, badge: ::sel4::Word) -> Result<VmMemoryRights, VmError> {
+        resolve_handle(&self.memories, &self.derived, badge).map(|(_, rights)| rights)
+    }
+    fn require(&self, badge: ::sel4::Word, right: VmMemoryRights) -> Result<(), VmError> {
+        if self.handle_rights(badge)?.0 & right.0 != right.0 {
+            return Err(VmError::Denied);
+        }
+        Ok(())
+    }
+    fn lineage(&self, badge: ::sel4::Word) -> ([::sel4::Word; HANDLE_DEPTH], usize) {
+        self.derived
             .iter()
-            .position(|entry| {
-                entry
+            .flatten()
+            .find(|h| h.badge == badge)
+            .map(|h| (h.lineage.ancestors, h.lineage.depth))
+            .unwrap_or(([0; HANDLE_DEPTH], 0))
+    }
+    fn delegate_handle(
+        &mut self,
+        parent: ::sel4::Word,
+        rights: VmMemoryRights,
+    ) -> Result<Cap<VmMemoryObjectTag>, VmError> {
+        self.require(parent, VmMemoryRights::DELEGATE)?;
+        let allowed = self.handle_rights(parent)?;
+        if rights.0 & !allowed.0 != 0 || rights.0 & !(7 | HANDLE_CONTROL) != 0 {
+            return Err(VmError::Denied);
+        }
+        permissions(VmProtection(rights.0 & 7))?;
+        let memory = self.memory_index(parent)?;
+        if self.memory(memory).poisoned {
+            return Err(VmError::Quarantined);
+        }
+        if self
+            .derived
+            .iter()
+            .flatten()
+            .filter(|h| self.memory(h.memory).owner == self.badges[SPACE])
+            .count()
+            >= self.max_objects
+        {
+            return Err(VmError::Exhausted);
+        }
+        let slot = self
+            .derived
+            .iter()
+            .position(Option::is_none)
+            .ok_or(VmError::Exhausted)?;
+        let (mut ancestors, depth) = self.lineage(parent);
+        if depth == HANDLE_DEPTH {
+            return Err(VmError::Exhausted);
+        }
+        ancestors[depth] = parent;
+        let references = self
+            .memory(memory)
+            .references
+            .checked_add(1)
+            .ok_or(VmError::Exhausted)?;
+        let badge = new_badge()?;
+        let (authority, cap) = self.export(badge)?;
+        self.derived[slot] = Some(DerivedHandle {
+            memory,
+            badge,
+            authority,
+            rights,
+            lineage: Rc::new(Lineage {
+                ancestors,
+                depth: depth + 1,
+            }),
+        });
+        self.memories[memory].as_mut().unwrap().references = references;
+        Ok(cap)
+    }
+    fn close_handle(&mut self, badge: ::sel4::Word) -> Result<(), VmError> {
+        let memory = self.memory_index(badge)?;
+        if self.memory(memory).handle.badge == badge {
+            return self.close(memory);
+        }
+        let index = self
+            .derived
+            .iter()
+            .position(|h| h.as_ref().is_some_and(|h| h.badge == badge))
+            .ok_or(VmError::Stale)?;
+        let authority = self.derived[index].as_ref().unwrap().authority;
+        let mut allocator = self.memory(memory).allocator.clone();
+        allocator
+            .root()
+            .absolute_cptr(::sel4::CPtr::from_bits(authority as _))
+            .revoke()
+            .map_err(|_| VmError::Backend)?;
+        allocator.release_slot(authority).map_err(error)?;
+        self.derived[index] = None;
+        self.memories[memory].as_mut().unwrap().references -= 1;
+        self.collect(memory)
+    }
+    /// Revoke a subtree and only its mappings. The temporary reference prevents
+    /// collection while handles and page references are removed in either order.
+    fn revoke_tree(&mut self, memory: usize, badge: ::sel4::Word) -> Result<(), VmError> {
+        if self.memory(memory).dma.count != 0 {
+            return Err(VmError::Busy);
+        }
+        self.memories[memory].as_mut().unwrap().references = self
+            .memory(memory)
+            .references
+            .checked_add(1)
+            .ok_or(VmError::Exhausted)?;
+        let result = (|| {
+            for region in 0..self.regions.len() {
+                if self.regions[region].is_none() {
+                    continue;
+                }
+                for page in 0..self.region(region).pages.len() {
+                    let state = self.page(region, page);
+                    if state.memory == Some(memory)
+                        && (state.handle == badge
+                            || state
+                                .lineage
+                                .as_ref()
+                                .is_some_and(|l| l.ancestors[..l.depth].contains(&badge)))
+                    {
+                        if self.unmap(region, page..page + 1).is_err() {
+                            return Err(self.poison(region));
+                        }
+                    }
+                }
+            }
+            for index in 0..self.derived.len() {
+                let target = self.derived[index]
                     .as_ref()
-                    .is_some_and(|m| m.badge == badge && m.authority.is_some())
-            })
-            .ok_or(VmError::Stale)
+                    .filter(|h| {
+                        h.memory == memory
+                            && (h.badge == badge
+                                || h.lineage.ancestors[..h.lineage.depth].contains(&badge))
+                    })
+                    .map(|h| h.badge);
+                if let Some(target) = target {
+                    self.close_handle(target)?;
+                }
+            }
+            if self.memory(memory).handle.badge == badge
+                && self.memory(memory).handle.authority.is_some()
+            {
+                self.close(memory)?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.memories[memory].as_mut().unwrap().poisoned = true;
+        }
+        self.memories[memory].as_mut().unwrap().references -= 1;
+        result?;
+        self.collect(memory)
     }
     fn region_index(&self, badge: ::sel4::Word) -> Result<usize, VmError> {
         self.regions
@@ -623,7 +951,7 @@ impl Service {
         self.regions[index].as_ref().unwrap()
     }
     fn page(&self, region: usize, page: usize) -> Page {
-        self.region(region).pages[page]
+        self.region(region).pages[page].clone()
     }
     fn page_mut(&mut self, region: usize, page: usize) -> &mut Page {
         &mut self.regions[region].as_mut().unwrap().pages[page]
@@ -657,6 +985,16 @@ impl Service {
         if size > (self.pool.available() * PAGE_SIZE) as u64 {
             return Err(VmError::QuotaExceeded);
         }
+        if self
+            .memories
+            .iter()
+            .flatten()
+            .filter(|m| m.owner == self.badges[SPACE])
+            .count()
+            >= self.max_objects
+        {
+            return Err(VmError::Exhausted);
+        }
         let index = self
             .memories
             .iter()
@@ -672,11 +1010,16 @@ impl Service {
             }
         };
         self.memories[index] = Some(Memory {
-            badge,
-            authority: Some(authority),
+            handle: MemoryHandle {
+                badge,
+                authority: Some(authority),
+                ceiling,
+            },
+            owner: self.badges[SPACE],
+            allocator: self.allocator.clone(),
             backing: object,
-            ceiling,
-            seals: VmSeals::default(),
+            pool: self.pool.clone(),
+            immutable: false,
             references: 0,
             dma: crate::dma::Pins::default(),
             mmio_lease: false,
@@ -707,6 +1050,16 @@ impl Service {
             return Err(VmError::Unsupported);
         }
         let layout = Layout::from_size_align(size, alignment).map_err(|_| VmError::Invalid)?;
+        if self
+            .regions
+            .iter()
+            .flatten()
+            .filter(|r| r.owner == self.badges[SPACE])
+            .count()
+            >= self.max_objects
+        {
+            return Err(VmError::Exhausted);
+        }
         let index = self
             .regions
             .iter()
@@ -730,6 +1083,10 @@ impl Service {
             }
         };
         self.regions[index] = Some(Region {
+            owner: self.badges[SPACE],
+            allocator: self.allocator.clone(),
+            vspace: self.vspace,
+            address: self.window.start + range.start,
             badge,
             authority,
             range,
@@ -741,29 +1098,23 @@ impl Service {
     }
 
     fn collect(&mut self, index: usize) -> Result<(), VmError> {
-        if self.memory(index).references == 0 && self.memory(index).authority.is_none() {
-            let memory = self.memories[index].take().unwrap();
-            memory
-                .backing
-                .release(&mut self.pool)
-                .map_err(|_| VmError::Quarantined)?;
-        }
-        Ok(())
+        collect_backing(&mut self.memories, index)
     }
 
     fn close(&mut self, index: usize) -> Result<(), VmError> {
-        let authority = self.memory(index).authority.ok_or(VmError::Stale)?;
-        self.allocator
+        let authority = self.memory(index).handle.authority.ok_or(VmError::Stale)?;
+        let mut allocator = self.memory(index).allocator.clone();
+        allocator
             .root()
             .absolute_cptr(::sel4::CPtr::from_bits(authority as _))
             .revoke()
             .map_err(|_| VmError::Backend)?;
-        self.allocator.release_slot(authority).map_err(error)?;
-        self.memories[index].as_mut().unwrap().authority = None;
+        allocator.release_slot(authority).map_err(error)?;
+        self.memories[index].as_mut().unwrap().handle.authority = None;
         self.collect(index)
     }
 
-    fn add_seals(&mut self, index: usize, requested: VmSeals) -> Result<(), VmError> {
+    fn make_immutable(&mut self, index: usize) -> Result<(), VmError> {
         let memory = self.memory(index);
         if memory.poisoned {
             return Err(VmError::Quarantined);
@@ -771,9 +1122,11 @@ impl Service {
         if memory.backing.resident_size() == 0 {
             return Err(VmError::Unsupported);
         }
-        // All aliases are mediated here. Requests are serialized with Map,
-        // Protect and Unmap; may_write is cleared only after native cleanup.
-        // WRITE never silently downgrades mappings or races a remote writer.
+        if memory.immutable {
+            return Ok(());
+        }
+        // Serialized with CPU mapping changes and DMA pins. Protect(READ)
+        // retains MAYWRITE; callers must unmap before freezing backing.
         let may_write = memory.dma.writers != 0
             || self.regions.iter().flatten().any(|region| {
                 region
@@ -781,8 +1134,10 @@ impl Service {
                     .iter()
                     .any(|page| page.memory == Some(index) && page.may_write)
             });
-        let seals = memory.seals.adding(requested, may_write)?;
-        self.memories[index].as_mut().unwrap().seals = seals;
+        if may_write {
+            return Err(VmError::Busy);
+        }
+        self.memories[index].as_mut().unwrap().immutable = true;
         Ok(())
     }
 
@@ -818,7 +1173,7 @@ impl Service {
     }
 
     fn address(&self, region: usize, page: usize) -> usize {
-        self.window.start + self.region(region).range.start + page * PAGE_SIZE
+        self.region(region).address + page * PAGE_SIZE
     }
     fn map_page(
         &mut self,
@@ -829,7 +1184,7 @@ impl Service {
         let state = self.page(region, page);
         ::sel4::cap::Granule::from_bits(state.slot.unwrap() as _)
             .frame_map(
-                self.vspace,
+                self.region(region).vspace,
                 self.address(region, page),
                 ::sel4::CapRights::new(
                     false,
@@ -865,7 +1220,9 @@ impl Service {
         self.unmap_page(region, page)?;
         let state = self.page(region, page);
         if state.memory.is_some() {
-            self.allocator
+            self.region(region)
+                .allocator
+                .clone()
                 .clear_slot(state.slot.unwrap())
                 .map_err(error)?;
         }
@@ -888,25 +1245,23 @@ impl Service {
         memory: usize,
         source: usize,
         protection: VmProtection,
+        handle: ::sel4::Word,
     ) -> Result<(), VmError> {
         permissions(protection)?;
+        let ceiling = VmProtection(self.handle_rights(handle)?.0 & 7);
+        let (ancestors, depth) = self.lineage(handle);
+        let lineage = Rc::new(Lineage { ancestors, depth });
         if self.memory(memory).poisoned {
             return Err(VmError::Quarantined);
         }
-        if protection.0 & !self.region(region).ceiling.0 != 0
-            || protection.0 & !self.memory(memory).ceiling.0 != 0
-        {
+        if protection.0 & !self.region(region).ceiling.0 != 0 || protection.0 & !ceiling.0 != 0 {
             return Err(VmError::Denied);
         }
-        if protection.0 & VmProtection::WRITE.0 != 0
-            && self.memory(memory).seals.blocks_new_writes()
-        {
+        if protection.0 & VmProtection::WRITE.0 != 0 && self.memory(memory).immutable {
             return Err(VmError::Denied);
         }
-        let may_write =
-            self.region(region).ceiling.0 & self.memory(memory).ceiling.0 & VmProtection::WRITE.0
-                != 0
-                && !self.memory(memory).seals.blocks_new_writes();
+        let may_write = self.region(region).ceiling.0 & ceiling.0 & VmProtection::WRITE.0 != 0
+            && !self.memory(memory).immutable;
         if source
             .checked_add(range.len())
             .is_none_or(|end| end > self.memory(memory).backing.page_count())
@@ -926,6 +1281,7 @@ impl Service {
         for (offset, page) in range.clone().enumerate() {
             let state = self.page(region, page);
             let frame = self
+                .memory(memory)
                 .pool
                 .cap(&self.memory(memory).backing.frames()[source + offset])
                 .map_err(error)?;
@@ -939,6 +1295,9 @@ impl Service {
                 self.memories[memory].as_mut().unwrap().references += 1;
                 let state = self.page_mut(region, page);
                 state.memory = Some(memory);
+                state.handle = handle;
+                state.ceiling = ceiling;
+                state.lineage = Some(lineage.clone());
                 state.may_write = may_write;
             }
             if result.is_err() || self.map_page(region, page, protection).is_err() {
@@ -972,9 +1331,9 @@ impl Service {
             if !state.mapped {
                 return Err(VmError::Invalid);
             }
-            if protection.0 & !self.memory(memory).ceiling.0 != 0
+            if protection.0 & !state.ceiling.0 != 0
                 || (protection.0 & VmProtection::WRITE.0 != 0
-                    && (!state.may_write || self.memory(memory).seals.0 & VmSeals::WRITE.0 != 0))
+                    && (!state.may_write || self.memory(memory).immutable))
             {
                 return Err(VmError::Denied);
             }
@@ -1075,6 +1434,11 @@ impl Service {
                             source.ok_or(VmError::Invalid)?,
                             source_page,
                             r.protection,
+                            memory
+                                .unwrap()
+                                .as_ref()
+                                .unwrapped_badge()
+                                .ok_or(VmError::Denied)? as _,
                         )
                     }
                     VmUpdate::Protect(r) => self.protect(region, range, r.protection),
@@ -1144,7 +1508,8 @@ impl VmFactoryServer for Caller<'_> {
                 VmFeatures::RESIDENT.0
                     | VmFeatures::PROTECTION.0
                     | VmFeatures::UNTYPED.0
-                    | VmFeatures::SEALS.0,
+                    | VmFeatures::IMMUTABLE.0
+                    | VmFeatures::DUPLICATE_MEMORY.0,
             ),
             page_size: PAGE_SIZE as u64,
             batch_limit: 16,
@@ -1156,7 +1521,7 @@ impl VmFactoryServer for Caller<'_> {
                     .memories
                     .iter()
                     .filter_map(Option::as_ref)
-                    .filter(|memory| memory.poisoned)
+                    .filter(|memory| memory.owner == self.service.badges[SPACE] && memory.poisoned)
                     .map(|memory| memory.backing.resident_size())
                     .sum::<u64>(),
         })
@@ -1259,26 +1624,34 @@ impl VmMemoryServer for Caller<'_> {
         Ok(VmMemoryInfo {
             size: memory.backing.size(),
             resident_size: memory.backing.resident_size(),
-            ceiling: memory.ceiling,
-            seals: memory.seals,
+            ceiling: VmProtection(self.service.handle_rights(self.badge)?.0 & 7),
+            immutable: memory.immutable,
         })
     }
-    fn add_seals(&mut self, seals: VmSeals) -> Result<(), VmError> {
+    fn make_immutable(&mut self) -> Result<(), VmError> {
+        self.service
+            .require(self.badge, VmMemoryRights::MAKE_IMMUTABLE)?;
         let index = self.service.memory_index(self.badge)?;
-        self.service.add_seals(index, seals)
+        self.service.make_immutable(index)
     }
-    fn duplicate(&mut self, _: VmProtection) -> Result<Cap<VmMemoryObjectTag>, VmError> {
-        self.service.memory_index(self.badge)?;
-        Err(VmError::Unsupported)
+    fn duplicate(&mut self, ceiling: VmProtection) -> Result<Cap<VmMemoryObjectTag>, VmError> {
+        permissions(ceiling)?;
+        self.service
+            .delegate_handle(self.badge, VmMemoryRights(ceiling.0))
     }
     fn close(&mut self) -> Result<(), VmError> {
-        let index = self.service.memory_index(self.badge)?;
-        self.service.close(index)
+        self.service.close_handle(self.badge)
     }
     fn revoke(&mut self) -> Result<(), VmError> {
+        self.service.require(self.badge, VmMemoryRights::REVOKE)?;
         let index = self.service.memory_index(self.badge)?;
-        self.service.revoke_aliases(index)?;
-        self.service.close(index)
+        self.service.revoke_tree(index, self.badge)
+    }
+    fn delegate(&mut self, rights: VmMemoryRights) -> Result<Cap<VmMemoryObjectTag>, VmError> {
+        self.service.delegate_handle(self.badge, rights)
+    }
+    fn rights(&mut self) -> Result<VmMemoryRights, VmError> {
+        self.service.handle_rights(self.badge)
     }
 }
 impl VmAddressSpaceServer for Caller<'_> {
@@ -1300,7 +1673,7 @@ impl VmRegionServer for Caller<'_> {
         let index = self.service.region_index(self.badge)?;
         let region = self.service.region(index);
         Ok(VmRegionInfo {
-            address: (self.service.window.start + region.range.start) as u64,
+            address: region.address as u64,
             length: region.range.len() as u64,
             ceiling: region.ceiling,
         })

@@ -5,6 +5,7 @@ extern crate alloc;
 
 use horn_ipc::*;
 use horn_procd::protocol::*;
+mod sharing_probe;
 horn_runtime::task!(main);
 
 fn main(mut ctx: horn_runtime::Context) -> ! {
@@ -12,6 +13,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
     let lifecycle = ctx.object::<ProcessSelfTag>("horn.lifecycle").unwrap();
     assert!(lifecycle.info(&mut io).unwrap().charged_bytes > 0);
     sel4::debug_println!("LAUNCH_CHILD_PASS bootstrap=true");
+    sharing_probe::receive(&ctx, &mut io);
     lifecycle.exit(&mut io, 7).unwrap();
     unreachable!()
 }

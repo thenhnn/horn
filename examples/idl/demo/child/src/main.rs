@@ -7,6 +7,7 @@ extern crate alloc;
 horn_runtime::task!(main, deferred_heap);
 
 mod launch_probe;
+mod sharing_probe;
 mod vm_probe;
 
 #[allow(dead_code, unused_imports, non_camel_case_types)]

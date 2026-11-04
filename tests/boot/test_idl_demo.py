@@ -18,13 +18,16 @@ def test_idl_child_process_demo(system, release):
     vm.serial.wait_for(b"IDL_DEMO_PASS value=41")
     vm.serial.wait_for(b"LAUNCH_CHILD_PASS bootstrap=true")
     vm.serial.wait_for(
-        b"LAUNCH_RPC_PASS sealed=true quota=true pagination=true control=true cleanup=true"
+        b"VM_CROSS_SPACE_PASS shared=true attenuation=true close=true subtree_revoke=true sibling=true cleanup=true"
+    )
+    vm.serial.wait_for(
+        b"LAUNCH_RPC_PASS immutable=true quota=true pagination=true control=true cleanup=true"
     )
     vm.serial.wait_for(b"VM_CLIENT_CPU id=")
     cpu = int(vm.serial.wait_for(b"\n").strip())
     assert 0 <= cpu < 2
     vm.serial.wait_for(
-        b"VM_SEALS_PASS aliases=true future_write=true immutable=true cleanup=true"
+        b"VM_IMMUTABLE_PASS aliases=true maywrite=true immutable=true cleanup=true"
     )
     vm.serial.wait_for(
         b"VM_RPC_PASS mapping=true sharing=true lifetime=true protection=true errors=true",
