@@ -16,6 +16,12 @@ npins-bump:
 check-idl:
     ./tools/idl/check.sh
 
+idl-doc-data:
+    PYTHONPATH=tools/idl python3 -m horn_idl --doc-json work/idl-reference.json
+
+site:
+    nix-build web --out-link work/site-result
+
 demo:
     pytest -q tests/boot/test_idl_demo.py -s
 

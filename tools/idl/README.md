@@ -11,6 +11,28 @@ PYTHONPATH=tools/idl python3 -m horn_idl examples/idl/schema.py \
     --c work/idl/protocol.c
 ```
 
+## Reference data and website
+
+The IDL compiler exports structured reference data without depending on Jinja2:
+
+```sh
+PYTHONPATH=tools/idl python3 -m horn_idl --doc-json work/idl-reference.json
+```
+
+Pass a schema name or path before `--doc-json` to export only that schema.
+Full-catalog data resolves references to their defining schema; a single-schema
+export includes imports locally. Declaration and method targets contain a
+schema name, kind, and declaration name (or qualified method name). Named types
+without a known declaration have a null target. Consumers decide how to render
+links; the data contains no HTML filenames or anchors. Schema modules are
+executable Python, so only compile trusted sources.
+
+The Nix website build consumes this reference data and uses the templates
+and styles in `web/`. Run `just site` from the repository root to build the
+static site and link it at `work/site-result`. Serve it with, for example,
+`python3 -m http.server --directory work/site-result`. Jinja2 is supplied by
+the Nix build; it is not a dependency of the IDL compiler.
+
 ## Build integration
 
 `sources.json` is the shared catalog of schema names and locations. Its paths

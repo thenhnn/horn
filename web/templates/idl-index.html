@@ -1,0 +1,11 @@
+{% extends 'idl-base.html' %}
+{% block title %}Horn RPC interfaces{% endblock %}
+{% block content %}
+  <h1>Horn RPC interfaces</h1>
+  <p><em>This documentation was auto-generated from IDL definitions</em></p>
+  <ul>
+    {% for entry in entries %}
+      <li><a href="{{ entry.name|schema_href }}">{{ entry.name }}</a></li>
+    {% endfor %}
+  </ul>
+{% endblock %}

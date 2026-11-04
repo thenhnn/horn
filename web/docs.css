@@ -1,0 +1,20 @@
+code { overflow-wrap: anywhere; font-size: 1em; }
+a.anchor, a.anchor:visited { color: #555; font-size: .85em; font-weight: normal; text-decoration: none; }
+a.anchor:hover, a.anchor:focus-visible { color: #003a9b; text-decoration: underline; }
+.signature { padding: .65rem .75rem; background: #f0f0f0; color: #111; border: 1px solid #777; }
+.signature code { font-weight: 600; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; vertical-align: top; border-bottom: 1px solid #777; padding: .35rem .5rem; }
+th { background: #eee; color: #171717; }
+section { margin: 2rem 0; }
+.table { overflow-x: auto; }
+.doc { white-space: pre-line; }
+h4.method {
+  margin-top: 2.5rem;
+  padding: .45rem .65rem;
+  border-left: .3rem solid #222;
+  background: #e8e8e8;
+  color: #111;
+  font-size: 1.25em;
+}
+h5 { font-size: 1em; }

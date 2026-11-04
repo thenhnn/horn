@@ -7,6 +7,13 @@ in
     programs.ruff-format.enable = true;
     programs.just.enable = true;
     programs.alejandra.enable = true;
+    programs.djlint = {
+      enable = true;
+      indent = 2;
+      includes = ["web/templates/*.html"];
+    };
+    # djlint otherwise exits 1 after successfully reformatting files.
+    settings.formatter.djlint.options = ["--profile=jinja" "--warn"];
     programs.ruff-check.enable = true;
     programs.ruff-check.extendSelect = ["I"];
     settings.formatter.ruff-format.priority = 1;

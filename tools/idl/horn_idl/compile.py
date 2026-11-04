@@ -152,7 +152,9 @@ class _Resolver:
             name = getattr(cls, "__horn_name__", cls.__name__)
             if kind == "record":
                 placeholder = RecordType(name, ())
-                self.records[cls] = Record(name, cls.__name__, placeholder)
+                self.records[cls] = Record(
+                    name, cls.__name__, placeholder, inspect.getdoc(cls)
+                )
                 self.record_types[cls] = placeholder
             elif kind == "interface":
                 self.interfaces[cls] = Interface(
@@ -677,7 +679,30 @@ class _Resolver:
             )
 
     def build_schema(self) -> Schema:
-        schema = Schema(self.module.__name__)
+        schema = Schema(
+            self.module.__name__,
+            doc=inspect.getdoc(self.module),
+            source_path=(
+                str(Path(self.module.__file__).resolve())
+                if getattr(self.module, "__file__", None)
+                else None
+            ),
+        )
+        for declarations in (
+            self.records,
+            self.enums,
+            self.flags,
+            self.interfaces,
+            self.objects,
+            self.capsets,
+            self.rings,
+            self.regions,
+        ):
+            for cls, decl in declarations.items():
+                module = sys.modules.get(cls.__module__)
+                source = getattr(module, "__file__", None)
+                if source:
+                    schema.declaration_sources[id(decl)] = str(Path(source).resolve())
         schema.records = list(self.records.values())
         schema.enums = list(self.enums.values())
         schema.flags = list(self.flags.values())

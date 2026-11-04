@@ -160,6 +160,9 @@ class RegionDecl:
 @dataclass
 class Schema:
     module: str
+    doc: str | None = None
+    source_path: str | None = None
+    declaration_sources: dict[int, str] = field(default_factory=dict)
     records: list[Record] = field(default_factory=list)
     enums: list[EnumDecl] = field(default_factory=list)
     flags: list[FlagsDecl] = field(default_factory=list)
