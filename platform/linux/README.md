@@ -15,7 +15,12 @@ libc patches or new kernel changes are required for this demo. It exercises:
 - malloc/realloc/free, checking preserved allocation contents;
 - fopen/fgets/fclose on an initramfs file;
 - monotonic clock_gettime and nanosleep with an elapsed-time check;
-- exec of `/fp-probe` as the same PID 1.
+- exec of `/task-test`, then `/fp-probe`, as the same PID 1.
+
+The musl task test covers fork/exec/wait status, bidirectional private COW,
+64 fork/reap cycles, and a contained child PROT_NONE fault. Four rounds of three
+pthreads exercise distinct TLS/errno and TIDs, contended mutex/condition variables,
+join return values, per-thread signals and FP rounding-mode isolation.
 
 The follow-on assembly probe (`init/init.S`) tests signals/sigreturn with
 intentionally clobbered FP/SIMD registers: x87, MXCSR, YMM and, when available,
@@ -26,11 +31,10 @@ implementation. Resource rollback, stop/fault races and negative isolation tests
 still need an independent audit.
 
 Linux retains the standard 30-second READY deadline. Diagnostic QEMU runs
-are limited separately to 15 seconds. The current console is output-only;
-user clone explicitly returns `EOPNOTSUPP` from `copy_thread` pending
-MM/TLS/lifecycle multi-task validation. Thus fork/pthreads are unsupported; kernel
-threads and single-threaded libc programs can still run. Linux SMP is not
-implemented. FP state is saved into each task's dynamically sized register area,
+are bounded separately; the combined userspace regression allows 60 seconds. The current console is output-only;
+single-CPU user fork and pthread creation now run the regression above.
+This does not establish complete clone/ptrace/cancellation semantics or a security
+audit. Linux SMP is not implemented. FP state is saved into each task's dynamically sized register area,
 including full standard XSAVE signal frames and legacy/null FP sigreturn.
 Kernel FP sections use the separate native TCB with preemption exclusion. The ABI is x86-64 only, without IA32/x32.
 
@@ -43,9 +47,10 @@ nix-build nix -A sel4.out -A root-task.package --argstr profile pc-dev \
 Validation: `pytest -q tests/boot/test_linux.py` uses KVM (skips if unavailable)
 and checks every musl demo stage, successful exec into the FP/SIMD regression,
 PID 1 and clock/sleep, then observes two more seconds without faults.
-TCG has not completed this milestone within the 15-second diagnostic bound.
+TCG has not been validated for this milestone.
 AVX-512 preservation across syscalls, sleep and signal delivery was exercised
-under KVM. This is not a BLAKE3 benchmark or a multi-process FPU validation.
+under KVM. The task regression also checks per-thread FP rounding state; it does
+not constitute exhaustive XSAVE isolation testing or a BLAKE3 benchmark.
 
 The PC kernel enables required x87/SSE/AVX state and an optional AVX-512 state
 group. CPUID supplies the active XSAVE size; a 4096-byte capacity bounds TCB and

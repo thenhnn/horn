@@ -23,7 +23,7 @@ def test_linux_initramfs_pid1_and_clock(system):
         )
     )
     vm.start()
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + 60
     ready_at = None
     while True:
         serial = vm.serial.path.read_text(errors="replace")
@@ -37,6 +37,7 @@ def test_linux_initramfs_pid1_and_clock(system):
             "panicked at",
             "/init: startup failed",
             "musl /init: FAILED:",
+            "linux tasks: FAILED:",
             "EXECUTION_MAP_FAIL",
         ):
             assert failure not in diagnostics, diagnostics
@@ -52,7 +53,12 @@ def test_linux_initramfs_pid1_and_clock(system):
         "musl /init: malloc/realloc/free work",
         "musl /init: Hello from the Horn initramfs!",
         "musl /init: clock and sleep work",
-        "musl /init: PASS; executing FP/SIMD regression",
+        "musl /init: PASS; executing task regression",
+        "linux tasks: fork/exec/wait and bidirectional COW work",
+        "linux tasks: 64 fork/reap cycles work",
+        "linux tasks: child protection fault is contained",
+        "linux tasks: pthread TLS/errno, mutex/condvar, join, signals and FP isolation work",
+        "linux tasks: PASS; executing FP/SIMD regression",
     ):
         assert marker in output, diagnostics
     assert "/init: FP/SIMD state survives syscalls and signals" in output, diagnostics

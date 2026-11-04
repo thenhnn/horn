@@ -60,7 +60,7 @@ int main(int argc, char **argv)
                  + after.tv_nsec - before.tv_nsec;
     if (ns < 100000000) fail("sleep elapsed time");
     printf("musl /init: clock and sleep work (%lld us)\n", ns / 1000);
-    puts("musl /init: PASS; executing FP/SIMD regression");
-    execl("/fp-probe", "/fp-probe", (char *)NULL);
-    fail("exec /fp-probe");
+    puts("musl /init: PASS; executing task regression");
+    execl("/task-test", "/task-test", (char *)NULL);
+    fail("exec /task-test");
 }

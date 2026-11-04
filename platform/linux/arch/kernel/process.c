@@ -149,13 +149,14 @@ int copy_thread(struct task_struct * p, const struct kernel_clone_args *args)
 	void (*handler)(void);
 	int ret = 0;
 
-	/* User clone remains gated until MM/TLS/lifecycle multi-task validation. */
-	if (!args->fn) return -EOPNOTSUPP;
 	p->thread = (struct thread_struct) INIT_THREAD;
 
 	if (!args->fn) {
 	  	memcpy(&p->thread.regs.regs, current_pt_regs(),
 		       sizeof(p->thread.regs.regs));
+		/* The XSAVE tail is outside sizeof(uml_pt_regs). */
+		memcpy(p->thread.regs.regs.fp, current_pt_regs()->regs.fp,
+		       host_fp_size);
 		PT_REGS_SET_SYSCALL_RETURN(&p->thread.regs, 0);
 		if (sp != 0)
 			REGS_SP(p->thread.regs.regs.gp) = sp;

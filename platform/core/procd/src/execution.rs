@@ -28,6 +28,8 @@ struct Mapping {
     rights: u32,
 }
 struct Space {
+    // Translation objects have an independent lifetime, but charge the domain.
+    allocator: KernelAllocator,
     vspace: sel4::cap::VSpace,
     maps: BTreeMap<usize, Mapping>,
 }
@@ -130,6 +132,9 @@ impl Execution {
     }
     pub(crate) fn cleanup(&mut self) -> Result<(), Error> {
         self.stop_user()?;
+        while let Some(space) = self.spaces.keys().next().copied() {
+            self.destroy_space(space)?;
+        }
         if self.fp_active {
             self.fp_frame.frame_unmap()?;
             self.fp_active = false;
@@ -138,6 +143,37 @@ impl Execution {
             self.allocator.release_slot(slot)?;
             self.copied_slots.remove(&slot);
         }
+        Ok(())
+    }
+    fn destroy_space(&mut self, space: u32) -> Result<(), Error> {
+        if self.running {
+            return Err(Error::InvalidState);
+        }
+        // The multiplexed user TCB may still name this VSpace while suspended.
+        // Detach before revoking its translation objects/ASID.
+        self.user.tcb_set_space(
+            self.fault_cap.cptr(),
+            self.cnode,
+            sel4::CNodeCapData::new(0, sel4::WORD_SIZE - 4),
+            self.kernel,
+        )?;
+        let keys: Vec<_> = self
+            .spaces
+            .get(&space)
+            .ok_or(Error::Denied)?
+            .maps
+            .keys()
+            .copied()
+            .collect();
+        for key in keys {
+            self.remove(space, key)?;
+        }
+        self.spaces
+            .get_mut(&space)
+            .unwrap()
+            .allocator
+            .destroy_account()?;
+        self.spaces.remove(&space);
         Ok(())
     }
     fn fp_access<T>(
@@ -537,17 +573,33 @@ impl ProcessExecutionServer for Caller<'_> {
         if e.running || e.spaces.len() >= MAX_SPACES || e.next_space == u32::MAX {
             return Err(ProcessError::Exhausted);
         }
-        let vspace = e
+        let account = e
             .allocator
-            .allocate_fixed_sized::<sel4::cap_type::VSpace>()
-            .map_err(|x| error(x.into()))?;
-        asid.asid_pool_assign(vspace).map_err(|x| error(x.into()))?;
-        crate::loader::prepare_window(&mut e.allocator, vspace, PAGE..USER_END).map_err(error)?;
+            .account()
+            .child(2 * 1024 * 1024)
+            .map_err(|err| error(err.into()))?;
+        let mut allocator = e.allocator.for_account(account);
+        let result = (|| -> Result<sel4::cap::VSpace, Error> {
+            let vspace = allocator.allocate_fixed_sized::<sel4::cap_type::VSpace>()?;
+            asid.asid_pool_assign(vspace)?;
+            crate::loader::prepare_window(&mut allocator, vspace, PAGE..USER_END)?;
+            Ok(vspace)
+        })();
+        let vspace = match result {
+            Ok(vspace) => vspace,
+            Err(err) => {
+                allocator
+                    .destroy_account()
+                    .map_err(|_| ProcessError::Quarantined)?;
+                return Err(error(err));
+            }
+        };
         let n = e.next_space;
         e.next_space += 1;
         e.spaces.insert(
             n,
             Space {
+                allocator,
                 vspace,
                 maps: BTreeMap::new(),
             },
@@ -566,24 +618,10 @@ impl ProcessExecutionServer for Caller<'_> {
         if e.running {
             return Err(ProcessError::State);
         }
-        let keys: Vec<_> = e
-            .spaces
-            .get(&space)
-            .ok_or(ProcessError::Stale)?
-            .maps
-            .keys()
-            .copied()
-            .collect();
-        for key in keys {
-            e.remove(space, key).map_err(error)?;
+        if !e.spaces.contains_key(&space) {
+            return Err(ProcessError::Stale);
         }
-        // Translation backing stays charged until the process is torn down.
-        // Do not falsely report it reclaimed or recycle its ASID/ID.
-        let s = e.spaces.remove(&space).unwrap();
-        e.allocator
-            .release_slot(s.vspace.bits() as usize)
-            .map_err(|x| error(x.into()))?;
-        Ok(())
+        e.destroy_space(space).map_err(error)
     }
     fn execution_map(
         &mut self,

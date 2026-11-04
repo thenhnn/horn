@@ -15,17 +15,18 @@
     hardeningDisable = ["pic"];
     buildPhase = ''
       $CC -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie demo.c -o init
+      $CC -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie -pthread tasks.c -lm -o task-test
       $CC -nostdlib -static -no-pie -Wl,-e,_start -Wl,-Ttext=0x400000 init.S -o fp-probe
     '';
     installPhase = ''
       mkdir -p "$out/bin"
-      cp init fp-probe "$out/bin/"
+      cp init task-test fp-probe "$out/bin/"
     '';
   };
   initramfs = pkgs.runCommand "linux-horn-initramfs" {} ''
     mkdir -p "$out"
     printf 'Hello from the Horn initramfs!\n' > "$out/demo.txt"
-    printf 'dir /dev 0755 0 0\nnod /dev/console 0600 0 0 c 5 1\nfile /init ${muslDemo}/bin/init 0755 0 0\nfile /fp-probe ${muslDemo}/bin/fp-probe 0755 0 0\nfile /demo.txt %s/demo.txt 0644 0 0\n' "$out" > "$out/list"
+    printf 'dir /dev 0755 0 0\nnod /dev/console 0600 0 0 c 5 1\nfile /init ${muslDemo}/bin/init 0755 0 0\nfile /task-test ${muslDemo}/bin/task-test 0755 0 0\nfile /fp-probe ${muslDemo}/bin/fp-probe 0755 0 0\nfile /demo.txt %s/demo.txt 0644 0 0\n' "$out" > "$out/list"
   '';
   host = pkgs.stdenv.mkDerivation ((idl.crate {})
     // {
