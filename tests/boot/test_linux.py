@@ -1,4 +1,4 @@
-"""One ARCH=horn Linux CPU: initramfs, trapped syscalls, clock and sleep."""
+"""One ARCH=horn CPU: static musl C init, then the assembly FP/SIMD regression."""
 
 import os
 import time
@@ -36,6 +36,7 @@ def test_linux_initramfs_pid1_and_clock(system):
             "Kernel panic",
             "panicked at",
             "/init: startup failed",
+            "musl /init: FAILED:",
             "EXECUTION_MAP_FAIL",
         ):
             assert failure not in diagnostics, diagnostics
@@ -45,6 +46,15 @@ def test_linux_initramfs_pid1_and_clock(system):
                 break
         assert time.monotonic() < deadline, diagnostics
         time.sleep(0.05)
+    for marker in (
+        "musl /init: hello from C, PID 1",
+        "musl /init: TLS and errno work",
+        "musl /init: malloc/realloc/free work",
+        "musl /init: Hello from the Horn initramfs!",
+        "musl /init: clock and sleep work",
+        "musl /init: PASS; executing FP/SIMD regression",
+    ):
+        assert marker in output, diagnostics
     assert "/init: FP/SIMD state survives syscalls and signals" in output, diagnostics
     assert "Linux /init running as PID 1" in output, diagnostics
     assert "linux\x1b[0m ready" in serial, diagnostics

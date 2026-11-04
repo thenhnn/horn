@@ -1,21 +1,35 @@
-# Linux on Horn: first milestone
+# Linux on Horn: static musl userspace
 
 The chosen direction is a clean `ARCH=horn` paravirtualized Linux port.
 The previous `ARCH=sel4` port and l4h are references, not host implementations
 to import wholesale. The in-progress port builds Linux 6.18 reproducibly with
 its own architecture directory and native Horn transport (not UML os-Linux).
 
-**Current milestone: embedded /init runs as PID 1.** The static assembly init
-exercises trapped getpid/write/clock_gettime/nanosleep, then a real signal and
-sigreturn with deliberately clobbered FP/SIMD registers. It checks x87, MXCSR,
-YMM and, when available, ZMM/opmask preservation. Linux uses one logical CPU and 32 MiB admitted RAM.
+**Current milestone: a static musl C /init runs as PID 1.**
+`init/demo.c` is an ordinary Linux C program, compiled with the pinned Nixpkgs
+`pkgsStatic` musl toolchain. No Horn-specific userspace headers, custom startup,
+libc patches or new kernel changes are required for this demo. It exercises:
+
+- libc startup/arguments, getpid and printf/stdio;
+- initialized C thread-local storage and libc errno;
+- malloc/realloc/free, checking preserved allocation contents;
+- fopen/fgets/fclose on an initramfs file;
+- monotonic clock_gettime and nanosleep with an elapsed-time check;
+- exec of `/fp-probe` as the same PID 1.
+
+The follow-on assembly probe (`init/init.S`) tests signals/sigreturn with
+intentionally clobbered FP/SIMD registers: x87, MXCSR, YMM and, when available,
+ZMM/opmask preservation. It stays alive rather than exiting PID 1.
+Linux uses one logical CPU and 32 MiB admitted RAM.
 This is bring-up code, not a validated execution-resource or isolation
 implementation. Resource rollback, stop/fault races and negative isolation tests
 still need an independent audit.
 
 Linux retains the standard 30-second READY deadline. Diagnostic QEMU runs
 are limited separately to 15 seconds. The current console is output-only;
-user clone remains gated pending MM/TLS/lifecycle validation; Linux SMP is not
+user clone explicitly returns `EOPNOTSUPP` from `copy_thread` pending
+MM/TLS/lifecycle multi-task validation. Thus fork/pthreads are unsupported; kernel
+threads and single-threaded libc programs can still run. Linux SMP is not
 implemented. FP state is saved into each task's dynamically sized register area,
 including full standard XSAVE signal frames and legacy/null FP sigreturn.
 Kernel FP sections use the separate native TCB with preemption exclusion. The ABI is x86-64 only, without IA32/x32.
@@ -27,7 +41,8 @@ nix-build nix -A sel4.out -A root-task.package --argstr profile pc-dev \
 ```
 
 Validation: `pytest -q tests/boot/test_linux.py` uses KVM (skips if unavailable)
-and checks PID 1 plus clock/sleep, then observes two more seconds without faults.
+and checks every musl demo stage, successful exec into the FP/SIMD regression,
+PID 1 and clock/sleep, then observes two more seconds without faults.
 TCG has not completed this milestone within the 15-second diagnostic bound.
 AVX-512 preservation across syscalls, sleep and signal delivery was exercised
 under KVM. This is not a BLAKE3 benchmark or a multi-process FPU validation.

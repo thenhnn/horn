@@ -7,10 +7,25 @@
   idl = import ../../tools/idl {inherit pkgs;};
   startup = workspace.members.horn-startup-c;
   startupHeaders = import ../libhorn {inherit pkgs;};
-  initramfs = pkgs.runCommand "linux-horn-initramfs" {nativeBuildInputs = [pkgs.stdenv.cc];} ''
+  muslDemo = pkgs.pkgsStatic.stdenv.mkDerivation {
+    pname = "linux-horn-musl-demo";
+    version = "1";
+    src = ./init;
+    dontConfigure = true;
+    hardeningDisable = ["pic"];
+    buildPhase = ''
+      $CC -std=c11 -O2 -Wall -Wextra -Werror -static -no-pie demo.c -o init
+      $CC -nostdlib -static -no-pie -Wl,-e,_start -Wl,-Ttext=0x400000 init.S -o fp-probe
+    '';
+    installPhase = ''
+      mkdir -p "$out/bin"
+      cp init fp-probe "$out/bin/"
+    '';
+  };
+  initramfs = pkgs.runCommand "linux-horn-initramfs" {} ''
     mkdir -p "$out"
-    $CC -nostdlib -static -no-pie -Wl,-e,_start -Wl,-Ttext=0x400000 ${./init/init.S} -o "$out/init"
-    printf 'dir /dev 0755 0 0\nnod /dev/console 0600 0 0 c 5 1\nfile /init %s/init 0755 0 0\n' "$out" > "$out/list"
+    printf 'Hello from the Horn initramfs!\n' > "$out/demo.txt"
+    printf 'dir /dev 0755 0 0\nnod /dev/console 0600 0 0 c 5 1\nfile /init ${muslDemo}/bin/init 0755 0 0\nfile /fp-probe ${muslDemo}/bin/fp-probe 0755 0 0\nfile /demo.txt %s/demo.txt 0644 0 0\n' "$out" > "$out/list"
   '';
   host = pkgs.stdenv.mkDerivation ((idl.crate {})
     // {
@@ -74,5 +89,5 @@ in
       cp .config "$out/config"
     '';
     dontFixup = true;
-    passthru = {inherit host initramfs;};
+    passthru = {inherit host initramfs muslDemo;};
   }
