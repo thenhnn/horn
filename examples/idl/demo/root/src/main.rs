@@ -331,14 +331,22 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
     ::sel4::debug_println!("IDL_DEMO_PASS value={}", value.value);
     let mut server = Sel4Server::new(root, system, recv, transport.space);
     loop {
-        // Compose generated dispatchers, without duplicating method tables.
+        ::sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&server.recv_slot));
+        let (info, badge) = server.endpoint.recv(system_reply);
+        if processes.execution_fault(&info, badge).unwrap() {
+            server.recv_slot.delete().unwrap();
+            continue;
+        }
+        // Compose generated dispatchers after distinguishing native faults.
         let (_, request, reply) = server
-            .recv_request_dynamic(
+            .decode_received_dynamic(
+                info,
+                badge,
+                system_reply,
                 |label| {
                     vm::vm_host_request_layout(label)
                         .or_else(|_| process::process_host_request_layout(label))
                 },
-                system_reply,
                 |label, input| {
                     if vm::vm_host_request_layout(label).is_ok() {
                         vm::VmHostRequest::decode(label, input).map(Request::Vm)

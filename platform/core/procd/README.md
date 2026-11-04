@@ -1,21 +1,28 @@
 # Root-hosted process manager
 
-`horn-procd` owns resident ELF processes and their VM services. The root server
-composes generated `ProcessHost` and `VmHost` dispatchers. Each process currently
-has one initial TCB and SC. Processes receive automatic initial CPU placement;
-a same-process thread runtime and musl are not part of this implementation.
+`horn-procd` owns process containers, resident ELF loading and their VM services.
+The root server composes generated `ProcessHost` and `VmHost` dispatchers.
+A container can be empty or ELF-loaded; threads have separate native TCBs.
+Containers receive automatic initial CPU placement and one explicit execution
+context. A native pthread runtime is not implemented. Linux still uses the older
+`ProcessExecution` backend; its musl fork/pthread regression does not validate
+Linux on the generic thread API.
 
 ## Capability API
 
-- `ProcessFactory.launch(elf, request)` borrows a VM memory capability containing
+- `ProcessFactory.spawn(elf, request, bootstrap)` borrows a VM memory capability containing
   the actual ELF, with backing-wide immutability required. It returns a control capability for
   a **suspended** process. There is no executable-name registry or file service.
+- `ProcessFactory.spawn_empty(request)` creates a suspended address/capability
+  space and accounted execution context, with no ELF or initial TCB.
 - `ProcessFactory.open(id)` recovers control over a child in that factory's scope.
   The authenticated factory grants authority; the numeric ID only selects within
   its owned children. It cannot open unrelated processes.
 - `ProcessObserver.list(after)` returns up to four entries and a next cursor
   (zero means end). This separate capability does not authorize launch or control.
-- `ProcessControl`: info, start, set_limit, terminate, close. Info reports ID, name,
+- `ProcessControl`: info, start, set_limit, terminate, close, observe, vm and
+  address_space; its object also supplies full `ProcessThreads` authority.
+  Info reports ID, name,
   state, exit reason and RAM usage. Close retires an exited record and revokes all
   control-cap copies; dropping a cap alone does not retire a record.
 - `ProcessLifecycle`: the child's own RAM usage, read-only `placement()`
@@ -35,7 +42,40 @@ ASID, scheduling authority or TCB capability. The name is display data (nonempty
 UTF-8, at most 64 bytes, no NUL), not a binary selector. Runtime/bootstrap layout
 must match the application's contract; the ELF tag is not that layout.
 
-## Hosted FP state (prototype)
+## Generic threads and explicit execution contexts
+
+`ProcessThreads` creates stopped threads, enumerates live paginated metadata,
+opens full-control thread capabilities and exports the process execution context.
+Thread IDs monotonically increase and are not reused. `ProcessView` and
+`ThreadObserver` expose metadata only: casting them does not grant control.
+Full thread control includes registers, FP state, stop/destroy and fault watching.
+Register/FP mutation requires a stopped thread. Native threading still requires
+an application/runtime TLS and synchronization implementation.
+
+Thread creation does not create CPU budget. `ExecutionContext.run(thread)`
+binds the existing process SC to one controlled stopped thread; stop/fault
+unbinds it before another selection. Fault metadata and an optional notification
+let the controller dispatch syscall, exception, VM and budget stops. Additional
+execution contexts/budget grants and Linux SMP are not implemented.
+
+`ThreadCreate.abi` selects native or trapped syscalls independently of the BOOL
+`allocate_ipc_buffer`. Either ABI may omit the buffer or request one.
+`ThreadControl.allocate_ipc_buffer()` can later allocate/install a private RW/NX
+page for a stopped thread, is idempotent, and does not change syscall trapping.
+The page is thread-accounted and retained until thread teardown. This is not
+registration of arbitrary caller-owned memory: a future Linux ioctl must also
+validate/retain that backing and arrange native-call ABI dispatch. Ordinary ELF
+startup still provisions its initial ABI2 runtime IPC buffer.
+
+Per-thread chunked FP reads snapshot a stopped TCB. Ordered writes commit via
+kernel validation; a rejected commit leaves the TCB intact and invalidates the
+staging cache. MXCSR reserved bits are normalized by the kernel; invalid XSAVE
+headers are rejected. Normal TCB switching does not require controller FP copies.
+Uncertain cleanup quarantines the affected process rather than allowing resume
+with partially dismantled resources. Root metadata prepayment and failure
+injection remain incomplete.
+
+## Legacy hosted FP state (prototype)
 
 The x86-64 `ProcessExecution` domain owns a private, caller-accounted FP staging
 frame and user TCB. `execution_fp_info` reports the active standard XSAVE byte
@@ -140,8 +180,9 @@ Entry, segments and TLS use standard ELF metadata; rust-sel4 initializes static
 TLS and the image supplies its stack. The loader checks segment bounds, rejects
 dynamic linking/executable stack requests and enforces page-granular W^X,
 including overlapping segments. Writable copy aliases are NX and disappear before
-RX mappings are published. The dynamic VM window never permits executable maps.
-No generic RW-to-RX/JIT publication API exists.
+RX mappings are published. The dynamic VM window supports executable mappings with mapping-level W^X:
+RW-to-RX transitions and separate RW/RX aliases are allowed. Immutable publication
+is optional for generic executable mappings, not for ELF/startup input parsing.
 
 ## Teardown and validation
 
@@ -160,5 +201,9 @@ terminate/close, source-close independence,
 a child's code-7 exit and parent-exit cleanup with a live child. Existing VM,
 Untyped, mimalloc and NX fault tests remain. Exit observation currently uses info
 or list polling; asynchronous exit notification, fault supervision, malformed-RPC
-recovery, kernel-cleanup fault injection, multiple threads, Linux integration,
-DMA safety and SMP thread/runtime synchronization remain unimplemented.
+recovery, kernel-cleanup fault injection, Linux migration to generic threads,
+DMA safety auditing and SMP thread/runtime synchronization remain incomplete.
+Generic-thread debug/release boot probes exercise empty containers, separate
+native/trapped TCBs, optional/deferred IPC buffers, observer denial, shared bytes,
+RW/RX aliases and transitions, mutable executable code, FP isolation and rejected
+FP commits, fault notifications and cleanup.

@@ -121,6 +121,7 @@ pub fn stop_for_test(force: bool) {
 }
 #[cfg(feature = "lifecycle-test")]
 pub fn exit_for_test() -> ! {
+    use horn_procd::protocol::ProcessLifecycleClient;
     with(|state| {
         let _ = horn_procd::protocol::ProcessLifecycle::from_ref(state.lifecycle.as_ref())
             .exit(state.session.transport(), 0);

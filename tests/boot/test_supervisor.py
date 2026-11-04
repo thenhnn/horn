@@ -47,6 +47,10 @@ def test_supervisor_driver_revoke(system, mode, release, cpus):
             b"released; RAM returned, owner acknowledged",
             timeout=60,
         )
+        vm.serial.wait_for(
+            b"DEVMGR_DRIVER_REVOKE dma_drained=true irq_closed=true mmio_revoked=true"
+        )
+        vm.serial.wait_for(b"DEVMGR_ASSIGNMENT_PASS retired=true")
         output = vm.serial.path.read_text()
         assert "starting \x1b[1mvirtio-console@" in output
         if mode == "orderly":

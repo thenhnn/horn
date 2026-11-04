@@ -13,9 +13,9 @@ pub fn start(manager: &mut Manager) {
     launch.ram_limit = definition.ram;
     let process = manager
         .ctx
-        .object::<ProcessHostTag>("supervisor.factory")
+        .object::<ProcessFactoryObjectTag>("supervisor.factory")
         .unwrap()
-        .prepare(&mut *io, &image, launch, definition.bootstrap.clone())
+        .spawn(&mut *io, &image, launch, Some(definition.bootstrap.clone()))
         .unwrap();
     horn_supervisor::client::close_image(io, image);
     manager.objects(Cap::from_ref(process.cap_ref()), definition, 0);

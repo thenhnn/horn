@@ -6,7 +6,7 @@ fn process_management_is_bounded_inline_and_preserves_exit_info() {
     use crate::protocol::*;
     use horn_ipc::{Decoder, Encoder, List, MAX_MESSAGE_BYTES, Wire, WireCaps};
     assert!(ProcessPage::SIZE + 8 <= MAX_MESSAGE_BYTES);
-    assert_eq!(ProcessfactoryLaunchArgs::CAPS, 1);
+    assert_eq!(ProcessfactorySpawnArgs::CAPS, 1);
     let mut name = List::default();
     name.len = 6;
     name.data[..6].copy_from_slice(b"driver");

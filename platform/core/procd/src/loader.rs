@@ -45,7 +45,18 @@ pub(crate) fn prepare_window(
 
 pub(crate) struct Loaded {
     pub vspace: sel4::cap::VSpace,
-    pub ipc: sel4::cap::Granule,
+    pub ipc: Option<sel4::cap::Granule>,
+}
+
+pub(crate) fn empty(
+    allocator: &mut KernelAllocator,
+    asid_pool: sel4::cap::AsidPool,
+    window: Range<usize>,
+) -> Result<Loaded, Error> {
+    let vspace = allocator.allocate_fixed_sized::<sel4::cap_type::VSpace>()?;
+    asid_pool.asid_pool_assign(vspace)?;
+    prepare_window(allocator, vspace, window)?;
+    Ok(Loaded { vspace, ipc: None })
 }
 
 pub(crate) fn load(
@@ -133,5 +144,8 @@ pub(crate) fn load(
         sel4::CapRights::read_write(),
         sel4::VmAttributes::EXECUTE_NEVER,
     )?;
-    Ok(Loaded { vspace, ipc })
+    Ok(Loaded {
+        vspace,
+        ipc: Some(ipc),
+    })
 }

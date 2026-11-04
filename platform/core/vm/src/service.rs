@@ -973,10 +973,8 @@ impl Service {
         backing: VmBacking,
         ceiling: VmProtection,
     ) -> Result<(usize, Cap<VmMemoryObjectTag>), VmError> {
-        permissions(ceiling)?;
-        if ceiling.0 & VmProtection::EXECUTE.0 != 0 {
-            return Err(VmError::Denied);
-        }
+        // A ceiling is potential authority, not an active mapping.
+        ceiling_permissions(ceiling)?;
         if backing != VmBacking::Resident {
             return Err(VmError::Unsupported);
         }
@@ -1030,10 +1028,7 @@ impl Service {
     }
 
     fn reserve(&mut self, request: VmRegionRequest) -> Result<Cap<VmRegionObjectTag>, VmError> {
-        permissions(request.ceiling)?;
-        if request.ceiling.0 & VmProtection::EXECUTE.0 != 0 {
-            return Err(VmError::Denied);
-        }
+        ceiling_permissions(request.ceiling)?;
         if request.placement != VmPlacement::Anywhere {
             return Err(VmError::Unsupported);
         }
@@ -1483,10 +1478,14 @@ impl Service {
     }
 }
 
-fn permissions(value: VmProtection) -> Result<(), VmError> {
+fn ceiling_permissions(value: VmProtection) -> Result<(), VmError> {
     if value.0 & VmProtection::READ.0 == 0 || value.0 & !7 != 0 {
         return Err(VmError::Unsupported);
     }
+    Ok(())
+}
+fn permissions(value: VmProtection) -> Result<(), VmError> {
+    ceiling_permissions(value)?;
     if value.0 & (VmProtection::WRITE.0 | VmProtection::EXECUTE.0)
         == VmProtection::WRITE.0 | VmProtection::EXECUTE.0
     {
@@ -1510,7 +1509,8 @@ impl VmFactoryServer for Caller<'_> {
                     | VmFeatures::PROTECTION.0
                     | VmFeatures::UNTYPED.0
                     | VmFeatures::IMMUTABLE.0
-                    | VmFeatures::DUPLICATE_MEMORY.0,
+                    | VmFeatures::DUPLICATE_MEMORY.0
+                    | VmFeatures::EXECUTABLE.0,
             ),
             page_size: PAGE_SIZE as u64,
             batch_limit: 16,
@@ -1636,7 +1636,7 @@ impl VmMemoryServer for Caller<'_> {
         self.service.make_immutable(index)
     }
     fn duplicate(&mut self, ceiling: VmProtection) -> Result<Cap<VmMemoryObjectTag>, VmError> {
-        permissions(ceiling)?;
+        ceiling_permissions(ceiling)?;
         self.service
             .delegate_handle(self.badge, VmMemoryRights(ceiling.0))
     }

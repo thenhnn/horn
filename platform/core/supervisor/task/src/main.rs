@@ -266,9 +266,9 @@ impl SupervisorFactoryServer for Caller<'_> {
         let process = self
             .manager
             .ctx
-            .object::<ProcessHostTag>("supervisor.factory")
+            .object::<ProcessFactoryObjectTag>("supervisor.factory")
             .unwrap()
-            .prepare(&mut self.manager.io, &elf, request, bootstrap)
+            .spawn(&mut self.manager.io, &elf, request, Some(bootstrap))
             .map_err(|e| match e {
                 CallError::Remote(ProcessError::Exhausted | ProcessError::QuotaExceeded) => {
                     SupervisorError::Exhausted
@@ -635,7 +635,7 @@ fn main(mut ctx: horn_runtime::Context) -> ! {
         CHILD_EXIT,
         Rights::WRITE,
     );
-    ctx.object::<ProcessHostTag>("supervisor.factory")
+    ctx.object::<ProcessFactoryObjectTag>("supervisor.factory")
         .unwrap()
         .watch(&mut io, &exits)
         .unwrap();

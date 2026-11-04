@@ -22,15 +22,8 @@ from horn_idl import (
     sel4,
 )
 
-# Dependencies of the imported object must also be visible to the IDL collector.
-from horn_vm import (  # noqa: F401
-    VmError,
-    VmMemory,
-    VmMemoryInfo,
-    VmMemoryObject,
-    VmProtection,
-    VmMemoryRights,
-)
+# Imported VM objects and their transitive wire dependencies.
+from horn_vm import *  # noqa: F403
 
 
 @enum(base=U32)
@@ -175,11 +168,6 @@ class ProcessLifecycle:
     def exit(self, status: U32) -> Result[None, ProcessError]: ...
 
 
-@object(implements=(ProcessLifecycle, ProcessExecution))
-class ProcessSelf:
-    pass
-
-
 @enum(base=U32)
 class ProcessState:
     Created = 1
@@ -233,8 +221,157 @@ class ProcessBootstrap:
     reply: U32
 
 
-@iface("net.nhnn.horn.process.control", version=(1, 0))
+@record
+class ProcessEmpty:
+    launch: ProcessLaunch
+    address: U64
+    length: U64
+
+
+@enum(base=U32)
+class ThreadAbi:
+    Native = 1
+    TrappedSyscalls = 2
+
+
+@enum(base=U32)
+class ThreadState:
+    Stopped = 1
+    Running = 2
+    Quarantined = 3
+
+
+@record
+class ThreadCreate:
+    abi: ThreadAbi
+    allocate_ipc_buffer: BOOL
+    registers: ExecutionRegisters
+
+
+@record
+class ThreadInfo:
+    id: U64
+    state: ThreadState
+    reason: Option[ExecutionReason]
+
+
+@record
+class ThreadPage:
+    entries: List[ThreadInfo, 8]
+    next: Option[U64]
+
+
+@iface("net.nhnn.horn.thread.observe", version=(1, 0))
+class ThreadObserver:
+    @method
+    def thread_info(self) -> Result[ThreadInfo, ProcessError]: ...
+
+
+@object(implements=(ThreadObserver,))
+class ThreadObserverObject:
+    pass
+
+
+@iface("net.nhnn.horn.thread.control", version=(1, 0))
+class ThreadControl:
+    # Full target authority, including execution-state inspection/mutation.
+    @method
+    def info(self) -> Result[ThreadInfo, ProcessError]: ...
+    @method
+    def observe(self) -> Result[Cap[ThreadObserverObject, Move], ProcessError]: ...
+    @method
+    def watch(
+        self, events: Cap[sel4.Notification, Borrow]
+    ) -> Result[None, ProcessError]: ...
+    @method
+    def registers(self) -> Result[ExecutionRegisters, ProcessError]: ...
+    @method
+    def set_registers(
+        self, registers: ExecutionRegisters
+    ) -> Result[None, ProcessError]: ...
+    @method
+    def ipc_buffer(self) -> Result[Option[U64], ProcessError]: ...
+    @method
+    def allocate_ipc_buffer(self) -> Result[U64, ProcessError]: ...
+    @method
+    def stop(self) -> Result[ExecutionExit, ProcessError]: ...
+    @method
+    def fp_info(self) -> Result[ExecutionFpInfo, ProcessError]: ...
+    @method
+    def fp_read(
+        self, offset: U32, length: U32
+    ) -> Result[List[U8, 256], ProcessError]: ...
+    @method
+    def fp_write(
+        self, offset: U32, data: List[U8, 256], commit: BOOL
+    ) -> Result[None, ProcessError]: ...
+    @method
+    def destroy(self) -> Result[None, ProcessError]: ...
+
+
+@object(implements=(ThreadControl,))
+class ThreadObject:
+    pass
+
+
+@iface("net.nhnn.horn.execution.context", version=(1, 0))
+class ExecutionContext:
+    @method
+    def run(self, thread: Cap[ThreadObject, Borrow]) -> Result[None, ProcessError]: ...
+    @method
+    def stop(self) -> Result[None, ProcessError]: ...
+
+
+@object(implements=(ExecutionContext,))
+class ExecutionContextObject:
+    pass
+
+
+@iface("net.nhnn.horn.process.threads", version=(1, 0))
+class ProcessThreads:
+    @method
+    def create_thread(
+        self, request: ThreadCreate
+    ) -> Result[Cap[ThreadObject, Move], ProcessError]: ...
+    @method
+    def list_threads(self, after: Option[U64]) -> Result[ThreadPage, ProcessError]: ...
+    @method
+    def open_thread(self, id: U64) -> Result[Cap[ThreadObject, Move], ProcessError]: ...
+    @method
+    def execution_context(
+        self,
+    ) -> Result[Cap[ExecutionContextObject, Move], ProcessError]: ...
+
+
+@object(implements=(ProcessLifecycle, ProcessExecution, ProcessThreads))
+class ProcessSelf:
+    pass
+
+
+@iface("net.nhnn.horn.process.view", version=(1, 0))
+class ProcessView:
+    @method
+    def process_info(self) -> Result[ProcessInfo, ProcessError]: ...
+    @method
+    def list_threads(self, after: Option[U64]) -> Result[ThreadPage, ProcessError]: ...
+
+
+@object(implements=(ProcessView,))
+class ProcessObserverObject:
+    pass
+
+
+@iface("net.nhnn.horn.process.control", version=(2, 0))
 class ProcessControl:
+    @method
+    def observe(self) -> Result[Cap[ProcessObserverObject, Move], ProcessError]: ...
+    @method
+    def vm(self) -> Result[Cap[VmService, Move], ProcessError]: ...
+    @method
+    def address_space(
+        self,
+    ) -> Result[Cap[VmAddressSpaceObject, Move], ProcessError]: ...
+
     @method
     def info(self) -> Result[ProcessInfo, ProcessError]: ...
 
@@ -295,24 +432,24 @@ class ProcessControl:
     ) -> Result[None, ProcessError]: ...
 
 
-@object(implements=(ProcessControl,))
+@object(implements=(ProcessControl, ProcessThreads))
 class ProcessObject:
     pass
 
 
-@iface("net.nhnn.horn.process.factory", version=(1, 0))
+@iface("net.nhnn.horn.process.factory", version=(2, 0))
 class ProcessFactory:
     @method
-    def launch(
-        self, elf: Cap[VmMemoryObject, Borrow], request: ProcessLaunch
-    ) -> Result[Cap[ProcessObject, Move], ProcessError]: ...
-
-    @method
-    def prepare(
+    def spawn(
         self,
         elf: Cap[VmMemoryObject, Borrow],
         request: ProcessLaunch,
-        bootstrap: ProcessBootstrap,
+        bootstrap: Option[ProcessBootstrap],
+    ) -> Result[Cap[ProcessObject, Move], ProcessError]: ...
+
+    @method
+    def spawn_empty(
+        self, request: ProcessEmpty
     ) -> Result[Cap[ProcessObject, Move], ProcessError]: ...
 
     # The factory already controls its own children; IDs select within that scope.
@@ -323,6 +460,11 @@ class ProcessFactory:
 
     @method
     def open(self, id: U64) -> Result[Cap[ProcessObject, Move], ProcessError]: ...
+
+
+@object(implements=(ProcessFactory,))
+class ProcessFactoryObject:
+    pass
 
 
 @iface("net.nhnn.horn.process.observe", version=(1, 0))
@@ -338,6 +480,11 @@ class ProcessObserver:
         ProcessObserver,
         ProcessControl,
         ProcessExecution,
+        ProcessThreads,
+        ProcessView,
+        ThreadControl,
+        ThreadObserver,
+        ExecutionContext,
     )
 )
 class ProcessHost:

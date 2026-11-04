@@ -71,6 +71,7 @@ class VmFeatures:
     DUPLICATE_MEMORY = 64
     UNTYPED = 128
     IMMUTABLE = 256
+    EXECUTABLE = 512
 
 
 @enum(base=U32)

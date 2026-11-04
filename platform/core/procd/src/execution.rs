@@ -74,7 +74,7 @@ fn attrs(bits: u32) -> sel4::VmAttributes {
         sel4::VmAttributes::EXECUTE_NEVER
     }
 }
-fn encode_context(c: &sel4::UserContext) -> ExecutionRegisters {
+pub(crate) fn encode_context(c: &sel4::UserContext) -> ExecutionRegisters {
     let r = c.inner();
     ExecutionRegisters {
         ip: r.rip,
@@ -99,7 +99,7 @@ fn encode_context(c: &sel4::UserContext) -> ExecutionRegisters {
         gs: r.gs_base,
     }
 }
-fn decode_context(r: &ExecutionRegisters) -> sel4::UserContext {
+pub(crate) fn decode_context(r: &ExecutionRegisters) -> sel4::UserContext {
     let mut c = sel4::UserContext::default();
     let d = c.inner_mut();
     d.rip = r.ip;
@@ -333,6 +333,9 @@ impl Manager {
         info: &sel4::MessageInfo,
         badge: sel4::Word,
     ) -> Result<bool, Error> {
+        if self.thread_fault(info, badge)? {
+            return Ok(true);
+        }
         let Some(exec) = self
             .processes
             .iter_mut()

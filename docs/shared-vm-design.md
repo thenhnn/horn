@@ -17,7 +17,10 @@ FramePool checks both allocator and account identity.
 READ, WRITE, EXECUTE, DELEGATE, MAKE_IMMUTABLE, REVOKE, DMA and CLOSE rights. A copied cap
 aliases the same handle. A derived handle has a distinct badge and explicit close
 lifetime. `duplicate(ceiling)` derives mapping-only authority, not control rights.
-All handles include READ; dynamic executable mappings remain unsupported.
+All handles include READ. Dynamic mappings enforce mapping-level W^X: RWX
+ceilings are potential authority, while an individual RWX mapping is denied.
+RW-to-RX transitions and separate RW/RX aliases are allowed. RX does not imply
+immutable bytes; immutable publication remains an optional stronger guarantee.
 
 Delegation depends on the parent handle, not caller or recipient identity. A
 process holding someone else's copied cap can create descendants if DELEGATE is

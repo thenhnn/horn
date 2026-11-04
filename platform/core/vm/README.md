@@ -19,7 +19,8 @@ ASID authority. Untyped is available explicitly through quota-backed leases.
 state authorize operations; interface casts do not grant authority. Badge values
 never wrap or get reused. An account cannot be selected using a client integer.
 
-The implementation advertises RESIDENT, PROTECTION, UNTYPED, IMMUTABLE and DUPLICATE_MEMORY. It supports Anywhere
+The implementation advertises RESIDENT, PROTECTION, UNTYPED, IMMUTABLE,
+DUPLICATE_MEMORY and EXECUTABLE. It supports Anywhere
 reservations inside one loader-provisioned window, prepared maps, aliases,
 read/write protection changes, acknowledged unmaps, close/revoke and region
 teardown. The loader installs translation tables before adopting the VSpace.
@@ -29,12 +30,15 @@ pagers return typed Unsupported on authorized requests. Adopted-space destructio
 returns Busy: the service does not own thread shutdown/ASID reclamation. Invalid
 pager capabilities are denied, not accepted as dummy pager objects.
 
-The dynamic heap window supports readable, non-executable mappings only. Its
-factory and regions reject executable ceilings; executable ELF pages are loaded
-by procd outside that window. Write-plus-execute mappings **and ceilings** are rejected. x86 non-executable mappings use the vendored kernel's ExecuteNever
-attribute; missing NX support fails closed. RW-to-RX code publication and its
-alias policy are not implemented. Debug/release boots check permission changes
-and an instruction-fetch protection fault on a present 4 KiB NX page.
+Dynamic mappings enforce **mapping-level W^X**: an individual mapping cannot
+be writable and executable. Backing and region ceilings may contain both rights;
+RW-to-RX protection changes and separate RW/RX aliases are permitted. An RX
+mapping does not promise unchanged bytes: another authorized alias may write.
+Backing-wide immutability is an optional stronger publication guarantee, not a
+prerequisite for execution. MMIO remains non-executable. x86 NX mappings use the
+vendored kernel's ExecuteNever attribute; missing NX support fails closed.
+Debug/release boots check RW/RX transitions, rejected RWX mappings, execution of
+code changed through a retained RW alias and an instruction-fetch fault on NX.
 
 ## Mapping batches
 

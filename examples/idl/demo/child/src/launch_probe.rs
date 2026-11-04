@@ -11,6 +11,7 @@ fn request(ram_limit: u64) -> ProcessLaunch {
     ProcessLaunch { name, ram_limit }
 }
 pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>) {
+    crate::thread_probe::run(ctx, &mut t);
     let factory = ctx.object::<ProcessHostTag>("process_factory").unwrap();
     let observer = ctx.object::<ProcessHostTag>("process_observer").unwrap();
     let memory = ctx.object::<vm::VmServiceTag>("horn.vm").unwrap();
@@ -28,7 +29,7 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
         0
     );
     assert_eq!(
-        ProcessFactory::from_ref(observer.as_ref()).launch(&mut t, elf, request(8 << 20)),
+        ProcessFactory::from_ref(observer.as_ref()).spawn(&mut t, elf, request(8 << 20), None),
         Err(CallError::Remote(ProcessError::Denied))
     );
     assert_eq!(
@@ -58,10 +59,11 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
             ProcessError::Denied
         };
         assert_eq!(
-            ProcessFactory::from_ref(factory.as_ref()).launch(
+            ProcessFactory::from_ref(factory.as_ref()).spawn(
                 &mut t,
                 &bad.borrow().cast(),
-                request(8 << 20)
+                request(8 << 20),
+                None,
             ),
             Err(CallError::Remote(expected))
         );
@@ -69,7 +71,7 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
     bad.close(&mut t).unwrap();
     drop(bad);
     assert_eq!(
-        ProcessFactory::from_ref(factory.as_ref()).launch(&mut t, elf, request(4096)),
+        ProcessFactory::from_ref(factory.as_ref()).spawn(&mut t, elf, request(4096), None),
         Err(CallError::Remote(ProcessError::QuotaExceeded))
     );
     assert_eq!(
@@ -82,7 +84,7 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
     let mut children = Vec::new();
     for _ in 0..5 {
         let child = ProcessFactory::from_ref(factory.as_ref())
-            .launch(&mut t, elf, request(8 << 20))
+            .spawn(&mut t, elf, request(8 << 20), None)
             .unwrap();
         let info = child.info(&mut t).unwrap();
         assert_eq!(info.state, ProcessState::Created);
@@ -99,7 +101,7 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
         children.push(child);
     }
     assert_eq!(
-        ProcessFactory::from_ref(factory.as_ref()).launch(&mut t, elf, request(8 << 20)),
+        ProcessFactory::from_ref(factory.as_ref()).spawn(&mut t, elf, request(8 << 20), None),
         Err(CallError::Remote(ProcessError::Exhausted))
     );
     let page = ProcessObserver::from_ref(observer.as_ref())
@@ -128,7 +130,7 @@ pub fn run(ctx: &horn_runtime::Context, mut t: &mut Sel4Transport<Sel4CapSpace>)
     }
     // Keep a child live to verify parent-exit subtree cleanup, not cooperation.
     let _orphan = ProcessFactory::from_ref(factory.as_ref())
-        .launch(&mut t, elf, request(8 << 20))
+        .spawn(&mut t, elf, request(8 << 20), None)
         .unwrap();
     // Source ownership is independent: the loaded image must still run.
     vm::VmMemory::from_ref(elf.as_ref()).close(&mut t).unwrap();

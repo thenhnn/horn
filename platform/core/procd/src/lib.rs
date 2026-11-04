@@ -21,6 +21,7 @@ mod loader;
 mod placement;
 mod service;
 mod startup;
+mod threads;
 pub use service::LaunchPolicy;
 #[cfg(test)]
 mod tests;
@@ -89,7 +90,8 @@ struct Process {
     exit: Option<Exit>,
     allocator: KernelAllocator,
     cnode: sel4::cap::CNode,
-    tcb: sel4::cap::Tcb,
+    tcb: Option<sel4::cap::Tcb>,
+    threads: threads::Book,
     loaded: loader::Loaded,
     entry: usize,
     ipc_address: usize,
@@ -197,6 +199,19 @@ impl Manager {
         config: Config<'_>,
         parent: Option<ProcessId>,
     ) -> Result<ProcessId, Error> {
+        let image = elf::Image::parse(
+            bytes,
+            PAGE_SIZE..config.vm_window.start,
+            config.ram_limit / PAGE_SIZE,
+        )?;
+        self.create_container(Some(&image), config, parent)
+    }
+    fn create_container(
+        &mut self,
+        image: Option<&elf::Image<'_>>,
+        config: Config<'_>,
+        parent: Option<ProcessId>,
+    ) -> Result<ProcessId, Error> {
         if self.scratch_poisoned {
             return Err(Error::Cleanup);
         }
@@ -219,17 +234,13 @@ impl Manager {
             || config.vm_window.start >= config.vm_window.end
             || config.vm_window.start % PAGE_SIZE != 0
             || config.vm_window.end % PAGE_SIZE != 0
+            || config.vm_window.end > threads::IPC_BASE
         {
             return Err(Error::Denied);
         }
         // Process ownership does not imply RAM funding: all process accounts
         // are peers under the system allocator, never under the launcher's quota.
         let account = self.allocator.account().child(config.ram_limit)?;
-        let image = elf::Image::parse(
-            bytes,
-            PAGE_SIZE..config.vm_window.start,
-            config.ram_limit / PAGE_SIZE,
-        )?;
         let mut allocator = self.allocator.for_account(account);
         let cpu = placement::initial_cpu(
             self.cpu_count(),
@@ -240,17 +251,20 @@ impl Manager {
                 .map(|p| p.cpu),
         );
         let result = (|| {
-            let loaded = loader::load(
-                &mut allocator,
-                &image,
-                self.caller_vspace,
-                self.scratch,
-                self.asid_pool,
-                config.vm_window.clone(),
-            )?;
+            let loaded = if let Some(image) = image {
+                loader::load(
+                    &mut allocator,
+                    image,
+                    self.caller_vspace,
+                    self.scratch,
+                    self.asid_pool,
+                    config.vm_window.clone(),
+                )?
+            } else {
+                loader::empty(&mut allocator, self.asid_pool, config.vm_window.clone())?
+            };
             let cnode =
                 allocator.allocate_variable_sized::<sel4::cap_type::CNode>(config.cnode_bits)?;
-            let tcb = allocator.allocate_fixed_sized::<sel4::cap_type::Tcb>()?;
             let sc = allocator.allocate_variable_sized::<sel4::cap_type::SchedContext>(
                 sel4::sys::seL4_MinSchedContextBits as usize,
             )?;
@@ -262,25 +276,32 @@ impl Manager {
                 0,
                 0,
             )?;
-            tcb.tcb_set_sched_params(
-                sel4::init_thread::slot::TCB.cap(),
-                0,
-                0,
-                sc,
-                sel4::init_thread::slot::NULL
-                    .cast::<sel4::cap_type::Endpoint>()
-                    .cap(),
-            )?;
-            tcb.tcb_configure(
-                cnode,
-                sel4::CNodeCapData::new(0, sel4::WORD_SIZE - config.cnode_bits),
-                loaded.vspace,
-                image.ipc_address as sel4::Word,
-                loaded.ipc,
-            )?;
-            sel4::sel4_cfg_if! {
-                if #[sel4_cfg(DEBUG_BUILD)] { tcb.debug_name(config.name.as_bytes()); }
-            }
+            let tcb = if let Some(image) = image {
+                let tcb = allocator.allocate_fixed_sized::<sel4::cap_type::Tcb>()?;
+                tcb.tcb_set_sched_params(
+                    sel4::init_thread::slot::TCB.cap(),
+                    0,
+                    0,
+                    sc,
+                    sel4::init_thread::slot::NULL
+                        .cast::<sel4::cap_type::Endpoint>()
+                        .cap(),
+                )?;
+                tcb.tcb_configure(
+                    cnode,
+                    sel4::CNodeCapData::new(0, sel4::WORD_SIZE - config.cnode_bits),
+                    loaded.vspace,
+                    image.ipc_address as sel4::Word,
+                    loaded.ipc.ok_or(Error::InvalidState)?,
+                )?;
+                sel4::sel4_cfg_if! {
+                    if #[sel4_cfg(DEBUG_BUILD)] { tcb.debug_name(config.name.as_bytes()); }
+                }
+
+                Some(tcb)
+            } else {
+                None
+            };
             Ok::<_, Error>((loaded, cnode, tcb, sc))
         })();
         let (loaded, cnode, tcb, sc) = match result {
@@ -303,8 +324,8 @@ impl Manager {
             cnode,
             tcb,
             loaded,
-            entry: image.entry,
-            ipc_address: image.ipc_address,
+            entry: image.map_or(0, |image| image.entry),
+            ipc_address: image.map_or(0, |image| image.ipc_address),
             cnode_bits: config.cnode_bits,
             bootstrap_end: 2,
             startup: None,
@@ -316,7 +337,8 @@ impl Manager {
             lifecycle_source: None,
             execution: None,
             execution_poisoned: false,
-            resident_end: image.ipc_address + PAGE_SIZE,
+            resident_end: image.map_or(0, |image| image.ipc_address + PAGE_SIZE),
+            threads: threads::Book::new(id, tcb, image.map(|image| image.ipc_address)),
             sc,
             budget_us: config.cpu_budget_us,
             period_us: config.cpu_period_us,
@@ -379,7 +401,7 @@ impl Manager {
         Ok(self.live(id)?.cnode)
     }
     pub fn tcb(&self, id: ProcessId) -> Result<sel4::cap::Tcb, Error> {
-        Ok(self.live(id)?.tcb)
+        self.live(id)?.tcb.ok_or(Error::InvalidState)
     }
     pub fn vspace(&self, id: ProcessId) -> Result<sel4::cap::VSpace, Error> {
         Ok(self.live(id)?.loaded.vspace)
@@ -513,7 +535,7 @@ impl Manager {
     }
     pub fn start(&mut self, id: ProcessId) -> Result<(), Error> {
         let p = self.process_mut(id)?;
-        if p.state != State::Created {
+        if p.state != State::Created || !p.threads.can_start(id) {
             return Err(Error::InvalidState);
         }
         let mut regs = sel4::UserContext::default();
@@ -521,13 +543,17 @@ impl Manager {
         let (address, length) = p.startup.ok_or(Error::InvalidState)?;
         regs.inner_mut().rdi = address as _;
         regs.inner_mut().rsi = length as _;
-        p.tcb.tcb_write_all_registers(true, &mut regs)?;
+        p.tcb
+            .ok_or(Error::InvalidState)?
+            .tcb_write_all_registers(true, &mut regs)?;
+        p.threads.started(id);
         p.state = State::Active;
         Ok(())
     }
     /// Revoke exported execution authority and stop the entire owned subtree.
     /// No memory is reclaimed until finish has observed successful stop.
     pub fn stop(&mut self, id: ProcessId, exit: Exit) -> Result<(), Error> {
+        self.stop_threads(id)?;
         let p = self.process_mut(id)?;
         if !matches!(p.state, State::Created | State::Active | State::Stopping) {
             return Err(Error::InvalidState);
@@ -536,8 +562,10 @@ impl Manager {
             execution.stop_user()?;
         }
         // Raw bootstrap TCB copies must not permit a concurrent resume.
-        p.allocator.root().absolute_cptr(p.tcb.cptr()).revoke()?;
-        p.tcb.tcb_suspend()?;
+        if let Some(tcb) = p.tcb {
+            p.allocator.root().absolute_cptr(tcb.cptr()).revoke()?;
+            tcb.tcb_suspend()?;
+        }
         p.state = State::Stopping;
         p.exit = Some(exit);
         p.allocator.account().close();
@@ -598,6 +626,8 @@ impl Manager {
             }
         }
         p.execution = None;
+        self.cleanup_threads(id)?;
+        let p = self.process_mut(id)?;
         for slot in [p.exit_signal.take(), p.fault_endpoint.take()]
             .into_iter()
             .flatten()

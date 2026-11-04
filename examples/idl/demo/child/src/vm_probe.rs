@@ -92,15 +92,15 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         initial_charge
     );
     let rw = VmProtection(VmProtection::READ.0 | VmProtection::WRITE.0);
-    assert_eq!(
-        VmFactory::from_ref(factory.as_ref()).allocate(
+    let executable = VmFactory::from_ref(factory.as_ref())
+        .allocate(
             &mut transport,
             4096,
             VmBacking::Resident,
-            VmProtection(VmProtection::READ.0 | VmProtection::EXECUTE.0)
-        ),
-        Err(CallError::Remote(VmError::Denied))
-    );
+            VmProtection(VmProtection::READ.0 | VmProtection::EXECUTE.0),
+        )
+        .unwrap();
+    executable.close(&mut transport).unwrap();
     let range = VmRange {
         offset: 0,
         length: 8192,

@@ -50,7 +50,7 @@ pub(super) fn vm_error(e: VmError) -> ProcessError {
         _ => ProcessError::Backend,
     }
 }
-fn wire_info(p: &crate::Process) -> ProcessInfo {
+pub(crate) fn wire_info(p: &crate::Process) -> ProcessInfo {
     let usage = p.allocator.account().usage();
     let mut name = List::<u8, 64>::default();
     name.len = p.name.len() as u32;
@@ -142,7 +142,10 @@ impl Manager {
                 .map(|_| *id)
         })
     }
-    fn mint(&mut self, endpoint: sel4::cap::Endpoint) -> Result<(usize, sel4::Word), Error> {
+    pub(crate) fn mint(
+        &mut self,
+        endpoint: sel4::cap::Endpoint,
+    ) -> Result<(usize, sel4::Word), Error> {
         let badge = NEXT_SELF_BADGE
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 v.checked_add(1).filter(|next| *next < (1 << 48))
@@ -164,7 +167,7 @@ impl Manager {
         }
         Ok((slot, badge))
     }
-    fn release_authority(&mut self, slot: usize) -> Result<(), Error> {
+    pub(crate) fn release_authority(&mut self, slot: usize) -> Result<(), Error> {
         self.allocator
             .root()
             .absolute_cptr(sel4::CPtr::from_bits(slot as _))
@@ -466,7 +469,7 @@ impl Caller<'_> {
             .map(|p| p.id)
             .ok_or(ProcessError::Denied)
     }
-    fn control(&self) -> Result<ProcessId, ProcessError> {
+    pub(crate) fn control(&self) -> Result<ProcessId, ProcessError> {
         self.manager
             .processes
             .iter()
@@ -476,31 +479,106 @@ impl Caller<'_> {
     }
 }
 impl ProcessFactoryServer for Caller<'_> {
-    fn launch(
+    fn spawn(
         &mut self,
         elf: Cap<VmMemoryObjectTag>,
         request: ProcessLaunch,
+        bootstrap: Option<ProcessBootstrap>,
     ) -> Result<Cap<ProcessObjectTag>, ProcessError> {
         self.manager.launch(
             self.scope(true)?,
             elf.as_ref(),
             request,
-            ProcessBootstrap {
+            bootstrap.unwrap_or(ProcessBootstrap {
                 vm: PROCESS_CAPS_VM_SLOT,
                 address_space: PROCESS_CAPS_ADDRESS_SPACE_SLOT,
                 lifecycle: PROCESS_CAPS_LIFECYCLE_SLOT,
                 reply: PROCESS_CAPS_REPLY_SLOT,
-            },
+            }),
         )
     }
-    fn prepare(
+    fn spawn_empty(
         &mut self,
-        elf: Cap<VmMemoryObjectTag>,
-        request: ProcessLaunch,
-        bootstrap: ProcessBootstrap,
+        request: ProcessEmpty,
     ) -> Result<Cap<ProcessObjectTag>, ProcessError> {
-        self.manager
-            .launch(self.scope(true)?, elf.as_ref(), request, bootstrap)
+        let owner = self.scope(true)?;
+        let grant = self
+            .manager
+            .process(owner)
+            .map_err(error)?
+            .launch
+            .as_ref()
+            .ok_or(ProcessError::Denied)?;
+        let policy = grant.policy.clone();
+        let endpoint = grant.endpoint;
+        let name =
+            core::str::from_utf8(&request.launch.name.data[..request.launch.name.len as usize])
+                .map_err(|_| ProcessError::Invalid)?;
+        let ram = usize::try_from(request.launch.ram_limit).map_err(|_| ProcessError::Invalid)?;
+        let end = request
+            .address
+            .checked_add(request.length)
+            .ok_or(ProcessError::Invalid)?;
+        if name.is_empty()
+            || name.as_bytes().contains(&0)
+            || ram == 0
+            || ram > policy.max_ram
+            || request.address < PAGE_SIZE as u64
+            || request.length == 0
+            || request.length > 1024 * 1024 * 1024
+            || end > crate::threads::IPC_BASE as u64
+            || request.address % PAGE_SIZE as u64 != 0
+            || end % PAGE_SIZE as u64 != 0
+        {
+            return Err(ProcessError::Invalid);
+        }
+        if self
+            .manager
+            .processes
+            .iter()
+            .filter(|p| p.parent == Some(owner))
+            .count()
+            >= policy.max_children
+        {
+            return Err(ProcessError::Exhausted);
+        }
+        let window = request.address as usize..end as usize;
+        let id = self
+            .manager
+            .create_container(
+                None,
+                Config {
+                    name,
+                    ram_limit: ram,
+                    cnode_bits: PROCESS_CAPS_SIZE_BITS as _,
+                    vm_window: window.clone(),
+                    cpu_budget_us: policy.cpu_budget_us,
+                    cpu_period_us: policy.cpu_period_us,
+                },
+                Some(owner),
+            )
+            .map_err(error)?;
+        let result = self
+            .manager
+            .bootstrap(
+                id,
+                endpoint,
+                window,
+                ProcessBootstrap {
+                    vm: PROCESS_CAPS_VM_SLOT,
+                    address_space: PROCESS_CAPS_ADDRESS_SPACE_SLOT,
+                    lifecycle: PROCESS_CAPS_LIFECYCLE_SLOT,
+                    reply: PROCESS_CAPS_REPLY_SLOT,
+                },
+            )
+            .and_then(|()| self.manager.export_control(id));
+        match result {
+            Ok(cap) => Ok(cap),
+            Err(err) => {
+                self.manager.discard_launch(id).map_err(error)?;
+                Err(error(err))
+            }
+        }
     }
     fn watch(&mut self, notification: Cap<Notification>) -> Result<(), ProcessError> {
         let owner = self.scope(true)?;
@@ -573,6 +651,32 @@ impl ProcessObserverServer for Caller<'_> {
     }
 }
 impl ProcessControlServer for Caller<'_> {
+    fn observe(&mut self) -> Result<Cap<ProcessObserverObjectTag>, ProcessError> {
+        let id = self.control()?;
+        self.manager.process_observer(id).map_err(error)
+    }
+    fn vm(&mut self) -> Result<Cap<VmServiceTag>, ProcessError> {
+        let id = self.control()?;
+        self.manager.live(id).map_err(error)?;
+        let slot = self
+            .manager
+            .vm_mut(id)
+            .ok_or(ProcessError::State)?
+            .factory()
+            .bits() as usize;
+        self.manager.export_object(slot).map_err(error)
+    }
+    fn address_space(&mut self) -> Result<Cap<VmAddressSpaceObjectTag>, ProcessError> {
+        let id = self.control()?;
+        self.manager.live(id).map_err(error)?;
+        let slot = self
+            .manager
+            .vm_mut(id)
+            .ok_or(ProcessError::State)?
+            .address_space()
+            .bits() as usize;
+        self.manager.export_object(slot).map_err(error)
+    }
     fn startup_context(
         &mut self,
         descriptor: Cap<VmMemoryObjectTag>,
