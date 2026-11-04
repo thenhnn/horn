@@ -1,0 +1,104 @@
+body {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 2rem auto;
+  padding: 0 1rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  color: #171717;
+  background: #fff;
+}
+
+a { color: #003a9b; }
+a:visited { color: #54247c; }
+a:focus-visible { outline: 2px solid #003a9b; outline-offset: 3px; }
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(166px, 1fr) minmax(0, 44rem) minmax(166px, 1fr);
+}
+
+.sidebar {
+  width: 150px;
+  margin-right: 1rem;
+  justify-self: end;
+}
+
+.sidebar nav {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: .5rem;
+  margin-top: 1rem;
+}
+
+main {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 44rem;
+  min-width: 0;
+  margin: 0 auto;
+  padding-bottom: 3rem;
+}
+
+main > h1:first-child { margin-top: 0; }
+
+.logo-toggle {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.logo-toggle:focus-visible + .logo {
+  outline: 2px solid #003a9b;
+  outline-offset: 2px;
+}
+
+.logo {
+  display: block;
+  position: relative;
+  width: 150px;
+  height: 175px;
+  cursor: pointer;
+}
+
+.zone { position: absolute; top: 0; bottom: 0; width: 33.333%; z-index: 1; }
+.zone-left { left: 0; }
+.zone-center { left: 33.333%; }
+.zone-right { right: 0; }
+
+.horn {
+  position: absolute;
+  inset: 0;
+  background: url("assets/antelope-center.svg") center / contain no-repeat;
+  pointer-events: none;
+}
+.zone-left:hover ~ .horn { background-image: url("assets/antelope-left.svg"); }
+.zone-right:hover ~ .horn { background-image: url("assets/antelope-right.svg"); }
+.logo-toggle:checked + .logo .horn { background-image: url("assets/antelope-rainbow-center.svg"); }
+.logo-toggle:checked + .logo .zone-left:hover ~ .horn { background-image: url("assets/antelope-rainbow-left.svg"); }
+.logo-toggle:checked + .logo .zone-right:hover ~ .horn { background-image: url("assets/antelope-rainbow-right.svg"); }
+
+@media (max-width: 800px) {
+  body {
+    margin: 1rem auto;
+  }
+
+  .layout { display: block; }
+  .sidebar {
+    box-sizing: border-box;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-self: stretch;
+    gap: 1rem;
+    width: 100%;
+    max-width: 44rem;
+    margin: 0 auto 2rem;
+  }
+  .sidebar nav { margin-top: 0; }
+  .logo { width: 96px; height: 112px; }
+  main > h1:first-child { font-size: clamp(1.5rem, 6vw, 2rem); line-height: 1.2; }
+}

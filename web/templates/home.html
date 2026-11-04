@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block content %}
+  <h1>horn —  an experimental microkernel-based operating system</h1>
+  <p>
+    horn is an attempt at making a functional desktop (and server!) microkernel-based operating system.
+    It's in the very early stages and is unlikely to be finished any time soon.
+  </p>
+  <p>
+    Nevertheless, you can check the <a href="doc/idl/index.html">RPC interfaces</a> or <a href="https://www.nhnn.dev">download the latest CI-built image</a>.
+  </p>
+  <h2>Plans</h2>
+  <p>We plan to use an L4Linux-like approach for app compatibility, making the Linux kernel an ordinary seL4 task.</p>
+  <p>
+    The desktop version will include a ground-up implementation of the NVIDIA driver with a compatibility layer
+    inside the Linux kernel to make ordinary NVK work.
+    This approach allows one native driver to serve both native horn tasks and ordinary Linux apps,
+    providing isolation while keeping overhead minimal.
+  </p>
+  <h2>Getting involved</h2>
+  <ul>
+    <li><a href="https://github.com/thenhnn/horn">GitHub repository</a></li>
+  </ul>
+{% endblock %}

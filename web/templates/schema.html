@@ -1,0 +1,137 @@
+{% extends 'idl-base.html' %}
+{% from 'macros.html' import anchor_link, named, type_expr, doc, capabilities with context %}
+{% block page_title %}{{ schema.name }}{% endblock %}
+{% block content %}
+  <h1>{{ schema.name }}</h1>
+  {{ doc(schema.doc) }}
+  {% if schema.declarations %}
+    <h2>On this page</h2>
+    <ul>
+      {% for decl in schema.declarations %}
+        <li><a href="{{ decl.target|reference_href(schema.name) }}">{{ decl.python_name }}</a> ({{ decl.kind_label }})</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+  {% for decl in schema.declarations if decl.kind == 'interface' %}
+    {% if loop.first %}<h2>Interfaces</h2>{% endif %}
+    <section id="{{ decl.target|anchor_id }}">
+      <h3>{{ decl.python_name }} {{ anchor_link(decl.target, decl.python_name) }}</h3>
+      <p><code>{{ decl.fqn }}</code>, version {{ decl.version[0] }}.{{ decl.version[1] }}, default transport {{ decl.transport }}, {{ 'strict' if decl.strict else 'non-strict' }}</p>
+      {% if decl.extends %}
+        <p>Extends: {% for parent in decl.extends %}{{ named(parent) }}{% if not loop.last %}, {% endif %}{% endfor %}</p>
+      {% endif %}
+      {{ doc(decl.doc) }}
+      {% if decl.inherited %}
+        <p>Inherited methods: {% for method in decl.inherited %}<a href="{{ method.target|reference_href(schema.name) }}">{{ method.name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</p>
+      {% endif %}
+      {% for method in decl.methods %}
+        <h4 class="method" id="{{ method.target|anchor_id }}">{{ method.name }} {{ anchor_link(method.target, decl.python_name ~ '.' ~ method.name) }}</h4>
+        <p class="signature"><code>{{ method.name }}({% for param in method.params %}{{ param.name }}: {{ type_expr(param.type) }}{% if not loop.last %}, {% endif %}{% endfor %}) → {{ type_expr(method.result) }}</code></p>
+        <p>Transport: {{ method.transport }}{% if method.event %}, event{% endif %}, label: <code>{{ method.label }}</code></p>
+        {{ doc(method.doc) }}
+        {{ capabilities('Request capabilities', method.request_caps) }}
+        {{ capabilities('Result capabilities', method.result_caps) }}
+      {% endfor %}
+    </section>
+  {% endfor %}
+  {% for decl in schema.declarations if decl.kind == 'object' %}
+    {% if loop.first %}<h2>Objects</h2>{% endif %}
+    <section id="{{ decl.target|anchor_id }}">
+      <h3>{{ decl.python_name }} {{ anchor_link(decl.target, decl.python_name) }}</h3>
+      <p><code>{{ decl.fqn }}</code>, transport {{ decl.transport }}</p>
+      {{ doc(decl.doc) }}
+      <p>Implements: {% for interface in decl.implements %}{{ named(interface) }}{% if not loop.last %}, {% endif %}{% endfor %}</p>
+    </section>
+  {% endfor %}
+  {% for decl in schema.declarations if decl.kind == 'record' %}
+    {% if loop.first %}<h2>Records</h2>{% endif %}
+    <section id="{{ decl.target|anchor_id }}">
+      <h3>{{ decl.name }} {{ anchor_link(decl.target, decl.name) }}</h3>
+      {{ doc(decl.doc) }}
+      <p>Wire size: {{ decl.size }} bytes, alignment: {{ decl.alignment }}, maximum capabilities: {{ decl.caps }}</p>
+      {% if decl.fields %}
+        <div class="table">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Field</th>
+                <th scope="col">Type</th>
+                <th scope="col">Byte offset</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for field in decl.fields %}
+                <tr>
+                  <td><code>{{ field.name }}</code></td>
+                  <td><code>{{ type_expr(field.type) }}</code></td>
+                  <td>{{ field.offset }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </section>
+  {% endfor %}
+  {% for kind, heading in [('enumdecl', 'Enums'), ('flagsdecl', 'Flags')] %}
+    {% for decl in schema.declarations if decl.kind == kind %}
+      {% if loop.first %}<h2>{{ heading }}</h2>{% endif %}
+      <section id="{{ decl.target|anchor_id }}">
+        <h3>{{ decl.name }} {{ anchor_link(decl.target, decl.name) }}</h3>
+        {{ doc(decl.doc) }}
+        <p>Base: <code>{{ type_expr(decl.base) }}</code></p>
+        {% if decl.variants %}
+          <div class="table">
+            <table>
+              <thead><tr><th scope="col">Variant</th><th scope="col">{{ 'Tag' if decl.tagged else 'Value' }}</th>{% if decl.tagged %}<th scope="col">Payload</th>{% endif %}</tr></thead>
+              <tbody>
+                {% for variant in decl.variants %}
+                  <tr><td>{{ variant.name }}</td><td>{{ variant.value }}</td>{% if decl.tagged %}<td><code>{{ type_expr(variant.payload) }}</code></td>{% endif %}</tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% endif %}
+      </section>
+    {% endfor %}
+  {% endfor %}
+  {% for decl in schema.declarations if decl.kind == 'capset' %}
+    {% if loop.first %}<h2>Capsets</h2>{% endif %}
+    <section id="{{ decl.target|anchor_id }}">
+      <h3>{{ decl.name }} {{ anchor_link(decl.target, decl.name) }}</h3>
+      {{ doc(decl.doc) }}
+      {% if decl.fields %}
+        <div class="table">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Field</th>
+                <th scope="col">Capability</th>
+                <th scope="col">Slot</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for field in decl.fields %}
+                <tr>
+                  <td>{{ field.name }}</td>
+                  <td><code>{{ type_expr(field.type) }}</code></td>
+                  <td>{{ field.slot }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </section>
+  {% endfor %}
+  {% for kind, heading in [('ringdecl', 'Rings'), ('regiondecl', 'Regions')] %}
+    {% for decl in schema.declarations if decl.kind == kind %}
+      {% if loop.first %}<h2>{{ heading }}</h2>{% endif %}
+      <section id="{{ decl.target|anchor_id }}">
+        <h3>{{ decl.name }} {{ anchor_link(decl.target, decl.name) }}</h3>
+        {{ doc(decl.doc) }}
+        <p>Element: <code>{{ type_expr(decl.element) }}</code>, capacity: {{ decl.capacity }}</p>
+      </section>
+    {% endfor %}
+  {% endfor %}
+{% endblock %}

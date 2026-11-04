@@ -1,0 +1,51 @@
+{% macro anchor_link(target, name) -%}
+  <a class="anchor"
+     href="{{ target|reference_href(schema.name) }}"
+     aria-label="Link to {{ name }}">#</a>
+{%- endmacro %}
+{% macro named(item) -%}
+  {%- if item.target -%}<a href="{{ item.target|reference_href(schema.name) }}">{{ item.name }}</a>{%- else -%}{{ item.name }}{%- endif -%}
+{%- endmacro %}
+{% macro type_expr(type) -%}
+  {%- if type.kind == 'named' -%}
+    {{- named(type) -}}
+  {%- elif type.kind == 'cap' -%}
+    Cap[{{ named(type.target) }}, {{ type.mode }}, {{ type.rights }}{% if type.optional %}, optional{% endif %}]
+  {%- elif type.kind == 'generic' -%}
+    {{ type.name }}[{% for arg in type.args %}{{ type_expr(arg) }}{% if not loop.last %}, {% endif %}{% endfor %}]
+  {%- elif type.kind == 'bounded' -%}
+    {{ type.name }}[{{ type_expr(type.element) }}, {{ type.capacity }}]
+  {%- elif type.kind == 'tuple' -%}
+    ({% for arg in type.args %}{{ type_expr(arg) }}{% if not loop.last %}, {% endif %}{% endfor %})
+  {%- endif -%}
+{%- endmacro %}
+{% macro doc(text) -%}
+  {% if text %}<p class="doc">{{ text }}</p>{% endif %}
+{%- endmacro %}
+{% macro capabilities(title, caps) %}
+  {% if caps %}
+    <h5>{{ title }}</h5>
+    <div class="table">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Path</th>
+            <th scope="col">Target</th>
+            <th scope="col">Transfer</th>
+            <th scope="col">Rights</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for cap in caps %}
+            <tr>
+              <td><code>{{ cap.path }}</code></td>
+              <td><code>{{ named(cap.target) }}</code></td>
+              <td>{{ cap.mode }}</td>
+              <td>{{ cap.rights }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+{% endmacro %}

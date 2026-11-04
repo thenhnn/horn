@@ -27,6 +27,10 @@ in {
     // {
       nativeBuildInputs = (old.nativeBuildInputs or []) ++ [pkgs.python3];
     };
+  reference = pkgs.runCommand "horn-idl-reference.json" (environment
+    // {
+      nativeBuildInputs = [pkgs.python3];
+    }) ''python3 -B -m horn_idl --doc-json "$out"'';
   capsets = schema:
     assert builtins.hasAttr schema sources;
       pkgs.runCommand "horn-${schema}-capsets.json" (environment
