@@ -2,8 +2,7 @@
   config,
   lib,
   ...
-}:
-{
+}: {
   options.rust = {
     libhornHeaders = lib.mkOption {
       type = lib.types.package;

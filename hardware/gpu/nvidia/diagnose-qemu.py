@@ -5,13 +5,14 @@ No target process attachment/signals, guest stop/continue, PCI access or reset. 
 capabilities only negotiates this connection; subsequent commands are queries.
 /proc/*/stack is a kernel stack, not a userspace backtrace.
 """
+
 import json
 import os
-from pathlib import Path
-import socket
 import signal
+import socket
 import sys
 import time
+from pathlib import Path
 
 run = Path(sys.argv[1])
 marker = os.fsencode(str(run / "qmp.sock"))
@@ -49,6 +50,7 @@ def qmp():
             sock.connect(str(run / "qmp.sock"))
             log("QMP connected")
             with sock.makefile("rb") as stream:
+
                 def message():
                     remaining = 50 - (time.monotonic() - start)
                     if remaining <= 0:
@@ -63,13 +65,22 @@ def qmp():
                 log("QMP greeting", json.dumps(greeting))
                 if "QMP" not in greeting:
                     return
-                for index, (command, args) in enumerate([
-                    ("qmp_capabilities", {}),
-                    ("query-status", {}),
-                    ("query-cpus-fast", {}),
-                    ("human-monitor-command", {"command-line": "info registers"}),
-                ]):
-                    sock.sendall((json.dumps({"execute": command, "arguments": args, "id": index}) + "\n").encode())
+                for index, (command, args) in enumerate(
+                    [
+                        ("qmp_capabilities", {}),
+                        ("query-status", {}),
+                        ("query-cpus-fast", {}),
+                        ("human-monitor-command", {"command-line": "info registers"}),
+                    ]
+                ):
+                    sock.sendall(
+                        (
+                            json.dumps(
+                                {"execute": command, "arguments": args, "id": index}
+                            )
+                            + "\n"
+                        ).encode()
+                    )
                     # Finite event budget as well as per-read timeout.
                     for _ in range(32):
                         reply = message()
@@ -115,10 +126,18 @@ try:
             log("QEMU identity no longer matches")
             break
         log("SNAPSHOT", target)
-        log("process", " | ".join(line for line in read(proc / "status").splitlines()
-                                 if line.startswith(("Name:", "State:", "Threads:", "VmRSS:"))))
+        log(
+            "process",
+            " | ".join(
+                line
+                for line in read(proc / "status").splitlines()
+                if line.startswith(("Name:", "State:", "Threads:", "VmRSS:"))
+            ),
+        )
         for task in sorted((proc / "task").iterdir(), key=lambda path: int(path.name)):
-            log("THREAD", task.name, read(task / "comm"), "wchan=", read(task / "wchan"))
+            log(
+                "THREAD", task.name, read(task / "comm"), "wchan=", read(task / "wchan")
+            )
             log("syscall", task.name, read(task / "syscall"))
             log("kernel-stack", task.name, read(task / "stack"))
         qmp()
