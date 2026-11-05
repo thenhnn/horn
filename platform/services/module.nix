@@ -58,6 +58,11 @@
         default = "automatic";
       };
       ram = mkOption {type = types.ints.positive;};
+      processFactory = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Delegate a scoped child-process factory, funded from this service's RAM account.";
+      };
       requires = mkOption {
         type = types.attrsOf requirement;
         default = {};

@@ -30,6 +30,9 @@ def test_idl_child_process_demo(system, release):
     cpu = int(vm.serial.wait_for(b"\n").strip())
     assert 0 <= cpu < 2
     vm.serial.wait_for(
+        b"VM_FIXED_PASS exact=true overlap_preserved=true anywhere=true reuse=true"
+    )
+    vm.serial.wait_for(
         b"VM_IMMUTABLE_PASS aliases=true maywrite=true immutable=true cleanup=true"
     )
     vm.serial.wait_for(

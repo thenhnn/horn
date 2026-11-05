@@ -100,60 +100,6 @@ class ExecutionFpInfo:
     features: U64
 
 
-@iface("net.nhnn.horn.process.execution", version=(1, 0))
-class ProcessExecution:
-    # Fixed one-vCPU hosted execution domain; all backing is charged to self.
-    @method
-    def execution_configure(
-        self, base: U64, bytes: U64, wake: Cap[sel4.Notification, Borrow]
-    ) -> Result[None, ProcessError]: ...
-
-    @method
-    def execution_space(self) -> Result[U32, ProcessError]: ...
-
-    # Admit at most 64 pages per call; return the admitted end PFN.
-    @method
-    def execution_admit(self) -> Result[U32, ProcessError]: ...
-
-    @method
-    def execution_destroy(self, space: U32) -> Result[None, ProcessError]: ...
-
-    @method
-    def execution_map(
-        self, space: U32, address: U64, pfn: U64, rights: U32
-    ) -> Result[None, ProcessError]: ...
-
-    @method
-    def execution_unmap(
-        self, space: U32, address: U64, bytes: U64
-    ) -> Result[None, ProcessError]: ...
-
-    @method
-    def execution_start(
-        self, space: U32, registers: ExecutionRegisters
-    ) -> Result[None, ProcessError]: ...
-
-    @method
-    def execution_fp_info(self) -> Result[ExecutionFpInfo, ProcessError]: ...
-
-    # Stable stopped-TCB snapshot, cached until execution_start or write.
-    @method
-    def execution_fp_read(
-        self, offset: U32, length: U32
-    ) -> Result[List[U8, 256], ProcessError]: ...
-
-    # Ordered chunks beginning at zero; commit requires the full active image.
-    # Nothing reaches the user TCB until successful commit.
-    @method
-    def execution_fp_write(
-        self, offset: U32, data: List[U8, 256], commit: BOOL
-    ) -> Result[None, ProcessError]: ...
-
-    # Stops the user TCB before returning; a previously captured fault wins.
-    @method
-    def execution_stop(self) -> Result[ExecutionExit, ProcessError]: ...
-
-
 @iface("net.nhnn.horn.process.lifecycle", version=(1, 0))
 class ProcessLifecycle:
     # Read-only topology/initial placement, never scheduling authority.
@@ -215,6 +161,8 @@ class ProcessKernelObject:
 
 @record
 class ProcessBootstrap:
+    # Explicitly delegate a scoped, target-funded child factory if requested.
+    factory: Option[U32]
     vm: U32
     address_space: U32
     lifecycle: U32
@@ -343,7 +291,7 @@ class ProcessThreads:
     ) -> Result[Cap[ExecutionContextObject, Move], ProcessError]: ...
 
 
-@object(implements=(ProcessLifecycle, ProcessExecution, ProcessThreads))
+@object(implements=(ProcessLifecycle, ProcessThreads))
 class ProcessSelf:
     pass
 
@@ -479,7 +427,6 @@ class ProcessObserver:
         ProcessFactory,
         ProcessObserver,
         ProcessControl,
-        ProcessExecution,
         ProcessThreads,
         ProcessView,
         ThreadControl,

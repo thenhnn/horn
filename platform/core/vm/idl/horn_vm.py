@@ -72,6 +72,7 @@ class VmFeatures:
     UNTYPED = 128
     IMMUTABLE = 256
     EXECUTABLE = 512
+    FIXED_PLACEMENT = 1024
 
 
 @enum(base=U32)

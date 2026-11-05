@@ -25,7 +25,7 @@ join return values, per-thread signals and FP rounding-mode isolation.
 The follow-on assembly probe (`init/init.S`) tests signals/sigreturn with
 intentionally clobbered FP/SIMD registers: x87, MXCSR, YMM and, when available,
 ZMM/opmask preservation. It stays alive rather than exiting PID 1.
-Linux uses one logical CPU and 32 MiB admitted RAM.
+Linux uses one logical CPU and 32 MiB of resident `VmMemory` backing.
 This is bring-up code, not a validated execution-resource or isolation
 implementation. Resource rollback, stop/fault races and negative isolation tests
 still need an independent audit.
@@ -76,8 +76,40 @@ Resource/bootstrap design must use Horn RAM accounts and scoped capability
 authority, not synthetic root BootInfo or a copy of the old manager. Linux's
 buddy allocator must operate on its admitted RAM locally; kmalloc/free must
 not become individual Horn RPCs. Guest tasks, mappings, CSpace and scheduling
-resources need bounded ownership and explicit teardown. The current native
-one-TCB process bootstrap is not already a Linux/vCPU API.
+resources have bounded ownership and explicit teardown.
+
+## Generic process/thread backend
+
+Linux uses the ordinary process, thread and VM APIs; ProcessExecution and its
+specialized RAM/PFN/VSpace manager have been deleted. There is no compatibility
+wrapper. Deployment explicitly delegates `horn.process-factory` to Linux. Its
+empty guest containers, translation objects and TCBs charge through Linux's RAM
+account, with ancestor process/SC grant limits enforced.
+
+Resident RAM is allocated through `VmFactory`, mapped RW/NX at `0x40000000`,
+and managed locally by memblock/buddy/slab. The kernel ELF remains a separately
+loaded image; it is not part of this RAM backing. Kernel vmalloc aliases occupy
+`0x42000000..0x44000000`. The deployment reserves a 32 MiB root metadata heap for
+allocator/mapping metadata, separate from Linux's 64 MiB resource-account ceiling.
+Root metadata is still not fully prepaid per request.
+
+Each Linux mm owns an empty process/VSpace. Fixed 2 MiB reservations cover
+populated portions of the 256 MiB user window; mapping offsets select ordinary
+RAM backing pages. Replacement is explicit Unmap/Prepare/Map, not implicit region
+overwrite. Kernel RW and user RX aliases coexist under mapping-level W^X.
+
+Each user task owns a separate trapped-syscall TCB, without an IPC buffer.
+Fork/pthread creation provisions a TCB, and exit/exec/mm teardown retires it before
+space reclamation. One explicitly retained execution context supplies the user
+CPU budget across guest spaces; creating a thread does not grant another budget.
+Linux kernel stacks still switch on one native kernel TCB. FP import/export uses
+the generic stopped-thread interface for Linux's task/signal register images.
+The current client bounds guest spaces and user TCBs at 8 and 64 respectively;
+factory quotas and available accounted memory may impose tighter bounds.
+
+`tests/boot/test_linux.py` now exercises musl fork/COW/exec/wait, pthread TLS,
+synchronization/signals and FP preservation on this generic backend. This is
+single-CPU validation, not Linux SMP or exhaustive cleanup-failure validation.
 
 Use the existing HPET-backed Horn clock/deadline service; do not inherit either
 reference port's unconditional TSC assumptions. Shared time pages and fast TSC

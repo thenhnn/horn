@@ -20,12 +20,17 @@ state authorize operations; interface casts do not grant authority. Badge values
 never wrap or get reused. An account cannot be selected using a client integer.
 
 The implementation advertises RESIDENT, PROTECTION, UNTYPED, IMMUTABLE,
-DUPLICATE_MEMORY and EXECUTABLE. It supports Anywhere
+DUPLICATE_MEMORY, EXECUTABLE and FIXED_PLACEMENT. It supports Anywhere and Fixed
 reservations inside one loader-provisioned window, prepared maps, aliases,
 read/write protection changes, acknowledged unmaps, close/revoke and region
 teardown. The loader installs translation tables before adopting the VSpace.
 
-Demand-zero, fixed placement, new spaces, subaccounts and
+Fixed reservations require an aligned, bounded exact address and return Overlap
+without replacing existing regions/mappings. Anywhere uses the same registry of
+occupied ranges. Destruction makes the reservation reusable only after confirmed
+native cleanup; quarantined ranges stay occupied.
+
+Demand-zero, new spaces, subaccounts and
 pagers return typed Unsupported on authorized requests. Adopted-space destruction
 returns Busy: the service does not own thread shutdown/ASID reclamation. Invalid
 pager capabilities are denied, not accepted as dummy pager objects.

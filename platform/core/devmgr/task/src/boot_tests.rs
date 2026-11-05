@@ -24,6 +24,7 @@ impl Observer {
         request.name.data[..name.len()].copy_from_slice(name);
         request.ram_limit = 8 << 20;
         let slots = s::ProcessBootstrap {
+            factory: None,
             vm: 1,
             address_space: 2,
             lifecycle: 3,

@@ -105,7 +105,7 @@ fn fp_info() -> ExecutionFpInfo {
         options(nomem, nostack));
     }
     ExecutionFpInfo {
-        bytes: unsafe { core::arch::x86_64::__cpuid_count(13, 0) }.ebx,
+        bytes: core::arch::x86_64::__cpuid_count(13, 0).ebx,
         features: ((hi as u64) << 32) | lo as u64,
     }
 }
@@ -190,6 +190,9 @@ impl Manager {
         Ok(())
     }
     pub(crate) fn stop_threads(&mut self, owner: ProcessId) -> Result<(), Error> {
+        if let Some((target, id)) = self.process(owner)?.threads.active {
+            self.stop_thread(target, id)?;
+        }
         self.stop_context(owner)?;
         let ids: Vec<_> = self
             .process(owner)?
@@ -282,7 +285,7 @@ impl Manager {
         }
         Ok(())
     }
-    pub(crate) fn thread_fault(
+    pub fn thread_fault(
         &mut self,
         info: &sel4::MessageInfo,
         badge: sel4::Word,
@@ -333,10 +336,11 @@ impl Manager {
             return Err(Error::Denied);
         }
         let p = self.live(owner)?;
-        if !matches!(p.state, State::Created | State::Active)
-            || p.threads.entries.len() >= MAX_THREADS
-        {
+        if !matches!(p.state, State::Created | State::Active) {
             return Err(Error::InvalidState);
+        }
+        if p.threads.entries.len() >= MAX_THREADS {
+            return Err(Error::Resource(horn_vm::Error::MetadataExhausted));
         }
         let endpoint = p.lifecycle_source.ok_or(Error::Denied)?;
         let id = p.threads.next;
@@ -375,7 +379,7 @@ impl Manager {
             if request.abi == ThreadAbi::TrappedSyscalls && tcb.tcb_set_flags(0, 2)? & 2 == 0 {
                 return Err(Error::Denied);
             }
-            let mut registers = crate::execution::decode_context(&request.registers);
+            let mut registers = crate::registers::decode_context(&request.registers);
             tcb.tcb_write_all_registers(false, &mut registers)?;
             thread.fault = Some(fault);
             thread.allocator = Some(allocator.clone());
@@ -598,9 +602,6 @@ impl ProcessThreadsServer for Caller<'_> {
     fn execution_context(&mut self) -> Result<Cap<ExecutionContextObjectTag>, ProcessError> {
         let owner = self.thread_owner()?;
         let p = self.manager.live(owner).map_err(error)?;
-        if p.execution.is_some() {
-            return Err(ProcessError::State);
-        }
         let authority = if let Some(a) = p.threads.context {
             a
         } else {
@@ -675,7 +676,7 @@ impl ThreadControlServer for Caller<'_> {
         if t.state != ThreadState::Stopped {
             return Err(ProcessError::State);
         }
-        Ok(crate::execution::encode_context(
+        Ok(crate::registers::encode_context(
             &t.tcb
                 .tcb_read_all_registers(false)
                 .map_err(|e| error(e.into()))?,
@@ -691,7 +692,7 @@ impl ThreadControlServer for Caller<'_> {
             return Err(ProcessError::State);
         }
         t.tcb
-            .tcb_write_all_registers(false, &mut crate::execution::decode_context(&registers))
+            .tcb_write_all_registers(false, &mut crate::registers::decode_context(&registers))
             .map_err(|e| error(e.into()))?;
         t.reason = None;
         Ok(())
@@ -718,7 +719,7 @@ impl ThreadControlServer for Caller<'_> {
             reason,
             address,
             code,
-            registers: crate::execution::encode_context(
+            registers: crate::registers::encode_context(
                 &t.tcb
                     .tcb_read_all_registers(false)
                     .map_err(|e| error(e.into()))?,

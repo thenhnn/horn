@@ -4,9 +4,9 @@
 The root server composes generated `ProcessHost` and `VmHost` dispatchers.
 A container can be empty or ELF-loaded; threads have separate native TCBs.
 Containers receive automatic initial CPU placement and one explicit execution
-context. A native pthread runtime is not implemented. Linux still uses the older
-`ProcessExecution` backend; its musl fork/pthread regression does not validate
-Linux on the generic thread API.
+context. A native pthread runtime is not implemented. Linux now uses these same generic
+process/thread/VM objects; its musl fork/pthread/FP regression validates that path.
+The former Linux-specific ProcessExecution interface/backend has been removed.
 
 ## Capability API
 
@@ -14,7 +14,9 @@ Linux on the generic thread API.
   the actual ELF, with backing-wide immutability required. It returns a control capability for
   a **suspended** process. There is no executable-name registry or file service.
 - `ProcessFactory.spawn_empty(request)` creates a suspended address/capability
-  space and accounted execution context, with no ELF or initial TCB.
+  space and accounted execution context, with no ELF or initial TCB. Apart from
+  its own CNode, no ambient VM/lifecycle/budget capabilities are installed in the
+  empty target; the controller receives and explicitly delegates authority.
 - `ProcessFactory.open(id)` recovers control over a child in that factory's scope.
   The authenticated factory grants authority; the numeric ID only selects within
   its owned children. It cannot open unrelated processes.
@@ -33,7 +35,11 @@ Linux on the generic thread API.
 trusted `LaunchPolicy`: retained-child limit, maximum per-child RAM, VM window,
 fixed CPU budget and period. Possessing/delegating that capability spends the
 owner's authority, not a claimed caller PID. Children do not automatically get
-factory/observer capabilities. All object badges are kernel-authenticated,
+factory/observer capabilities. A caller may explicitly request a factory slot
+in `ProcessBootstrap`; the delegated factory inherits the grant policy and funds
+its children from the target's account. Ancestor retained-descendant limits also
+apply, so nesting does not amplify process/SC grants. Service policy opts in with
+`processFactory = true` and publishes `horn.process-factory` in startup. All object badges are kernel-authenticated,
 globally monotonic and never reused. Observe/control casts do not grant authority.
 
 A launched image receives the generated `ProcessCaps` bootstrap: self CNode, VM
@@ -75,19 +81,6 @@ Uncertain cleanup quarantines the affected process rather than allowing resume
 with partially dismantled resources. Root metadata prepayment and failure
 injection remain incomplete.
 
-## Legacy hosted FP state (prototype)
-
-The x86-64 `ProcessExecution` domain owns a private, caller-accounted FP staging
-frame and user TCB. `execution_fp_info` reports the active standard XSAVE byte
-size and enabled XCR0 mask; the kernel's 4096-byte transfer capacity is not a
-hardcoded userspace layout size. Read chunks use one stopped-TCB snapshot.
-Write chunks are ordered, restart at zero, and cannot run until a complete
-image is committed through the validating kernel API. Neither raw TCB nor frame
-authority is returned. An uncertain scratch map/unmap poisons the manager's
-scratch window and prevents further hosted starts/launches rather than reusing
-an uncertain mapping. This remains prototype resource/lifetime code, not an
-independently validated isolation boundary.
-
 ## ELF ownership and RAM
 
 Launch maps immutable source pages read-only and NX into a root-reserved reader
@@ -100,10 +93,11 @@ without optimistic address or backing reuse.
 
 The source remains charged to its existing owner. Loaded ELF/stack/TLS pages,
 IPC buffer, VSpace/page tables, CNode, TCB, SC and later managed/delegated memory
-are charged to the new process. Process accounts are independent peers under
-the system allocator: children neither inherit nor consume their launcher's RAM
-limit. The launch grant bounds the chosen per-process limit and retained process
-count; limits are ceilings, not reservations.
+are charged to the new process. Trusted system launch grants create independent peer accounts. Explicitly
+delegated child factories instead charge descendants through the target's account;
+Linux uses this to keep its guest containers/TCBs within its aggregate RAM limit.
+The launch grant bounds each process limit and retained descendant count, with
+ancestor limits enforced too; limits are ceilings, not reservations.
 
 Only occupied physical RAM is charged: resident backing (mapped or not), whole
 delegated Untypeds, kernel objects and retained quarantine. Retype inside an
@@ -150,8 +144,8 @@ private writable ELF, TLS, IPC buffers, heaps and capability metadata. Blocking
 RPC does not make a process multithreaded. Root servers must not spin at a higher
 priority than clients sharing their CPU; both demo roots use priority zero.
 IRQs retain their existing CPU-0 route; notifications can wake remote TCBs.
-Local control deadlines use a fixed CPU's TSC; public timerd time disables the
-TSC fast path on SMP and uses HPET/RPC instead.
+Local control deadlines use a fixed CPU's TSC; public timerd time follows the
+shared-clock platform policy documented in `../clock/README.md`.
 
 The IDL boot fixture includes test-only workers and one explicitly root-mapped
 shared page. Distinct QEMU APIC IDs, stable assigned CPUs, per-worker heap checks,
@@ -174,8 +168,7 @@ accounted resident RO/NX backing outside the VM window. Initial slot installs
 freeze once record allocation begins; a partial failure retains backing until
 teardown and cannot be retried. RDI/RSI receive the record address/exact size.
 The process owns its record independently of the provisioning memory object,
-which the supervisor closes after the method returns. The mixed-ABI deployment
-build passes; ABI2 has not yet been boot-validated.
+which the supervisor closes after the method returns. ABI2 startup is covered by the native and Linux boot regressions.
 Entry, segments and TLS use standard ELF metadata; rust-sel4 initializes static
 TLS and the image supplies its stack. The loader checks segment bounds, rejects
 dynamic linking/executable stack requests and enforces page-granular W^X,
@@ -200,8 +193,8 @@ record limits/pagination, role separation, scoped open, RAM limits,
 terminate/close, source-close independence,
 a child's code-7 exit and parent-exit cleanup with a live child. Existing VM,
 Untyped, mimalloc and NX fault tests remain. Exit observation currently uses info
-or list polling; asynchronous exit notification, fault supervision, malformed-RPC
-recovery, kernel-cleanup fault injection, Linux migration to generic threads,
+or list polling, with explicit exit/fault signals used by supervision. Malformed-RPC
+recovery, kernel-cleanup fault injection, full Linux ABI coverage,
 DMA safety auditing and SMP thread/runtime synchronization remain incomplete.
 Generic-thread debug/release boot probes exercise empty containers, separate
 native/trapped TCBs, optional/deferred IPC buffers, observer denial, shared bytes,

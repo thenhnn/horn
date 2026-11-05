@@ -49,7 +49,7 @@ extern unsigned long *empty_zero_page;
 extern unsigned long end_iomem;
 
 #define VMALLOC_OFFSET	(__va_space)
-#define VMALLOC_START 0x40000000UL
+#define VMALLOC_START 0x42000000UL
 #define VMALLOC_END 0x44000000UL
 #define MODULES_VADDR	VMALLOC_START
 #define MODULES_END	VMALLOC_END

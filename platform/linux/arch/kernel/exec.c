@@ -19,19 +19,22 @@
 #include <registers.h>
 #include <skas.h>
 #include <os.h>
+#include <horn.h>
 
 void flush_thread(void)
 {
-	arch_flush_thread(&current->thread.arch);
+    horn_thread_destroy(current->thread.horn_thread);
+    current->thread.horn_thread = 0;
+    arch_flush_thread(&current->thread.arch);
 
-	get_safe_registers(current_pt_regs()->regs.gp,
-			   current_pt_regs()->regs.fp);
+    get_safe_registers(current_pt_regs()->regs.gp, current_pt_regs()->regs.fp);
 }
 
 void start_thread(struct pt_regs *regs, unsigned long eip, unsigned long esp)
 {
-	PT_REGS_IP(regs) = eip;
-	PT_REGS_SP(regs) = esp;
-	clear_thread_flag(TIF_SINGLESTEP);
+    PT_REGS_IP(regs) = eip;
+    PT_REGS_SP(regs) = esp;
+    clear_thread_flag(TIF_SINGLESTEP);
 }
+
 EXPORT_SYMBOL(start_thread);

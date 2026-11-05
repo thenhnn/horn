@@ -11,7 +11,7 @@ use horn_vm::{
 
 #[derive(Clone)]
 pub struct LaunchPolicy {
-    /// Bounds retained records, including exited children until control.close().
+    /// Bounds retained descendants, including exited records until control.close().
     pub max_children: usize,
     pub max_ram: usize,
     pub vm_window: Range<usize>,
@@ -20,6 +20,7 @@ pub struct LaunchPolicy {
     pub cpu_period_us: u64,
 }
 pub(crate) struct Grant {
+    pub(super) fund_children: bool,
     factory: Option<(usize, sel4::Word)>,
     observer: Option<(usize, sel4::Word)>,
     endpoint: sel4::cap::Endpoint,
@@ -77,6 +78,33 @@ pub(crate) fn wire_info(p: &crate::Process) -> ProcessInfo {
     }
 }
 impl Manager {
+    fn check_launch_capacity(&self, owner: ProcessId) -> Result<(), ProcessError> {
+        let mut ancestor = Some(owner);
+        while let Some(id) = ancestor {
+            let process = self.process(id).map_err(error)?;
+            if let Some(grant) = &process.launch {
+                let retained = self
+                    .processes
+                    .iter()
+                    .filter(|p| {
+                        let mut parent = p.parent;
+                        while let Some(current) = parent {
+                            if current == id {
+                                return true;
+                            }
+                            parent = self.process(current).ok().and_then(|p| p.parent);
+                        }
+                        false
+                    })
+                    .count();
+                if retained >= grant.policy.max_children {
+                    return Err(ProcessError::Exhausted);
+                }
+            }
+            ancestor = process.parent;
+        }
+        Ok(())
+    }
     /// Trusted boot setup: prepare a current-VSpace reader window.
     /// # Safety
     /// The caller must reserve this unmapped range exclusively for the manager's
@@ -201,6 +229,7 @@ impl Manager {
             }
         };
         self.process_mut(owner)?.launch = Some(Grant {
+            fund_children: false,
             factory: Some(factory),
             observer: Some(observer),
             endpoint,
@@ -314,41 +343,67 @@ impl Manager {
         id: ProcessId,
         endpoint: sel4::cap::Endpoint,
         window: Range<usize>,
-        slots: ProcessBootstrap,
+        slots: Option<ProcessBootstrap>,
     ) -> Result<(), Error> {
-        let values = [slots.vm, slots.address_space, slots.lifecycle, slots.reply];
-        if values.iter().any(|s| *s == 0 || *s >= 128)
-            || values
-                .iter()
-                .enumerate()
-                .any(|(i, s)| values[..i].contains(s))
-        {
-            return Err(Error::Denied);
-        }
         let mut allocator = self.allocator(id)?;
-        let reply = allocator.allocate(sel4::ObjectBlueprint::Reply)?;
         let lifecycle = self.provision_self(id, endpoint)?;
         let vm = VmService::new(
             allocator.clone(),
-            FramePool::for_account(allocator),
+            FramePool::for_account(allocator.clone()),
             endpoint,
             self.vspace(id)?,
             window,
             128,
         )
         .map_err(|_| Error::Cleanup)?;
-        let caps = [
-            (PROCESS_CAPS_SELF_SLOT, self.cnode(id)?.bits()),
-            (slots.vm, vm.factory().bits()),
-            (slots.address_space, vm.address_space().bits()),
-            (slots.lifecycle, lifecycle.bits()),
-            (slots.reply, reply.bits()),
-        ];
+        let mut caps = alloc::vec::Vec::new();
+        caps.try_reserve_exact(6)
+            .map_err(|_| Error::Resource(horn_vm::Error::MetadataExhausted))?;
+        caps.push((PROCESS_CAPS_SELF_SLOT, self.cnode(id)?.bits()));
+        // Empty containers receive no ambient VM, scheduling or lifecycle
+        // authority. Their controller explicitly installs any desired grants.
+        if let Some(slots) = slots {
+            let values = [
+                Some(slots.vm),
+                Some(slots.address_space),
+                Some(slots.lifecycle),
+                Some(slots.reply),
+                slots.factory,
+            ];
+            if values.iter().flatten().any(|s| *s == 0 || *s >= 128)
+                || values
+                    .iter()
+                    .enumerate()
+                    .any(|(i, s)| s.is_some() && values[..i].contains(s))
+            {
+                return Err(Error::Denied);
+            }
+            let reply = allocator.allocate(sel4::ObjectBlueprint::Reply)?;
+            caps.extend([
+                (slots.vm, vm.factory().bits()),
+                (slots.address_space, vm.address_space().bits()),
+                (slots.lifecycle, lifecycle.bits()),
+                (slots.reply, reply.bits()),
+            ]);
+            if let Some(slot) = slots.factory {
+                let parent = self.process(id)?.parent.ok_or(Error::Denied)?;
+                let policy = self
+                    .process(parent)?
+                    .launch
+                    .as_ref()
+                    .ok_or(Error::Denied)?
+                    .policy
+                    .clone();
+                let (factory, _) = self.provision_launch(id, endpoint, policy)?;
+                self.process_mut(id)?.launch.as_mut().unwrap().fund_children = true;
+                caps.push((slot, factory.bits()));
+            }
+        }
         self.attach_vm(id, vm)?;
         for (slot, source) in caps {
             self.process_mut(id)?.bootstrap_end = self.process(id)?.bootstrap_end.max(slot + 1);
             self.cnode(id)?
-                .absolute_cptr_from_bits_with_depth(slot as _, PROCESS_CAPS_SIZE_BITS as _)
+                .absolute_cptr_from_bits_with_depth(slot as _, self.process(id)?.cnode_bits)
                 .copy(
                     &self
                         .allocator
@@ -390,15 +445,7 @@ impl Manager {
         if ram == 0 || ram > policy.max_ram {
             return Err(ProcessError::Denied);
         }
-        if self
-            .processes
-            .iter()
-            .filter(|p| p.parent == Some(owner))
-            .count()
-            >= policy.max_children
-        {
-            return Err(ProcessError::Exhausted);
-        }
+        self.check_launch_capacity(owner)?;
         let window = self
             .launch_window
             .clone()
@@ -443,7 +490,7 @@ impl Manager {
             error(e)
         })?;
         let provisioned = self
-            .bootstrap(id, endpoint, policy.vm_window, slots)
+            .bootstrap(id, endpoint, policy.vm_window, Some(slots))
             .and_then(|()| self.export_control(id));
         match provisioned {
             Ok(cap) => Ok(cap),
@@ -490,6 +537,7 @@ impl ProcessFactoryServer for Caller<'_> {
             elf.as_ref(),
             request,
             bootstrap.unwrap_or(ProcessBootstrap {
+                factory: None,
                 vm: PROCESS_CAPS_VM_SLOT,
                 address_space: PROCESS_CAPS_ADDRESS_SPACE_SLOT,
                 lifecycle: PROCESS_CAPS_LIFECYCLE_SLOT,
@@ -523,7 +571,6 @@ impl ProcessFactoryServer for Caller<'_> {
             || name.as_bytes().contains(&0)
             || ram == 0
             || ram > policy.max_ram
-            || request.address < PAGE_SIZE as u64
             || request.length == 0
             || request.length > 1024 * 1024 * 1024
             || end > crate::threads::IPC_BASE as u64
@@ -532,16 +579,7 @@ impl ProcessFactoryServer for Caller<'_> {
         {
             return Err(ProcessError::Invalid);
         }
-        if self
-            .manager
-            .processes
-            .iter()
-            .filter(|p| p.parent == Some(owner))
-            .count()
-            >= policy.max_children
-        {
-            return Err(ProcessError::Exhausted);
-        }
+        self.manager.check_launch_capacity(owner)?;
         let window = request.address as usize..end as usize;
         let id = self
             .manager
@@ -560,17 +598,7 @@ impl ProcessFactoryServer for Caller<'_> {
             .map_err(error)?;
         let result = self
             .manager
-            .bootstrap(
-                id,
-                endpoint,
-                window,
-                ProcessBootstrap {
-                    vm: PROCESS_CAPS_VM_SLOT,
-                    address_space: PROCESS_CAPS_ADDRESS_SPACE_SLOT,
-                    lifecycle: PROCESS_CAPS_LIFECYCLE_SLOT,
-                    reply: PROCESS_CAPS_REPLY_SLOT,
-                },
-            )
+            .bootstrap(id, endpoint, window, None)
             .and_then(|()| self.manager.export_control(id));
         match result {
             Ok(cap) => Ok(cap),

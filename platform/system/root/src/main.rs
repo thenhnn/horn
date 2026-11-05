@@ -82,7 +82,7 @@ fn serve(
     }
     if platform
         .manager
-        .execution_fault(&info, badge)
+        .thread_fault(&info, badge)
         .expect("hosted execution fault")
     {
         server.recv_slot.delete().unwrap();
@@ -133,10 +133,12 @@ fn serve(
     }
     platform.manager.finish_reply(server).unwrap();
 }
-const ROOT_HEAP_BYTES: usize = if cfg!(large_images) {
+const REQUESTED_METADATA_BYTES: usize = include!(concat!(env!("OUT_DIR"), "/root_heap.rs"));
+const ROOT_HEAP_BYTES: usize = if cfg!(large_images) && REQUESTED_METADATA_BYTES < 64 * 1024 * 1024
+{
     64 * 1024 * 1024
 } else {
-    8 * 1024 * 1024
+    REQUESTED_METADATA_BYTES
 };
 // Root cannot use its own VM RPC allocator. Keep bounded space for resident
 // frame/tree metadata, including transient Vec growth as the TCP pool expands.
@@ -285,7 +287,7 @@ fn main(boot: &sel4::BootInfoPtr) -> sel4::Result<Never> {
             process,
             bootstrap,
             LaunchPolicy {
-                max_children: 8, // Matches the supervisor's bounded job table.
+                max_children: 64, // Includes delegated containers; supervisor jobs remain bounded separately.
                 max_ram: if cfg!(large_images) {
                     256 * 1024 * 1024
                 } else {

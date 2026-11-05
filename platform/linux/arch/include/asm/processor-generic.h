@@ -20,6 +20,7 @@ struct task_struct;
 struct mm_struct;
 
 struct thread_struct {
+	unsigned long horn_thread;
 	struct pt_regs *segv_regs;
 	struct task_struct *prev_sched;
 	struct arch_thread arch;

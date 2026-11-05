@@ -137,6 +137,7 @@ impl Drivers {
         request.name.data[..name.len()].copy_from_slice(name.as_bytes());
         request.ram_limit = cfg.ram;
         let slots = s::ProcessBootstrap {
+            factory: None,
             vm: d::DEVICE_DRIVER_CAPS_VM_SLOT,
             address_space: d::DEVICE_DRIVER_CAPS_ADDRESS_SPACE_SLOT,
             lifecycle: d::DEVICE_DRIVER_CAPS_LIFECYCLE_SLOT,

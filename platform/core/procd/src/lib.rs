@@ -16,9 +16,9 @@ use horn_vm::{
 };
 
 pub mod elf;
-mod execution;
 mod loader;
 mod placement;
+mod registers;
 mod service;
 mod startup;
 mod threads;
@@ -104,12 +104,8 @@ struct Process {
     exit_signal: Option<usize>,
     fault_endpoint: Option<usize>,
     lifecycle_source: Option<sel4::cap::Endpoint>,
-    execution: Option<execution::Execution>,
-    execution_poisoned: bool,
     resident_end: usize,
     sc: sel4::cap::SchedContext,
-    budget_us: u64,
-    period_us: u64,
 }
 pub struct Info<'a> {
     pub id: ProcessId,
@@ -230,7 +226,7 @@ impl Manager {
             || config.cnode_bits > 16
             || config.cpu_budget_us == 0
             || config.cpu_budget_us > config.cpu_period_us
-            || config.vm_window.start < PAGE_SIZE
+            || image.is_some() && config.vm_window.start < PAGE_SIZE
             || config.vm_window.start >= config.vm_window.end
             || config.vm_window.start % PAGE_SIZE != 0
             || config.vm_window.end % PAGE_SIZE != 0
@@ -238,9 +234,14 @@ impl Manager {
         {
             return Err(Error::Denied);
         }
-        // Process ownership does not imply RAM funding: all process accounts
-        // are peers under the system allocator, never under the launcher's quota.
-        let account = self.allocator.account().child(config.ram_limit)?;
+        // Trusted system grants fund peers; explicitly delegated child factories
+        // fund descendants from the target's account, preserving aggregate RAM limits.
+        let funder = parent
+            .and_then(|id| self.process(id).ok())
+            .filter(|p| p.launch.as_ref().is_some_and(|g| g.fund_children))
+            .map(|p| p.allocator.account())
+            .unwrap_or_else(|| self.allocator.account());
+        let account = funder.child(config.ram_limit)?;
         let mut allocator = self.allocator.for_account(account);
         let cpu = placement::initial_cpu(
             self.cpu_count(),
@@ -335,13 +336,9 @@ impl Manager {
             exit_signal: None,
             fault_endpoint: None,
             lifecycle_source: None,
-            execution: None,
-            execution_poisoned: false,
             resident_end: image.map_or(0, |image| image.ipc_address + PAGE_SIZE),
             threads: threads::Book::new(id, tcb, image.map(|image| image.ipc_address)),
             sc,
-            budget_us: config.cpu_budget_us,
-            period_us: config.cpu_period_us,
         });
         Ok(id)
     }
@@ -558,9 +555,6 @@ impl Manager {
         if !matches!(p.state, State::Created | State::Active | State::Stopping) {
             return Err(Error::InvalidState);
         }
-        if let Some(execution) = &mut p.execution {
-            execution.stop_user()?;
-        }
         // Raw bootstrap TCB copies must not permit a concurrent resume.
         if let Some(tcb) = p.tcb {
             p.allocator.root().absolute_cptr(tcb.cptr()).revoke()?;
@@ -618,14 +612,6 @@ impl Manager {
             }
         }
         self.vms.retain(|(owner, _)| *owner != id);
-        let p = self.process_mut(id)?;
-        if let Some(execution) = &mut p.execution {
-            if execution.cleanup().is_err() {
-                p.state = State::Quarantined;
-                return Err(Error::Cleanup);
-            }
-        }
-        p.execution = None;
         self.cleanup_threads(id)?;
         let p = self.process_mut(id)?;
         for slot in [p.exit_signal.take(), p.fault_endpoint.take()]

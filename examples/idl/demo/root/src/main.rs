@@ -333,7 +333,7 @@ fn main(bootinfo: &::sel4::BootInfoPtr) -> ::sel4::Result<Never> {
     loop {
         ::sel4::with_ipc_buffer_mut(|ipc| ipc.set_recv_slot(&server.recv_slot));
         let (info, badge) = server.endpoint.recv(system_reply);
-        if processes.execution_fault(&info, badge).unwrap() {
+        if processes.thread_fault(&info, badge).unwrap() {
             server.recv_slot.delete().unwrap();
             continue;
         }

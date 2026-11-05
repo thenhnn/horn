@@ -101,6 +101,69 @@ pub fn run(ctx: &mut horn_runtime::Context, mut transport: &mut Sel4Transport<Se
         )
         .unwrap();
     executable.close(&mut transport).unwrap();
+    // Fixed reservations never replace another region, including its live maps.
+    let anchor = reserve(&mut transport, address_space, 4096);
+    let address = anchor.info(&mut transport).unwrap().address;
+    destroy(&mut transport, anchor);
+    let request = VmRegionRequest {
+        address,
+        length: 4096,
+        alignment: 4096,
+        placement: VmPlacement::Fixed,
+        ceiling: rw,
+    };
+    let fixed = VmAddressSpace::from_ref(address_space.as_ref())
+        .reserve(&mut transport, request.clone())
+        .unwrap();
+    assert_eq!(fixed.info(&mut transport).unwrap().address, address);
+    let backing = VmFactory::from_ref(factory.as_ref())
+        .allocate(&mut transport, 4096, VmBacking::Resident, rw)
+        .unwrap();
+    fixed
+        .apply(
+            &mut transport,
+            Some(Cap::from_ref(backing.cap_ref())),
+            batch(&[
+                VmUpdate::Prepare(VmRange {
+                    offset: 0,
+                    length: 4096,
+                }),
+                VmUpdate::Map(VmMap {
+                    offset: 0,
+                    length: 4096,
+                    memory_offset: 0,
+                    protection: rw,
+                }),
+            ]),
+        )
+        .unwrap();
+    unsafe {
+        core::ptr::write_volatile(address as *mut u64, 0x314159);
+    }
+    assert_eq!(
+        VmAddressSpace::from_ref(address_space.as_ref())
+            .reserve(&mut transport, request.clone())
+            .err(),
+        Some(CallError::Remote(VmError::Overlap))
+    );
+    assert_eq!(
+        unsafe { core::ptr::read_volatile(address as *const u64) },
+        0x314159
+    );
+    let adjacent = reserve(&mut transport, address_space, 4096);
+    assert_ne!(adjacent.info(&mut transport).unwrap().address, address);
+    destroy(&mut transport, adjacent);
+    destroy(&mut transport, fixed);
+    let reused = VmAddressSpace::from_ref(address_space.as_ref())
+        .reserve(&mut transport, request)
+        .unwrap();
+    assert_eq!(reused.info(&mut transport).unwrap().address, address);
+    destroy(&mut transport, reused);
+    backing.close(&mut transport).unwrap();
+    drop(backing);
+    ::sel4::debug_println!(
+        "VM_FIXED_PASS exact=true overlap_preserved=true anywhere=true reuse=true"
+    );
     let range = VmRange {
         offset: 0,
         length: 8192,

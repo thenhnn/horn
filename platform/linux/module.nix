@@ -16,9 +16,11 @@ in {
   sel4.settings.KernelRootCNodeSizeBits = 18;
   devmgr-demo.console = true;
   devmgr-demo.shell = false;
+  devmgr-demo.root-metadata-bytes = 32 * 1024 * 1024;
   services.definitions.linux = {
     elf = "${linux}/bin/task.elf";
     ram = 64 * 1024 * 1024;
+    processFactory = true;
     requires = {
       console = {
         path = "/consoles";

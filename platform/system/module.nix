@@ -110,12 +110,18 @@
           then "1"
           else "0";
         ROOT_STARTUP_TIMEOUT_US = toString config.devmgr-demo.startup-timeout-us;
+        HORN_ROOT_METADATA_BYTES = toString config.devmgr-demo.root-metadata-bytes;
       };
       memchr = old: {features = ["alloc"];};
     };
   };
 in {
   imports = [../services/module.nix];
+  options.devmgr-demo.root-metadata-bytes = lib.mkOption {
+    type = lib.types.ints.between (8 * 1024 * 1024) (256 * 1024 * 1024);
+    default = 8 * 1024 * 1024;
+    description = "Root-hosted allocator/VM metadata heap; not client resident RAM.";
+  };
   options.devmgr.drivers = lib.mkOption {
     type = lib.types.listOf (lib.types.submodule {
       options = {

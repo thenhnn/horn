@@ -1,12 +1,10 @@
 //! Root-hosted VM. Mapping authority stays here; private Untyped may be delegated.
 use alloc::{rc::Rc, vec::Vec};
 use core::{
-    alloc::Layout,
     ops::Range,
     sync::atomic::{AtomicU64, Ordering},
 };
 use horn_ipc::*;
-use sel4_abstract_allocator::{ByRange, basic::BasicAllocator};
 
 use crate::{
     Error, MemoryObject,
@@ -336,7 +334,6 @@ pub struct Service {
     authority: [Option<usize>; 2],
     vspace: ::sel4::cap::VSpace,
     window: Range<usize>,
-    virtual_free: ByRange<BasicAllocator>,
     memories: Vec<Option<Memory>>,
     regions: Vec<Option<Region>>,
     delegations: Vec<Option<Delegation>>,
@@ -380,7 +377,6 @@ impl Service {
             .try_reserve_exact(max_objects)
             .map_err(|_| VmError::Exhausted)?;
         derived.resize_with(max_objects, || None);
-        let virtual_free = ByRange::new(BasicAllocator::with_granule_size(window.len(), PAGE_SIZE));
         let badges = [new_badge()?, new_badge()?];
         let (factory, space) = provision(&mut allocator, endpoint, badges)?;
         Ok(Self {
@@ -390,7 +386,6 @@ impl Service {
             endpoint,
             vspace,
             window,
-            virtual_free,
             memories,
             regions,
             delegations,
@@ -1029,23 +1024,28 @@ impl Service {
 
     fn reserve(&mut self, request: VmRegionRequest) -> Result<Cap<VmRegionObjectTag>, VmError> {
         ceiling_permissions(request.ceiling)?;
-        if request.placement != VmPlacement::Anywhere {
-            return Err(VmError::Unsupported);
-        }
         if request.length == 0
             || request.length % PAGE_SIZE as u64 != 0
             || !request.alignment.is_power_of_two()
             || request.alignment < PAGE_SIZE as u64
-            || request.alignment > self.window.start as u64
         {
             return Err(VmError::Invalid);
         }
         let size = usize::try_from(request.length).map_err(|_| VmError::Invalid)?;
         let alignment = usize::try_from(request.alignment).map_err(|_| VmError::Invalid)?;
-        if self.window.start % alignment != 0 {
-            return Err(VmError::Unsupported);
-        }
-        let layout = Layout::from_size_align(size, alignment).map_err(|_| VmError::Invalid)?;
+        let address = usize::try_from(request.address).map_err(|_| VmError::Invalid)?;
+        let range = crate::placement::choose(
+            self.window.clone(),
+            size,
+            alignment,
+            (request.placement == VmPlacement::Fixed).then_some(address),
+            self.regions
+                .iter()
+                .flatten()
+                .filter(|r| r.owner == self.badges[SPACE])
+                .map(|r| r.address..r.address + r.range.len()),
+        )?;
+        let range = range.start - self.window.start..range.end - self.window.start;
         if self
             .regions
             .iter()
@@ -1067,17 +1067,7 @@ impl Service {
             .try_reserve_exact(size / PAGE_SIZE)
             .map_err(|_| VmError::Exhausted)?;
         pages.resize(size / PAGE_SIZE, Page::default());
-        let range = self
-            .virtual_free
-            .allocate(layout)
-            .map_err(|_| VmError::Exhausted)?;
-        let (authority, cap) = match self.export(badge) {
-            Ok(value) => value,
-            Err(value) => {
-                self.virtual_free.deallocate(range);
-                return Err(value);
-            }
-        };
+        let (authority, cap) = self.export(badge)?;
         self.regions[index] = Some(Region {
             owner: self.badges[SPACE],
             allocator: self.allocator.clone(),
@@ -1472,8 +1462,7 @@ impl Service {
             .revoke()
             .map_err(|_| VmError::Backend)?;
         self.allocator.release_slot(authority).map_err(error)?;
-        let region = self.regions[index].take().unwrap();
-        self.virtual_free.deallocate(region.range);
+        self.regions[index].take().unwrap();
         Ok(())
     }
 }
@@ -1510,7 +1499,8 @@ impl VmFactoryServer for Caller<'_> {
                     | VmFeatures::UNTYPED.0
                     | VmFeatures::IMMUTABLE.0
                     | VmFeatures::DUPLICATE_MEMORY.0
-                    | VmFeatures::EXECUTABLE.0,
+                    | VmFeatures::EXECUTABLE.0
+                    | VmFeatures::FIXED_PLACEMENT.0,
             ),
             page_size: PAGE_SIZE as u64,
             batch_limit: 16,

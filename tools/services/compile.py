@@ -118,6 +118,8 @@ def compile_services(definitions):
                 f"{name}: boot namespace cannot wait for READY"
             )
         ports = ["vm", "address_space", "lifecycle", "reply", "ready"]
+        if service.get("processFactory", False):
+            ports.append("process_factory")
         local = (
             list(service["requires"])
             + list(service["namespaces"])
@@ -182,6 +184,7 @@ def compile_services(definitions):
             "lifecycle": "horn.lifecycle",
             "reply": "horn.reply",
             "ready": "horn.ready",
+            "process_factory": "horn.process-factory",
         }
         if service.get("logging") is not None:
             runtime_names["_log"] = "horn.log"
@@ -196,8 +199,13 @@ def compile_services(definitions):
             )
             + "]"
         )
+        factory = (
+            f"Some({slot('process_factory')})"
+            if service.get("processFactory", False)
+            else "None"
+        )
         result.append(
-            f"ServiceDefinition{{context:{context},name:{quote(name)},elf:include_bytes!({quote(service['elf'])}),ram:{service['ram']},boot:{str(service['activation'] == 'boot').lower()},bootstrap:ProcessBootstrap{{vm:{base['vm']},address_space:{base['address_space']},lifecycle:{base['lifecycle']},reply:{base['reply']}}},ready:{base['ready']},objects:&[{','.join(objects)}],requires:&[{requirements}],namespaces:&[{namespaces}],grants:&[{grants}],after:&[{after}],publish:&[{published_prefixes}]}},"
+            f"ServiceDefinition{{context:{context},name:{quote(name)},elf:include_bytes!({quote(service['elf'])}),ram:{service['ram']},boot:{str(service['activation'] == 'boot').lower()},bootstrap:ProcessBootstrap{{factory:{factory},vm:{base['vm']},address_space:{base['address_space']},lifecycle:{base['lifecycle']},reply:{base['reply']}}},ready:{base['ready']},objects:&[{','.join(objects)}],requires:&[{requirements}],namespaces:&[{namespaces}],grants:&[{grants}],after:&[{after}],publish:&[{published_prefixes}]}},"
         )
     return "\n".join(result + ["];"])
 

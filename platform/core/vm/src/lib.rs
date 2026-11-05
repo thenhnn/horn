@@ -17,6 +17,9 @@ pub mod service;
 pub mod dma;
 
 #[cfg(feature = "protocol")]
+mod placement;
+
+#[cfg(feature = "protocol")]
 #[allow(dead_code, unused_imports, non_camel_case_types)]
 pub mod protocol {
     include!(concat!(env!("OUT_DIR"), "/protocol.rs"));
