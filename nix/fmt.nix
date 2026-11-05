@@ -6,6 +6,10 @@ in
     projectRootFile = "shell.nix";
     programs.ruff-format.enable = true;
     programs.just.enable = true;
+    programs.clang-format = {
+      enable = true;
+      includes = ["platform/linux/**/*.c" "platform/linux/**/*.h"];
+    };
     programs.alejandra.enable = true;
     programs.djlint = {
       enable = true;

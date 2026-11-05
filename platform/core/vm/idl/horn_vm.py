@@ -1,4 +1,4 @@
-"""General VM protocol. Availability is advertised, not implied by declaration."""
+"""Virtual memory interface"""
 
 from __future__ import annotations
 
