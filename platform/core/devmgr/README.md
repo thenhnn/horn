@@ -56,6 +56,16 @@ immutable publication. Root's registry owns pin lifetime independently of proces
 records. DeviceMapping still owns domain/IOVA authority; explicit close and domain
 detach share one post-drain release path.
 
+Internal VT-d tables use 256-KiB VM arenas (64 hardware pages), retaining one
+memory and one region capability per arena rather than per page. Platform pins
+are acquired in 16-page extents and retained for the hardware-table lifetime;
+zeroed cache lines are published before use. This bounds CSpace pressure during
+sustained IOVA churn without reusing addresses or weakening DMA drain rules.
+Known local capability exhaustion is ordinary table exhaustion, not uncertain
+hardware failure; failed invalidation still poisons the unit and fail-stops.
+The existing monotonic 2-GiB device IOVA bound remains; this is not unlimited DMA
+mapping churn or hardware-table reclamation.
+
 ## Separation from drivers
 
 Devmgr handles **PCI resources**, IOMMU domains, interrupt routing and safe

@@ -23,6 +23,7 @@ static struct {
 
 #define USER_EVENT 1
 #define CLOCK_EVENT 2
+#define CONSOLE_EVENT 4
 static unsigned long pending;
 static horn_ExecutionFpInfo_t fp_info;
 static unsigned char fp_last[4096];
@@ -229,44 +230,7 @@ int horn_fp_load(const void *buffer)
 
 unsigned long horn_ram_bytes(void) { return RAM_SIZE; }
 
-void horn_console_write(const char *data, unsigned long len)
-{
-    while (len) {
-        horn_list_256_u8_t bytes = {0};
-        bytes.len = len < 256 ? len : 256;
-        memcpy(bytes.data, data, bytes.len);
-        horn_console_interface_write_result_t r;
-        if (horn_console_interface_write(&transport, 0, cap(initial.console), bytes, &r) !=
-            HORN_OK) {
-            die();
-        }
-        if (r.tag != HORN_RESULT_OK) {
-            if (r.value.err != HORN_CONSOLE_ERROR_WOULD_BLOCK) {
-                die();
-            }
-            horn_ConsoleinterfaceWatchArgs_t args = {0};
-            args.notification.present = true;
-            args.notification.value = cap(initial.console_signal);
-            args.interests = HORN_CONSOLE_EVENTS_WRITABLE;
-            horn_console_interface_watch_result_t watched;
-            CHECK(horn_console_interface_watch(&transport, 0, cap(initial.console),
-                                               args.notification, args.interests, 0, &watched),
-                  watched);
-            while (!(pending & 4)) {
-                seL4_Word badge;
-                seL4_Wait(initial.events, &badge);
-                pending |= badge;
-            }
-            pending &= ~4;
-            continue;
-        }
-        if (!r.value.ok || r.value.ok > bytes.len) {
-            die();
-        }
-        data += r.value.ok;
-        len -= r.value.ok;
-    }
-}
+#include "console.c"
 
 unsigned long long horn_now_ns(void)
 {
@@ -300,7 +264,7 @@ int horn_clock_pending(void)
 
 void horn_idle(void)
 {
-    if (pending & CLOCK_EVENT) {
+    if (pending & (CLOCK_EVENT | CONSOLE_EVENT)) {
         return;
     }
     seL4_Word badge;
@@ -325,7 +289,7 @@ int horn_run(unsigned long space, struct horn_registers *registers, unsigned lon
           s);
     // No Linux code runs between start and stopping the user TCB. Notifications
     // coalesce; an already pending alarm must not be lost before the wait.
-    if (!(pending & (USER_EVENT | CLOCK_EVENT))) {
+    if (!(pending & (USER_EVENT | CLOCK_EVENT | CONSOLE_EVENT))) {
         seL4_Word badge;
         seL4_Wait(initial.events, &badge);
         pending |= badge;

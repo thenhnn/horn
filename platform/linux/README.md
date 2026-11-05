@@ -1,11 +1,39 @@
-# Linux on Horn: static musl userspace
+# Linux on Horn: interactive shell and static musl userspace
 
 The chosen direction is a clean `ARCH=horn` paravirtualized Linux port.
 The previous `ARCH=sel4` port and l4h are references, not host implementations
 to import wholesale. The in-progress port builds Linux 6.18 reproducibly with
 its own architecture directory and native Horn transport (not UML os-Linux).
 
-**Current milestone: a static musl C /init runs as PID 1.**
+## Interactive shell
+
+Run `just shell-linux` inside the development shell (or
+`nix-shell --run 'just shell-linux'`). This boots the pinned static BusyBox
+init/ash initramfs through `platform/linux/shell.nix`, with a root `linux# `
+prompt on the virtio console. Ctrl-C reaches Linux's foreground process; Ctrl-A X
+exits QEMU. Kernel/supervisor diagnostics go to `work/linux-debug.log`.
+`just shell-linux tcg` explicitly selects software emulation instead of KVM.
+The existing `just shell` still starts the native Horn shell.
+
+BusyBox init mounts proc, sysfs and devtmpfs and respawns a login shell on
+`/dev/hvc0`, with a real controlling TTY. Utilities, pipes and redirections run
+ordinary Linux processes. Files are RAM-backed; there are no disks, Linux network
+interfaces, authentication or persistence. This is a trusted local root console.
+Terminal size defaults to 80x24 and can be set with `stty`; host resize propagation
+is not implemented. Linux still has one logical CPU.
+
+Input is notification-driven: a one-shot console watch wakes HVC's worker,
+without a synthetic polling timer. A bounded RX buffer preserves input while
+waiting for writable output; the same subscription covers both readiness
+interests. The boot test covers commands, pipelines, TTY ioctls, Ctrl-C, shell
+respawn, idle wakeup and a large output burst with concurrent input. Background
+job-control testing is deferred.
+
+## Musl regression initramfs
+
+`platform/linux/module.nix` retains the regression entry point by default;
+`linux.initMode = "shell"` selects BusyBox instead.
+The static musl C `/init` runs as PID 1.
 `init/demo.c` is an ordinary Linux C program, compiled with the pinned Nixpkgs
 `pkgsStatic` musl toolchain. No Horn-specific userspace headers, custom startup,
 libc patches or new kernel changes are required for this demo. It exercises:
@@ -31,8 +59,8 @@ implementation. Resource rollback, stop/fault races and negative isolation tests
 still need an independent audit.
 
 Linux retains the standard 30-second READY deadline. Diagnostic QEMU runs
-are bounded separately; the combined userspace regression allows 60 seconds. The current console is output-only;
-single-CPU user fork and pthread creation now run the regression above.
+are bounded separately; the combined userspace regression allows 60 seconds.
+Single-CPU user fork and pthread creation run the regression above.
 This does not establish complete clone/ptrace/cancellation semantics or a security
 audit. Linux SMP is not implemented. FP state is saved into each task's dynamically sized register area,
 including full standard XSAVE signal frames and legacy/null FP sigreturn.

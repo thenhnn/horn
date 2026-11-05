@@ -7,6 +7,7 @@ struct Mock {
     pages: Vec<[u64; 512]>,
     ticks: Cell<u64>,
     stall: bool,
+    page_limit: usize,
     drain: Vec<u64>,
     writes: Vec<(u64, u32)>,
 }
@@ -26,6 +27,7 @@ impl Mock {
             pages: Vec::new(),
             ticks: Cell::new(0),
             stall: false,
+            page_limit: usize::MAX,
             drain: Vec::new(),
             writes: Vec::new(),
         }
@@ -127,6 +129,9 @@ unsafe impl Hardware for Mock {
         Ok(())
     }
     fn allocate_page(&mut self) -> Result<Page> {
+        if self.pages.len() >= self.page_limit {
+            return Err(Error::Exhausted);
+        }
         let cookie = self.pages.len() as u32;
         self.pages.push([0; 512]);
         Ok(Page {
@@ -205,6 +210,33 @@ fn interrupt_routes_validate_requester_and_block_compatibility_format() {
     let second = unit.interrupt(domain, 0x81, 0).unwrap();
     unit.detach(domain).unwrap();
     assert_eq!(unit.io.deliver(0x18, second.address(), 0), None);
+}
+#[test]
+fn table_exhaustion_does_not_publish_or_poison_and_can_retry() {
+    let mut unit = start(Mock::new()).unwrap();
+    let domain = unit.attach(0x18).unwrap();
+    unit.io.page_limit = unit.io.pages.len();
+    assert_eq!(
+        unit.map(domain, 0x40000000, &[0x900000], 3),
+        Err(Error::Exhausted)
+    );
+    assert!(!unit.poisoned());
+    assert_eq!(unit.io.translate(0x18, 0x40000000, false), None);
+    unit.io.page_limit = usize::MAX;
+    unit.map(domain, 0x40000000, &[0x900000], 3).unwrap();
+    assert_eq!(unit.io.translate(0x18, 0x40000000, true), Some(0x900000));
+}
+#[test]
+fn invalidation_fault_preserves_status_and_poisons() {
+    let mut unit = start(Mock::new()).unwrap();
+    let domain = unit.attach(0x18).unwrap();
+    unit.io.stall = true;
+    unit.io.registers.insert(BASE + 0x34, 0x10);
+    assert_eq!(
+        unit.map(domain, 0x10000, &[0x900000], 3),
+        Err(Error::InvalidationFault(0x10))
+    );
+    assert!(unit.poisoned());
 }
 #[test]
 fn invalid_requests_do_not_poison_but_failed_invalidation_does() {

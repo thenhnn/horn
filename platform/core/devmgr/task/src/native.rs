@@ -13,6 +13,14 @@ pub struct Mapping {
     pub memory: OwnedCap<VmMemoryObjectTag>,
     pub token: u64,
 }
+const TABLE_ARENA_PAGES: usize = 64;
+const PIN_PAGES: usize = 16;
+struct TableArena {
+    mapping: Mapping,
+    physical: [u64; TABLE_ARENA_PAGES],
+    // Platform pins are retained for the entire hardware-table lifetime.
+    _pins: [u64; TABLE_ARENA_PAGES / PIN_PAGES],
+}
 pub struct Io {
     pub ctx: horn_runtime::Context,
     pub boot: horn_supervisor::client::Bootstrap,
@@ -20,12 +28,17 @@ pub struct Io {
     pub transport: Sel4Transport<Sel4CapSpace>,
     pub registers: Option<Mapping>,
     pub base: u64,
-    pages: Vec<Mapping>,
+    arenas: Vec<TableArena>,
+    table_pages: usize,
 }
 fn vm_error(error: CallError<VmError>) -> vtd::Error {
     match error {
-        CallError::Remote(VmError::Exhausted | VmError::QuotaExceeded) => vtd::Error::Exhausted,
-        _ => vtd::Error::Backend,
+        CallError::Remote(VmError::Exhausted | VmError::QuotaExceeded)
+        | CallError::Rpc(RpcError::TooManyCaps) => vtd::Error::Exhausted,
+        other => {
+            horn_runtime::logging::error!("VT-d VM request failed: {:?}", other);
+            vtd::Error::Backend
+        }
     }
 }
 impl Io {
@@ -51,7 +64,8 @@ impl Io {
             boot,
             registers: None,
             base: 0,
-            pages: Vec::new(),
+            arenas: Vec::new(),
+            table_pages: 0,
         }
     }
     pub fn space(&mut self) -> &mut Sel4CapSpace {
@@ -97,7 +111,10 @@ impl Io {
                 Some(Cap::from_ref(memory.cap_ref())),
                 Parcel::inline(updates),
             )
-            .map_err(|_| vtd::Error::Backend)?;
+            .map_err(|error| {
+                horn_runtime::logging::error!("VT-d CPU mapping failed: {:?}", error);
+                vtd::Error::Backend
+            })?;
         Ok(Mapping {
             address,
             length,
@@ -176,6 +193,16 @@ impl Io {
         .expect("PCI config write");
     }
 }
+impl Io {
+    fn page_address(&self, page: Page) -> vtd::Result<usize> {
+        let ordinal = page.cookie as usize;
+        if ordinal >= self.table_pages {
+            return Err(vtd::Error::Invalid);
+        }
+        Ok(self.arenas[ordinal / TABLE_ARENA_PAGES].mapping.address
+            + (ordinal % TABLE_ARENA_PAGES) * 4096)
+    }
+}
 unsafe impl Hardware for Io {
     fn read32(&mut self, address: u64) -> vtd::Result<u32> {
         Ok(unsafe { self.pointer(address, 4)?.cast::<u32>().read_volatile() })
@@ -202,60 +229,105 @@ unsafe impl Hardware for Io {
         Ok(())
     }
     fn allocate_page(&mut self) -> vtd::Result<Page> {
-        self.pages
-            .try_reserve(1)
-            .map_err(|_| vtd::Error::Exhausted)?;
-        let memory = self
-            .ctx
-            .object::<VmServiceTag>("horn.vm")
-            .unwrap()
-            .allocate(
-                &mut self.transport,
-                4096,
-                VmBacking::Resident,
-                VmProtection(3),
-            )
-            .map_err(vm_error)?;
-        let grant = {
-            let io = &mut *self;
-            io.platform.pin(&mut io.transport, &memory, 0, 4096, 3)
-        }
-        .map_err(|e| match e {
-            CallError::Remote(DeviceError::Exhausted) => vtd::Error::Exhausted,
-            _ => vtd::Error::Backend,
-        })?;
-        if grant.pages.len != 1 {
-            return Err(vtd::Error::Backend);
-        }
-        let map = self.map_cpu(memory, 4096, grant.token)?;
-        // The kernel zeroed RAM through a cached alias. Publish all cache lines
-        // before exposing even an initially empty table to non-snooping VT-d.
-        for offset in (0..4096).step_by(64) {
-            unsafe {
-                core::arch::x86_64::_mm_clflush((map.address + offset) as *const u8);
+        // Retain two owning capabilities per 256-KiB arena, not per 4-KiB
+        // hardware table. Monotonic IOVAs can create many leaf tables over time.
+        if self.table_pages % TABLE_ARENA_PAGES == 0 {
+            self.arenas
+                .try_reserve(1)
+                .map_err(|_| vtd::Error::Exhausted)?;
+            let length = TABLE_ARENA_PAGES * 4096;
+            let memory = self
+                .ctx
+                .object::<VmServiceTag>("horn.vm")
+                .unwrap()
+                .allocate(
+                    &mut self.transport,
+                    length as u64,
+                    VmBacking::Resident,
+                    VmProtection(3),
+                )
+                .map_err(vm_error)?;
+            let mapping = self.map_cpu(memory, length, 0)?;
+            let mut physical = [0; TABLE_ARENA_PAGES];
+            let mut pins = [0; TABLE_ARENA_PAGES / PIN_PAGES];
+            for chunk in 0..pins.len() {
+                let result = self.platform.pin(
+                    &mut self.transport,
+                    &mapping.memory,
+                    (chunk * PIN_PAGES * 4096) as u64,
+                    (PIN_PAGES * 4096) as u64,
+                    3,
+                );
+                let grant = match result {
+                    Ok(grant) => grant,
+                    Err(CallError::Remote(error)) => {
+                        // No hardware pointer to this arena has been published.
+                        mapping
+                            .region
+                            .destroy(&mut self.transport)
+                            .expect("unpublished table CPU unmap");
+                        for token in &pins[..chunk] {
+                            self.platform
+                                .unpin(&mut self.transport, *token)
+                                .expect("unpublished table unpin");
+                        }
+                        mapping
+                            .memory
+                            .close(&mut self.transport)
+                            .expect("unpublished table close");
+                        return Err(if error == DeviceError::Exhausted {
+                            vtd::Error::Exhausted
+                        } else {
+                            vtd::Error::Backend
+                        });
+                    }
+                    Err(error) => {
+                        // A lost pin reply has uncertain ownership: retain all
+                        // server pins/objects and let the unit fail-stop.
+                        horn_runtime::logging::error!(
+                            "VT-d arena pin transport failed: {:?}",
+                            error
+                        );
+                        return Err(vtd::Error::Backend);
+                    }
+                };
+                assert_eq!(grant.pages.len as usize, PIN_PAGES, "VT-d arena pin extent");
+                physical[chunk * PIN_PAGES..(chunk + 1) * PIN_PAGES]
+                    .copy_from_slice(&grant.pages.data[..PIN_PAGES]);
+                pins[chunk] = grant.token;
             }
+            // Publish the zeroed cache lines before any non-snooping VT-d walk.
+            for offset in (0..length).step_by(64) {
+                unsafe {
+                    core::arch::x86_64::_mm_clflush((mapping.address + offset) as *const u8);
+                }
+            }
+            fence(Ordering::SeqCst);
+            self.arenas.push(TableArena {
+                mapping,
+                physical,
+                _pins: pins,
+            });
         }
-        fence(Ordering::SeqCst);
+        let ordinal = self.table_pages;
         let page = Page {
-            cookie: self.pages.len() as u32,
-            physical: grant.pages.data[0],
+            cookie: u32::try_from(ordinal).map_err(|_| vtd::Error::Exhausted)?,
+            physical: self.arenas[ordinal / TABLE_ARENA_PAGES].physical
+                [ordinal % TABLE_ARENA_PAGES],
         };
-        self.pages.push(map);
+        self.table_pages += 1;
         Ok(page)
     }
     fn read_page(&mut self, page: Page, word: usize) -> vtd::Result<u64> {
         if word >= 512 {
             return Err(vtd::Error::Invalid);
         }
-        let map = self
-            .pages
-            .get(page.cookie as usize)
-            .ok_or(vtd::Error::Invalid)?;
+        let address = self.page_address(page)?;
         unsafe {
-            core::arch::x86_64::_mm_clflush((map.address as *const u64).add(word).cast());
+            core::arch::x86_64::_mm_clflush((address as *const u64).add(word).cast());
         }
         fence(Ordering::SeqCst);
-        let value = unsafe { (map.address as *const u64).add(word).read_volatile() };
+        let value = unsafe { (address as *const u64).add(word).read_volatile() };
         fence(Ordering::Acquire);
         Ok(value)
     }
@@ -263,12 +335,9 @@ unsafe impl Hardware for Io {
         if word >= 512 {
             return Err(vtd::Error::Invalid);
         }
-        let map = self
-            .pages
-            .get(page.cookie as usize)
-            .ok_or(vtd::Error::Invalid)?;
+        let address = self.page_address(page)?;
         unsafe {
-            let pointer = (map.address as *mut u64).add(word);
+            let pointer = (address as *mut u64).add(word);
             pointer.write_volatile(value);
             core::arch::x86_64::_mm_clflush(pointer.cast());
         }

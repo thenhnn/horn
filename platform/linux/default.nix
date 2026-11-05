@@ -3,6 +3,7 @@
   sources,
   sel4,
   workspace,
+  initMode ? "regression",
 }: let
   idl = import ../../tools/idl {inherit pkgs;};
   startup = workspace.members.horn-startup-c;
@@ -23,11 +24,70 @@
       cp init task-test fp-probe "$out/bin/"
     '';
   };
-  initramfs = pkgs.runCommand "linux-horn-initramfs" {} ''
+  regressionInitramfs = pkgs.runCommand "linux-horn-initramfs" {} ''
     mkdir -p "$out"
     printf 'Hello from the Horn initramfs!\n' > "$out/demo.txt"
     printf 'dir /dev 0755 0 0\nnod /dev/console 0600 0 0 c 5 1\nfile /init ${muslDemo}/bin/init 0755 0 0\nfile /task-test ${muslDemo}/bin/task-test 0755 0 0\nfile /fp-probe ${muslDemo}/bin/fp-probe 0755 0 0\nfile /demo.txt %s/demo.txt 0644 0 0\n' "$out" > "$out/list"
   '';
+  busybox = pkgs.pkgsStatic.busybox.override {
+    extraConfig = ''
+      CONFIG_INIT y
+      CONFIG_FEATURE_USE_INITTAB y
+      CONFIG_ASH y
+      CONFIG_SH_IS_ASH y
+      CONFIG_ASH_JOB_CONTROL y
+      CONFIG_FEATURE_SH_STANDALONE n
+      CONFIG_FEATURE_PREFER_APPLETS n
+    '';
+  };
+  shellInitramfs = pkgs.runCommand "linux-horn-shell-initramfs" {} ''
+    mkdir -p "$out"
+    cat > "$out/inittab" <<'EOF'
+    ::sysinit:/bin/mount -t proc proc /proc
+    ::sysinit:/bin/mount -t sysfs sysfs /sys
+    ::sysinit:/bin/mount -t devtmpfs devtmpfs /dev
+    hvc0::respawn:/bin/sh -il
+    EOF
+    cat > "$out/profile" <<'EOF'
+    export PATH=/bin:/sbin
+    export HOME=/root
+    export TERM=vt100
+    export PS1='linux# '
+    cd /root
+    echo 'Horn Linux interactive shell'
+    EOF
+    printf 'root:x:0:0:root:/root:/bin/sh\n' > "$out/passwd"
+    printf 'root:x:0:\n' > "$out/group"
+    printf 'Hello from the Horn initramfs!\n' > "$out/demo.txt"
+    cat > "$out/list" <<EOF
+    dir /bin 0755 0 0
+    dir /sbin 0755 0 0
+    dir /dev 0755 0 0
+    dir /proc 0555 0 0
+    dir /sys 0555 0 0
+    dir /tmp 1777 0 0
+    dir /root 0700 0 0
+    dir /etc 0755 0 0
+    nod /dev/console 0600 0 0 c 5 1
+    file /bin/busybox ${busybox}/bin/busybox 0755 0 0
+    slink /init /bin/busybox 0755 0 0
+    slink /sbin/init /bin/busybox 0755 0 0
+    file /etc/inittab $out/inittab 0644 0 0
+    file /etc/profile $out/profile 0644 0 0
+    file /etc/passwd $out/passwd 0644 0 0
+    file /etc/group $out/group 0644 0 0
+    file /demo.txt $out/demo.txt 0644 0 0
+    EOF
+    ${busybox}/bin/busybox --list | while read -r applet; do
+      if [ "$applet" != busybox ]; then
+        printf 'slink /bin/%s busybox 0755 0 0\n' "$applet" >> "$out/list"
+      fi
+    done
+  '';
+  initramfs =
+    if initMode == "shell"
+    then shellInitramfs
+    else regressionInitramfs;
   host = pkgs.stdenv.mkDerivation ((idl.crate {})
     // {
       pname = "linux-horn-host";

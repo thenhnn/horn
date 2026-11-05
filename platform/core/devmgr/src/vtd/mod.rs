@@ -11,6 +11,7 @@ pub enum Error {
     Unsupported,
     Exhausted,
     Backend,
+    InvalidationFault(u32),
     Timeout,
     Poisoned,
 }
@@ -292,8 +293,9 @@ impl<H: Hardware> Vtd<H> {
             if predicate(self)? {
                 return Ok(());
             }
-            if self.io.read32(self.base + 0x34)? & 0x70 != 0 {
-                return Err(Error::Backend);
+            let status = self.io.read32(self.base + 0x34)?;
+            if status & 0x70 != 0 {
+                return Err(Error::InvalidationFault(status));
             }
             if self.io.now().wrapping_sub(started) >= self.timeout {
                 return Err(Error::Timeout);
