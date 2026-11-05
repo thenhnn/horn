@@ -9,14 +9,14 @@
 #define STUB_MAX_FDS 4
 
 struct mm_id {
-	int pid;
-	unsigned long stack;
-	int syscall_data_len;
+    int pid;
+    unsigned long stack;
+    int syscall_data_len;
 
-	/* Only used with SECCOMP mode */
-	int sock;
-	int syscall_fd_num;
-	int syscall_fd_map[STUB_MAX_FDS];
+    /* Only used with SECCOMP mode */
+    int sock;
+    int syscall_fd_num;
+    int syscall_fd_map[STUB_MAX_FDS];
 };
 
 void notify_mm_kill(int pid);

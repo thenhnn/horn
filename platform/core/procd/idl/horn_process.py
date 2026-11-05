@@ -23,7 +23,7 @@ from horn_idl import (
 )
 
 # Imported VM objects and their transitive wire dependencies.
-from horn_vm import *  # noqa: F403
+from horn_vm import *
 
 
 @enum(base=U32)

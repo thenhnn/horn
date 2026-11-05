@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* 
+/*
  * Copyright (C) 2000 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
  */
 
@@ -11,12 +11,12 @@
 #include <sysdep/ptrace.h>
 
 struct pt_regs {
-	struct uml_pt_regs regs;
+    struct uml_pt_regs regs;
 };
 
-#define arch_has_single_step()	(1)
+#define arch_has_single_step() (1)
 
-#define EMPTY_REGS { .regs = EMPTY_UML_PT_REGS }
+#define EMPTY_REGS {.regs = EMPTY_UML_PT_REGS}
 
 #define PT_REGS_IP(r) UPT_IP(&(r)->regs)
 #define PT_REGS_SP(r) UPT_SP(&(r)->regs)
@@ -31,8 +31,8 @@ struct pt_regs {
 
 struct task_struct;
 
-extern long subarch_ptrace(struct task_struct *child, long request,
-	unsigned long addr, unsigned long data);
+extern long subarch_ptrace(struct task_struct *child, long request, unsigned long addr,
+                           unsigned long data);
 extern unsigned long getreg(struct task_struct *child, int regno);
 extern int putreg(struct task_struct *child, int regno, unsigned long value);
 

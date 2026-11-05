@@ -4,12 +4,12 @@
 
 /* This is here because signal.c needs the REGSET_FP_LEGACY definition */
 enum {
-	REGSET_GENERAL,
+    REGSET_GENERAL,
 #ifdef CONFIG_X86_32
-	REGSET_FP_LEGACY,
+    REGSET_FP_LEGACY,
 #endif
-	REGSET_FP,
-	REGSET_XSTATE,
+    REGSET_FP,
+    REGSET_XSTATE,
 };
 
 #include <linux/compiler.h>
@@ -38,17 +38,17 @@ enum {
 #define PT_REGS_ORIG_SYSCALL(r) PT_REGS_AX(r)
 #define PT_REGS_SYSCALL_RET(r) PT_REGS_AX(r)
 
-#define PT_FIX_EXEC_STACK(sp) do ; while(0)
+#define PT_FIX_EXEC_STACK(sp)                                                                      \
+    do                                                                                             \
+        ;                                                                                          \
+    while (0)
 
 #define profile_pc(regs) PT_REGS_IP(regs)
 
 #define UPT_RESTART_SYSCALL(r) (UPT_IP(r) -= 2)
 #define PT_REGS_SET_SYSCALL_RETURN(r, res) (PT_REGS_AX(r) = (res))
 
-static inline long regs_return_value(struct pt_regs *regs)
-{
-	return PT_REGS_AX(regs);
-}
+static inline long regs_return_value(struct pt_regs *regs) { return PT_REGS_AX(regs); }
 
 /*
  * Forward declaration to avoid including sysdep/tls.h, which causes a
@@ -82,17 +82,16 @@ extern int arch_switch_tls(struct task_struct *to);
 static inline int ptrace_get_thread_area(struct task_struct *child, int idx,
                                          struct user_desc __user *user_desc)
 {
-        return -ENOSYS;
+    return -ENOSYS;
 }
 
 static inline int ptrace_set_thread_area(struct task_struct *child, int idx,
                                          struct user_desc __user *user_desc)
 {
-        return -ENOSYS;
+    return -ENOSYS;
 }
 
-extern long arch_prctl(struct task_struct *task, int option,
-		       unsigned long __user *addr);
+extern long arch_prctl(struct task_struct *task, int option, unsigned long __user *addr);
 
 #endif
 

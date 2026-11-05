@@ -8,8 +8,8 @@ from horn_vm import (  # noqa: F401
     VmMemory,
     VmMemoryInfo,
     VmMemoryObject,
-    VmProtection,
     VmMemoryRights,
+    VmProtection,
 )
 
 

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* 
+/*
  * Copyright (C) 2002 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
  */
 
@@ -10,13 +10,13 @@
 #include <mm_id.h>
 
 typedef struct mm_context {
-	struct mm_id id;
+    struct mm_id id;
 
-	struct list_head list;
+    struct list_head list;
 
-	/* Address range in need of a TLB sync */
-	unsigned long sync_tlb_range_from;
-	unsigned long sync_tlb_range_to;
+    /* Address range in need of a TLB sync */
+    unsigned long sync_tlb_range_from;
+    unsigned long sync_tlb_range_to;
 } mm_context_t;
 
 #endif

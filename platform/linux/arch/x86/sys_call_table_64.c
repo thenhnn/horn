@@ -9,9 +9,8 @@
 #include <linux/cache.h>
 #include <asm/syscall.h>
 
-extern asmlinkage long sys_ni_syscall(unsigned long, unsigned long,
-				      unsigned long, unsigned long,
-				      unsigned long, unsigned long);
+extern asmlinkage long sys_ni_syscall(unsigned long, unsigned long, unsigned long, unsigned long,
+                                      unsigned long, unsigned long);
 
 /*
  * Below you can see, in terms of #define's, the differences between the x86-64
@@ -24,9 +23,11 @@ extern asmlinkage long sys_ni_syscall(unsigned long, unsigned long,
 
 #define __SYSCALL_NORETURN __SYSCALL
 
-#define __SYSCALL(nr, sym) extern asmlinkage long sym(unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long);
+#define __SYSCALL(nr, sym)                                                                         \
+    extern asmlinkage long sym(unsigned long, unsigned long, unsigned long, unsigned long,         \
+                               unsigned long, unsigned long);
 #include <asm/syscalls_64.h>
-#undef  __SYSCALL
+#undef __SYSCALL
 
 #define __SYSCALL(nr, sym) sym,
 const sys_call_ptr_t sys_call_table[] ____cacheline_aligned = {

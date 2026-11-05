@@ -22,23 +22,43 @@ static volatile unsigned cow_value = 7;
 static void fail(const char *operation)
 {
     fprintf(stderr, "linux tasks: FAILED: %s (errno=%d)\n", operation, errno);
-    if (getpid() != 1) _exit(111);
-    for (;;) pause();
+    if (getpid() != 1) {
+        _exit(111);
+    }
+    for (;;) {
+        pause();
+    }
 }
-#define CHECK(test) do { if (!(test)) fail(#test); } while (0)
-#define PTHREAD(call) do { int error = (call); if (error) { errno = error; fail(#call); } } while (0)
+
+#define CHECK(test)                                                                                \
+    do {                                                                                           \
+        if (!(test))                                                                               \
+            fail(#test);                                                                           \
+    } while (0)
+#define PTHREAD(call)                                                                              \
+    do {                                                                                           \
+        int error = (call);                                                                        \
+        if (error) {                                                                               \
+            errno = error;                                                                         \
+            fail(#call);                                                                           \
+        }                                                                                          \
+    } while (0)
 
 static void sleep_ns(long ns)
 {
-    struct timespec delay = { .tv_nsec = ns };
-    while (nanosleep(&delay, &delay)) CHECK(errno == EINTR);
+    struct timespec delay = {.tv_nsec = ns};
+    while (nanosleep(&delay, &delay)) {
+        CHECK(errno == EINTR);
+    }
 }
+
 static void wait_status(pid_t child, int expected)
 {
     int status;
     CHECK(waitpid(child, &status, 0) == child);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == expected);
 }
+
 static void fork_test(void)
 {
     int go[2];
@@ -54,7 +74,9 @@ static void fork_test(void)
         close(go[1]);
         CHECK(read(go[0], &token, 1) == 1);
         CHECK(cow_value == 7 && tls_value == 101);
-        for (size_t i = 0; i < 8192; ++i) CHECK(memory[i] == 0x5a);
+        for (size_t i = 0; i < 8192; ++i) {
+            CHECK(memory[i] == 0x5a);
+        }
         cow_value = 99;
         memory[0] = 99;
         tls_value = 99;
@@ -67,7 +89,9 @@ static void fork_test(void)
     close(go[1]);
     wait_status(child, 23);
     CHECK(cow_value == 17 && tls_value == 101);
-    for (size_t i = 0; i < 8192; ++i) CHECK(memory[i] == 0xa5);
+    for (size_t i = 0; i < 8192; ++i) {
+        CHECK(memory[i] == 0xa5);
+    }
     free(memory);
     child = fork();
     CHECK(child >= 0);
@@ -82,7 +106,9 @@ static void fork_test(void)
     for (int i = 0; i < 64; ++i) {
         child = fork();
         CHECK(child >= 0);
-        if (!child) _exit(i);
+        if (!child) {
+            _exit(i);
+        }
         wait_status(child, i);
     }
     puts("linux tasks: 64 fork/reap cycles work");
@@ -91,7 +117,10 @@ static void fork_test(void)
     CHECK(guard != MAP_FAILED);
     child = fork();
     CHECK(child >= 0);
-    if (!child) { unsigned value = *(volatile unsigned *)guard; _exit(value); }
+    if (!child) {
+        unsigned value = *(volatile unsigned *)guard;
+        _exit(value);
+    }
     int status;
     CHECK(waitpid(child, &status, 0) == child);
     CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV);
@@ -104,11 +133,15 @@ static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t condition = PTHREAD_COND_INITIALIZER;
 static unsigned ready, go, counter;
 static long tids[THREADS];
-static const int rounding[THREADS] = { FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO };
+static const int rounding[THREADS] = {FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO};
+
 static void signal_handler(int signal)
 {
-    if (signal == SIGUSR1) ++signals_seen;
+    if (signal == SIGUSR1) {
+        ++signals_seen;
+    }
 }
+
 static void *worker(void *argument)
 {
     unsigned id = (uintptr_t)argument;
@@ -119,7 +152,9 @@ static void *worker(void *argument)
     PTHREAD(pthread_mutex_lock(&mutex));
     ++ready;
     PTHREAD(pthread_cond_broadcast(&condition));
-    while (!go) PTHREAD(pthread_cond_wait(&condition, &mutex));
+    while (!go) {
+        PTHREAD(pthread_cond_wait(&condition, &mutex));
+    }
     PTHREAD(pthread_mutex_unlock(&mutex));
     for (unsigned i = 0; i < 32; ++i) {
         errno = EDOM + id;
@@ -129,7 +164,9 @@ static void *worker(void *argument)
         CHECK(fegetround() == rounding[id]);
         PTHREAD(pthread_mutex_lock(&mutex));
         /* Deliberately block other contenders: exercise futex wait/wake. */
-        if (!i) sleep_ns(2000000);
+        if (!i) {
+            sleep_ns(2000000);
+        }
         ++counter;
         PTHREAD(pthread_mutex_unlock(&mutex));
         unsigned char *memory = malloc(1024 + id);
@@ -142,18 +179,22 @@ static void *worker(void *argument)
     CHECK(fegetround() == rounding[id]);
     return (void *)(uintptr_t)(id + 1);
 }
+
 static void pthread_test(void)
 {
-    struct sigaction action = { .sa_handler = signal_handler };
+    struct sigaction action = {.sa_handler = signal_handler};
     CHECK(sigemptyset(&action.sa_mask) == 0);
     CHECK(sigaction(SIGUSR1, &action, NULL) == 0);
     for (unsigned round = 0; round < 4; ++round) {
         pthread_t threads[THREADS];
         ready = go = counter = 0;
         PTHREAD(pthread_mutex_lock(&mutex));
-        for (unsigned i = 0; i < THREADS; ++i)
+        for (unsigned i = 0; i < THREADS; ++i) {
             PTHREAD(pthread_create(&threads[i], NULL, worker, (void *)(uintptr_t)i));
-        while (ready != THREADS) PTHREAD(pthread_cond_wait(&condition, &mutex));
+        }
+        while (ready != THREADS) {
+            PTHREAD(pthread_cond_wait(&condition, &mutex));
+        }
         go = 1;
         PTHREAD(pthread_cond_broadcast(&condition));
         PTHREAD(pthread_mutex_unlock(&mutex));
@@ -162,7 +203,9 @@ static void pthread_test(void)
             PTHREAD(pthread_join(threads[i], &result));
             CHECK(result == (void *)(uintptr_t)(i + 1));
             CHECK(tids[i] > 1);
-            for (unsigned j = 0; j < i; ++j) CHECK(tids[i] != tids[j]);
+            for (unsigned j = 0; j < i; ++j) {
+                CHECK(tids[i] != tids[j]);
+            }
         }
         CHECK(counter == THREADS * 32 && tls_value == 101 && signals_seen == 0);
         CHECK(fegetround() == FE_TONEAREST);
@@ -171,6 +214,7 @@ static void pthread_test(void)
     PTHREAD(pthread_mutex_destroy(&mutex));
     puts("linux tasks: pthread TLS/errno, mutex/condvar, join, signals and FP isolation work");
 }
+
 int main(int argc, char **argv)
 {
     setvbuf(stdout, NULL, _IONBF, 0);

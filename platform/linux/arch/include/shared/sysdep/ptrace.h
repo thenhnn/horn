@@ -47,16 +47,18 @@
 extern unsigned long host_fp_size;
 
 struct uml_pt_regs {
-	unsigned long gp[MAX_REG_NR];
-	struct faultinfo faultinfo;
-	long syscall;
-	int is_user;
+    unsigned long gp[MAX_REG_NR];
+    struct faultinfo faultinfo;
+    long syscall;
+    int is_user;
 
-	/* Dynamically sized FP registers (holds an XSTATE) */
-	unsigned long fp[];
+    /* Dynamically sized FP registers (holds an XSTATE) */
+    unsigned long fp[];
 };
 
-#define EMPTY_UML_PT_REGS { }
+#define EMPTY_UML_PT_REGS                                                                          \
+    {                                                                                              \
+    }
 
 #define UPT_SYSCALL_NR(r) ((r)->syscall)
 #define UPT_FAULTINFO(r) (&(r)->faultinfo)

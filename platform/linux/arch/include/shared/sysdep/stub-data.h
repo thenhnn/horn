@@ -7,16 +7,17 @@
 #include <asm/ldt.h>
 
 struct stub_data_arch {
-	int sync;
-	struct user_desc tls[UM_KERN_GDT_ENTRY_TLS_ENTRIES];
+    int sync;
+    struct user_desc tls[UM_KERN_GDT_ENTRY_TLS_ENTRIES];
 };
 #else
 #define STUB_SYNC_FS_BASE (1 << 0)
 #define STUB_SYNC_GS_BASE (1 << 1)
+
 struct stub_data_arch {
-	int sync;
-	unsigned long fs_base;
-	unsigned long gs_base;
+    int sync;
+    unsigned long fs_base;
+    unsigned long gs_base;
 };
 #endif
 
