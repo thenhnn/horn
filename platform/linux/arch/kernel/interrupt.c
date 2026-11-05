@@ -2,6 +2,8 @@
 #include <linux/clockchips.h>
 #include <linux/clocksource.h>
 #include <linux/interrupt.h>
+#include <linux/irq.h>
+#include <linux/irqdomain.h>
 #include <linux/sched/clock.h>
 #include <os.h>
 #include <horn.h>
@@ -13,7 +15,7 @@ void block_signals(void) { signals_enabled = 0; }
 void unblock_signals(void)
 {
     signals_enabled = 1;
-    horn_timer_interrupt();
+    horn_handle_events();
 }
 
 int um_get_signals(void) { return signals_enabled; }
@@ -23,7 +25,7 @@ int um_set_signals(int v)
     int old = signals_enabled;
     signals_enabled = v;
     if (v) {
-        horn_timer_interrupt();
+        horn_handle_events();
     }
     return old;
 }
@@ -34,7 +36,28 @@ void block_signals_hard(void) { block_signals(); }
 
 void unblock_signals_hard(void) { unblock_signals(); }
 
-void init_IRQ(void) {}
+static struct irq_domain *event_domain;
+static unsigned int console_irq;
+
+static int event_irq_map(struct irq_domain *domain, unsigned int irq, irq_hw_number_t source)
+{
+    irq_set_chip_and_handler(irq, &dummy_irq_chip, handle_simple_irq);
+    return 0;
+}
+
+static const struct irq_domain_ops event_irq_ops = {.map = event_irq_map};
+
+void __init init_IRQ(void)
+{
+    // Notification sources are software-delivered, not maskable device lines.
+    // The transport owns one-shot rearming; HVC owns request/free_irq lifetime.
+    event_domain = irq_domain_add_linear(NULL, 1, &event_irq_ops, NULL);
+    BUG_ON(!event_domain);
+    console_irq = irq_create_mapping(event_domain, 0);
+    BUG_ON(!console_irq);
+}
+
+unsigned int horn_console_irq(void) { return console_irq; }
 
 void do_IRQ(int irq, struct uml_pt_regs *regs) { generic_handle_irq(irq); }
 
@@ -70,7 +93,7 @@ void __init time_init(void)
     clock_ready = 1;
 }
 
-void horn_timer_interrupt(void)
+void horn_handle_events(void)
 {
     if (!clock_ready || !signals_enabled || delivering) {
         return;
@@ -88,7 +111,7 @@ void horn_timer_interrupt(void)
         event.event_handler(&event);
     }
     if (console) {
-        horn_console_interrupt();
+        generic_handle_domain_irq(event_domain, 0);
     }
     irq_exit();
     set_irq_regs(old);

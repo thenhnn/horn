@@ -23,6 +23,8 @@ config UML
 	select HAVE_SYSCALL_TRACEPOINTS
 	select THREAD_INFO_IN_TASK
 	select SPARSE_IRQ
+	select IRQ_DOMAIN
+	select HVC_IRQ
 config MMU
 	def_bool y
 config NO_IOMEM

@@ -4,7 +4,8 @@
 #define CONSOLE_RX_BYTES 4096
 static unsigned char console_rx[CONSOLE_RX_BYTES];
 static unsigned console_rx_head, console_rx_count;
-static bool console_input_enabled, console_closed;
+static bool console_input_enabled, console_closed, console_resize_pending;
+static unsigned long long console_generation;
 
 static void console_arm(bool writable)
 {
@@ -15,6 +16,10 @@ static void console_arm(bool writable)
     if (console_input_enabled && console_rx_count < CONSOLE_RX_BYTES) {
         args.interests |= HORN_CONSOLE_EVENTS_READABLE;
     }
+    if (console_input_enabled) {
+        args.interests |= HORN_CONSOLE_EVENTS_SIZE_CHANGED;
+    }
+    args.size_generation = console_generation;
     if (writable) {
         args.interests |= HORN_CONSOLE_EVENTS_WRITABLE;
     }
@@ -22,8 +27,13 @@ static void console_arm(bool writable)
     args.notification.value = cap(initial.console_signal);
     horn_console_interface_watch_result_t result;
     CHECK(horn_console_interface_watch(&transport, 0, cap(initial.console), args.notification,
-                                       args.interests, 0, &result),
+                                       args.interests, args.size_generation, &result),
           result);
+    if (result.value.ok.size_generation != console_generation) {
+        console_generation = result.value.ok.size_generation;
+        console_resize_pending = true;
+        pending |= CONSOLE_EVENT;
+    }
     if (result.value.ok.events & HORN_CONSOLE_EVENTS_CLOSED) {
         console_closed = true;
         pending |= CONSOLE_EVENT;
@@ -65,6 +75,32 @@ static void console_receive(void)
     }
 }
 
+int horn_console_take_resize(void)
+{
+    bool ready = console_resize_pending;
+    console_resize_pending = false;
+    return ready;
+}
+
+int horn_console_geometry(unsigned short *rows, unsigned short *columns)
+{
+    horn_console_interface_size_result_t result;
+    CHECK(horn_console_interface_size(&transport, 0, cap(initial.console), &result), result);
+    console_generation = result.value.ok.generation;
+    console_arm(false);
+    if (!result.value.ok.size.present) {
+        return 0;
+    }
+    unsigned r = result.value.ok.size.value.rows;
+    unsigned c = result.value.ok.size.value.columns;
+    if (!r || !c || r > 65535 || c > 65535) {
+        return 0;
+    }
+    *rows = r;
+    *columns = c;
+    return 1;
+}
+
 void horn_console_enable(int enabled)
 {
     console_input_enabled = enabled != 0;
@@ -89,7 +125,8 @@ int horn_console_pending(void)
     seL4_Word badge = 0;
     seL4_Poll(initial.events, &badge);
     pending |= badge;
-    bool ready = console_input_enabled && ((pending & CONSOLE_EVENT) || console_rx_count);
+    bool ready = console_input_enabled &&
+                 ((pending & CONSOLE_EVENT) || console_rx_count || console_resize_pending);
     pending &= ~CONSOLE_EVENT;
     return ready;
 }

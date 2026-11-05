@@ -20,7 +20,9 @@ void horn_console_write(const char *bytes, unsigned long size);
 long horn_console_read(char *bytes, unsigned long size);
 void horn_console_enable(int enabled);
 int horn_console_pending(void);
-void horn_console_interrupt(void);
+unsigned int horn_console_irq(void);
+int horn_console_take_resize(void);
+int horn_console_geometry(unsigned short *rows, unsigned short *columns);
 unsigned long long horn_now_ns(void);
 void horn_deadline(unsigned long long deadline);
 void horn_idle(void);
@@ -39,5 +41,5 @@ int horn_fp_valid(const void *buffer);
 int horn_fp_exception_code(const void *buffer, unsigned vector);
 void horn_shutdown(unsigned status) __attribute__((noreturn));
 void horn_ready(void);
-void horn_timer_interrupt(void);
+void horn_handle_events(void);
 #endif

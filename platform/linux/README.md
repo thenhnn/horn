@@ -19,11 +19,16 @@ BusyBox init mounts proc, sysfs and devtmpfs and respawns a login shell on
 `/dev/hvc0`, with a real controlling TTY. Utilities, pipes and redirections run
 ordinary Linux processes. Files are RAM-backed; there are no disks, Linux network
 interfaces, authentication or persistence. This is a trusted local root console.
-Terminal size defaults to 80x24 and can be set with `stty`; host resize propagation
-is not implemented. Linux still has one logical CPU.
+Terminal geometry, when reported by Horn, is applied through `hvc_resize()`
+and Linux's normal TTY/SIGWINCH path. Unknown geometry keeps the 80x24 fallback;
+`stty` still works. SIZE_CHANGED uses a generation-aware one-shot watch and
+coalesced geometry work outside HVC's lock. End-to-end host-window resize through
+the pinned QEMU stdio backend has not been validated. Linux still has one logical CPU.
 
-Input is notification-driven: a one-shot console watch wakes HVC's worker,
-without a synthetic polling timer. A bounded RX buffer preserves input while
+Input is notification-driven: the architecture event dispatcher routes console
+notifications through an IRQ domain and the standard HVC IRQ handler/notifiers,
+without a synthetic polling timer. Clockevents retain a separate handler within
+the common interrupt-context entry. A bounded RX buffer preserves input while
 waiting for writable output; the same subscription covers both readiness
 interests. The boot test covers commands, pipelines, TTY ioctls, Ctrl-C, shell
 respawn, idle wakeup and a large output burst with concurrent input. Background

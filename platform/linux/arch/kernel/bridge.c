@@ -111,7 +111,7 @@ void horn_enter_user(void *ptr)
         default:
             panic("Horn unknown execution exit %d", reason);
         }
-        horn_timer_interrupt();
+        horn_handle_events();
         interrupt_end();
     }
 }
